@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { AgentRuntime, type JobSummary, type JobResult } from "./agents.ts";
 import { ProfileStore, type Profile } from "./profiles.ts";
@@ -79,7 +80,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     // Restores never wake the model or resume processes. New explicit work re-enables delivery.
     paused = true;
     try {
-      profiles = new ProfileStore({ path: join(ctx.cwd, ".pi", "dag-workflow-profiles.json"), registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write"] });
+      profiles = new ProfileStore({ path: join(getAgentDir(), "pi-dag-workflow", "pi-dag-workflow-profile.json"), registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write"] });
       await profiles.load();
       const provider = pi.getFlag("dag-workflow-test-child-provider");
       runtime = new AgentRuntime({ cwd: ctx.cwd, profiles, getInheritedModel: () => context?.model ? { provider: context.model.provider, id: context.model.id } : undefined, onChanged, onNotice,
@@ -168,7 +169,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     },
   });
   pi.registerTool({ name: "subagent_inspect", label: "Agents", description: "List private-safe job summaries and named profiles; no full child conversations.", parameters: Type.Object({ jobId: Type.Optional(idSchema) }, { additionalProperties: false }), renderResult,
-    async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); await profiles!.load(); return reply({ jobs: agent.inspect(params.jobId), profiles: profiles!.list(), profilePath: join(ctx.cwd, ".pi", "dag-workflow-profiles.json"), paused }); } catch (cause) { return fail(cause); } },
+    async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); await profiles!.load(); return reply({ jobs: agent.inspect(params.jobId), profiles: profiles!.list(), profilePath: join(getAgentDir(), "pi-dag-workflow", "pi-dag-workflow-profile.json"), paused }); } catch (cause) { return fail(cause); } },
   });
   pi.registerTool({ name: "subagent_send", label: "Agent message", description: "Send direction to recipient jobId, or answer a pending requestId; provide exactly one target.", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) { try {
