@@ -48,11 +48,11 @@ export class IsolatedClient {
     await client.send("get_state");
     return client;
   }
-  static async startFlash(): Promise<IsolatedClient> {
+  static async startFlash(extraTools: string[] = []): Promise<IsolatedClient> {
     const root = await mkdtemp(join(tmpdir(), "pi-dag-flash-"));
     const cli = fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url));
     const entry = fileURLToPath(new URL("../../src/index.ts", import.meta.url));
-    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-dir", join(root, "sessions"), "--provider", "example-provider", "--model", "example-model", "--thinking", "low", "--tools", "todo,read,grep,find,ls,write", "-e", entry], {
+    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-dir", join(root, "sessions"), "--provider", "example-provider", "--model", "example-model", "--thinking", "low", "--tools", ["todo", "read", "grep", "find", "ls", "write", ...extraTools].join(","), "-e", entry], {
       cwd: root,
       env: { ...process.env, PI_OFFLINE: "1", PI_CODING_AGENT_SESSION_DIR: join(root, "sessions") },
       stdio: "pipe",
@@ -85,7 +85,16 @@ export class IsolatedClient {
   async prompt(message: string, timeout = 15000): Promise<RpcRecord[]> {
     const start = this.records.length;
     const response = await this.send("prompt", { message });
-    if ((response.data as { disposition?: string })?.disposition !== "handled") await this.until(() => this.records.slice(start).some((record) => record.type === "agent_settled"), timeout);
+    if ((response.data as { disposition?: string })?.disposition !== "handled") await this.until(() => {
+      // Child-report runs may settle concurrently. Correlate to this prompt's user message.
+      const delivered = this.records.findIndex((record, index) => {
+        if (index < start || record.type !== "message_start") return false;
+        const item = record.message as { role?: string; content?: string | { type: string; text?: string }[] };
+        const text = typeof item?.content === "string" ? item.content : item?.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n");
+        return item?.role === "user" && text === message;
+      });
+      return delivered >= 0 && this.records.slice(delivered).some((record) => record.type === "agent_settled");
+    }, timeout);
     return this.records.slice(start);
   }
   async entries(): Promise<unknown[]> { return ((await this.send("get_entries")).data as { entries: unknown[] }).entries; }

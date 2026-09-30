@@ -1,24 +1,22 @@
-import { join } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { configPaths } from "./config.ts";
 import { Text } from "@earendil-works/pi-tui";
-import { AgentRuntime, type JobActivity, type JobSummary, type JobResult } from "./agents.ts";
-import type { AgentView } from "./view.ts";
+import { AgentRuntime, type JobSummary, type JobResult } from "./agents.ts";
 import { ProfileStore, type Profile } from "./profiles.ts";
 import { AgentNotices, type Notice } from "./agent-notices.ts";
 import { clean } from "./view.ts";
 import { applyTodo, type TodoParams, type WorkflowState } from "./todos.ts";
 
 export const AGENTS_TYPE = "pi-dag-workflow.agents";
-interface Hooks { state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean }
+interface Hooks { state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean }
 const active = (job: JobSummary) => ["starting", "running", "waiting"].includes(job.status);
 const fingerprint = (state: WorkflowState, id?: number) => {
   const task = state.tasks.find((item) => item.id === id);
   return task ? JSON.stringify([task.id, task.subject, task.description, task.blockedBy]) : "";
 };
 const idSchema = Type.String({ minLength: 1, maxLength: 80 });
-const seconds = Type.Number({ minimum: 0, maximum: 86400 });
+const seconds = Type.Number({ exclusiveMinimum: 0, maximum: 86400 });
 const text = Type.String({ minLength: 1, maxLength: 50000 });
 
 /** Registration is side-effect-free; session hooks own runtime resources. */
@@ -53,32 +51,34 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   };
   const deliverIdle = () => {
     timer = undefined;
-    if (!context || restoring || paused || hooks.state().plan || !context.isIdle()) return;
+    if (!context || restoring || paused || hooks.state().plan || hooks.canWake?.() === false || !context.isIdle()) return;
     const content = drain();
-    if (content) {
-      try { pi.sendMessage({ customType: "pi-dag-workflow.agent-report", content, display: true }, { triggerTurn: true, deliverAs: "nextTurn" }); }
-      catch { paused = true; } // Session closed; durable output remains available, never retry an old wake.
+    if (content && hooks.reserveWake?.(context) !== false) {
+      try { pi.sendMessage({ customType: "pi-dag-workflow.agent-report", content, display: true }, { triggerTurn: true, deliverAs: "followUp" }); }
+      catch (cause) { paused = true; context.ui.notify(`Agent 自动唤醒失败：${String(cause)}`, "warning"); } // Durable output remains available; never retry an old wake.
     }
   };
   const onNotice = (notice: Notice) => {
-    if (restoring || paused || hooks.state().plan) return;
+    if (restoring || paused || hooks.state().plan || hooks.canWake?.() === false) return;
     notices.add(notice);
     if (context?.isIdle() && !timer) timer = setTimeout(deliverIdle, 25);
   };
   /** Live activity refreshes only the widget; throttled and never appended to the session. */
   let activityTimer: ReturnType<typeof setTimeout> | undefined;
   let lastActivityStamp = 0;
+  const clearActivity = () => { if (activityTimer) clearTimeout(activityTimer); activityTimer = undefined; };
   const onActivity = () => {
-    if (restoring || !context || context.mode !== "tui") return;
-    if (activityTimer) return;
-    const elapsed = Date.now() - lastActivityStamp;
-    activityTimer = setTimeout(() => {
+    if (restoring || !context?.hasUI || activityTimer) return;
+    const ownGeneration = generation;
+    const refresh = () => {
       activityTimer = undefined;
+      if (restoring || ownGeneration !== generation || !context) return;
       lastActivityStamp = Date.now();
-      hooks.paint(context!);
-      // Tool seconds tick: keep the elapsed counter current while a tool runs.
-      if (runtime?.activities().length && context?.mode === "tui") onActivity();
-    }, Math.max(0, 300 - elapsed));
+      hooks.paint(context);
+      // Only elapsed tool time needs a periodic tick; thinking/output repaint on transitions.
+      if (runtime?.activities().some((item) => item.activity.kind === "tool" && item.activity.since !== undefined && Date.now() - item.activity.since < 99000) && context.hasUI) activityTimer = setTimeout(refresh, 1000);
+    };
+    activityTimer = setTimeout(refresh, Math.max(0, 300 - (Date.now() - lastActivityStamp)));
   };
   const onChanged = () => {
     if (restoring || !runtime || !context) return;
@@ -90,14 +90,14 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   async function restore(ctx: ExtensionContext) {
     restoring = true;
     generation++;
-    clearDelivery();
+    clearDelivery(); clearActivity();
     original.clear(); adjusted.clear();
     await runtime?.shutdown();
     context = ctx; runtime = undefined; profiles = undefined; error = undefined;
     // Restores never wake the model or resume processes. New explicit work re-enables delivery.
     paused = true;
     try {
-      profiles = new ProfileStore({ path: join(getAgentDir(), "pi-dag-workflow", "pi-dag-workflow-profile.json"), registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write"] });
+      profiles = new ProfileStore({ path: configPaths().profile, registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write"] });
       await profiles.load();
       const provider = pi.getFlag("dag-workflow-test-child-provider");
       runtime = new AgentRuntime({ cwd: ctx.cwd, profiles, getInheritedModel: () => context?.model ? { provider: context.model.provider, id: context.model.id } : undefined, onChanged, onNotice, onActivity,
@@ -124,28 +124,33 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   pi.on("session_tree", (_event, ctx) => restore(ctx));
   // Stop before switching the active branch, so writes cannot escape into the new branch.
   // A cancelled navigation leaves the old session live: undo the stop so tools keep working.
-  const stopBeforeNavigation = async () => { restoring = true; generation++; clearDelivery(); await runtime?.shutdown(); restoring = false; };
+  const stopBeforeNavigation = async () => {
+    const hadActive = runtime?.activeCount() ?? 0;
+    restoring = true; generation++; paused = true; clearDelivery(); clearActivity();
+    try {
+      await runtime?.shutdown();
+      // A later extension may cancel navigation: retain an available, interrupted runtime.
+      if (runtime) await runtime.importSummaries(runtime.exportRecords());
+    } finally { restoring = false; }
+    if (hadActive) onChanged();
+  };
   pi.on("session_before_switch", stopBeforeNavigation);
   pi.on("session_before_fork", stopBeforeNavigation);
   pi.on("session_before_tree", stopBeforeNavigation);
-  pi.on("session_shutdown", async () => { restoring = true; generation++; clearDelivery(); await runtime?.shutdown(); runtime = undefined; context = undefined; });
+  pi.on("session_shutdown", async () => { restoring = true; generation++; clearDelivery(); clearActivity(); await runtime?.shutdown(); runtime = undefined; context = undefined; });
   pi.on("before_agent_start", (event, ctx) => {
     context = ctx;
     event.systemPromptOptions.sections["dag_workflow_agents"] = "Use subagent_spawn for useful independent work (optional todoId/profile); no grandchildren. Inspect profiles as needed, send direction or reply by requestId, wait or cancel. Check returned work yourself before completing Todos.";
   });
   pi.on("input", (event, ctx) => { context = ctx; if (event.source !== "extension" && !hooks.state().plan && !event.text.trim().startsWith("/")) paused = false; });
-  pi.on("turn_end", (event) => {
-    if (event.outcome !== "completed") { paused = true; clearDelivery(); return; }
-    if (restoring || paused || hooks.state().plan) return;
+  const reportBoundary = (outcome: string, ctx: ExtensionContext) => {
+    if (outcome !== "completed") { paused = true; clearDelivery(); return; }
+    if (restoring || paused || hooks.state().plan || hooks.canWake?.() === false) return;
     const content = drain();
-    if (content) return { entries: [{ type: "custom_message" as const, customType: "pi-dag-workflow.agent-report", content, display: true }], continue: true };
-  });
-  pi.on("agent_before_settle", (event) => {
-    if (event.outcome !== "completed") { paused = true; clearDelivery(); return; }
-    if (restoring || paused || hooks.state().plan) return;
-    const content = drain();
-    if (content) return { entries: [{ type: "custom_message" as const, customType: "pi-dag-workflow.agent-report", content, display: true }], continue: true };
-  });
+    if (content && hooks.reserveWake?.(ctx) !== false) return { entries: [{ type: "custom_message" as const, customType: "pi-dag-workflow.agent-report", content, display: true }], continue: true };
+  };
+  pi.on("turn_end", (event, ctx) => reportBoundary(event.outcome, ctx));
+  pi.on("agent_before_settle", (event, ctx) => reportBoundary(event.outcome, ctx));
   pi.on("agent_settled", (_event, ctx) => { context = ctx; if (!paused && !timer) timer = setTimeout(deliverIdle, 25); });
 
   function ready(ctx: ExtensionContext, execution = true): AgentRuntime {
@@ -186,7 +191,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     },
   });
   pi.registerTool({ name: "subagent_inspect", label: "Agents", description: "List private-safe job summaries and named profiles; no full child conversations.", parameters: Type.Object({ jobId: Type.Optional(idSchema) }, { additionalProperties: false }), renderResult,
-    async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); await profiles!.load(); return reply({ jobs: agent.inspect(params.jobId), profiles: profiles!.list(), profilePath: join(getAgentDir(), "pi-dag-workflow", "pi-dag-workflow-profile.json"), paused }); } catch (cause) { return fail(cause); } },
+    async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); await profiles!.load(); return reply({ jobs: agent.inspect(params.jobId), profiles: profiles!.list(), profilePath: configPaths().profile, paused }); } catch (cause) { return fail(cause); } },
   });
   pi.registerTool({ name: "subagent_send", label: "Agent message", description: "Send direction to recipient jobId, or answer a pending requestId; provide exactly one target.", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) { try {
@@ -207,16 +212,17 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   pi.registerCommand("agents", { description: "子 Agent 状态／消息／取消与 Profile；也可直接描述需求", handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
+      if (action === 'help') { ctx.ui.notify('/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset', 'info'); return; }
       if (action === "reset") {
         if (!ctx.hasUI || !await ctx.ui.confirm("清除 Agent 运行记录？", "先停止所有子 Agent，不撤销文件修改；历史记录保留。")) return;
-        restoring = true; clearDelivery(); await runtime?.shutdown();
+        restoring = true; clearDelivery(); clearActivity(); await runtime?.shutdown();
         pi.appendEntry(AGENTS_TYPE, { version: 1, jobs: [] });
         await restore(ctx); return;
       }
       const agent = ready(ctx, false);
       if (!args.trim() || action === "list") { ctx.ui.notify(JSON.stringify({ jobs: agent.inspect(), paused }, null, 2), "info"); return; }
-      if (action === "pause") { paused = true; clearDelivery(); ctx.ui.notify("已暂停结果自动唤醒；子 Agent 仍可能运行，停止请用 /agents cancel", "info"); return; }
-      if (action === "resume") { ready(ctx); paused = false; ctx.ui.notify("后续新结果可自动唤醒；暂停期间旧报告仍可 /agents wait 查看", "info"); return; }
+      if (action === "pause") { paused = true; clearDelivery(); hooks.pauseAuto?.(ctx); ctx.ui.notify("已暂停结果自动唤醒；子 Agent 仍可能运行，停止请用 /agents cancel", "info"); return; }
+      if (action === "resume") { ready(ctx); if (hooks.resumeAuto ? !hooks.resumeAuto() : hooks.canWake?.() === false) throw new Error("Goal 续跑仍暂停；先明确 /goal resume"); paused = false; ctx.ui.notify("后续新结果可自动唤醒；暂停期间旧报告仍可 /agents wait 查看", "info"); return; }
       if (action === "cancel" || action === "remove") { if (parts.length !== 1) throw new Error(`/agents ${action} jobId`); notices.drop(parts[0]!); await agent.cancel(parts[0]!, { remove: action === "remove" }); return; }
       if (action === "wait") { ctx.ui.notify(JSON.stringify(await agent.wait(parts[0]!, { timeout: 0 })), "info"); return; }
       if (action === "send" || action === "reply") { ready(ctx); const target = parts.shift(); if (!target || !parts.length) throw new Error(`/agents ${action} 编号 消息`); await agent.send({ ...(action === "send" ? { recipient: target } : { requestId: target }), message: parts.join(" ") }); if (action === "send") adjusted.add(target); return; }
@@ -234,11 +240,9 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     } catch (cause) { ctx.ui.notify(String(cause), "error"); }
   } });
   return {
-    summaries: () => {
-      const jobs: AgentView[] = runtime?.inspect() ?? [];
-      const live = new Map((runtime?.activities() ?? []).map((item): [string, JobActivity] => [item.jobId, item.activity]));
-      return jobs.map((job): AgentView => live.has(job.id) ? { ...job, activity: live.get(job.id)! } : job);
-    },
+    pauseAutomatic() { paused = true; clearDelivery(); },
+    resumeAutomatic() { paused = false; },
+    summaries: () => runtime?.viewSummaries() ?? [],
     assertPlanEntry() { if (restoring || error) throw new Error(error ?? "Agent 状态正在恢复"); if (runtime?.activeCount()) throw new Error("子 Agent 仍在执行／等待；请先等待结束或明确取消，再进入 Plan"); clearDelivery(); paused = true; },
     assertTodoMutation(params: TodoParams) {
       if (params.action === "list" || params.action === "get" || params.action === "create" || claiming !== undefined && params.action === "update" && params.id === claiming) return;

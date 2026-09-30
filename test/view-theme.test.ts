@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { Theme, type ThemeColor, type ThemeBg } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { emptyState } from "../src/todos.ts";
-import { renderTasks } from "../src/view.ts";
+import { renderTasks, renderDag } from "../src/view.ts";
 
 test("semantic theme colors do not change terminal width or corrupt user content", () => {
   const builtin = JSON.parse(readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json", import.meta.url), "utf8"));
@@ -22,6 +22,10 @@ test("semantic theme colors do not change terminal width or corrupt user content
     const styled = renderTasks(state, width, { theme });
     assert.deepEqual(styled.map(stripTerminalSequences), plain);
     for (const line of styled) assert.ok(visibleWidth(line) <= width);
+    const dagPlain = renderDag(state, width);
+    const dagStyled = renderDag(state, width, theme);
+    assert.deepEqual(dagStyled.map(stripTerminalSequences), dagPlain);
+    for (const line of dagStyled) assert.ok(visibleWidth(line) <= width);
   }
   const styled = renderTasks(state, 120, { theme });
   assert.ok(styled[0]!.startsWith(theme.getFgAnsi("accent")));

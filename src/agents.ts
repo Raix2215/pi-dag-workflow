@@ -12,7 +12,8 @@ export interface JobSummary {
   tools: string[]; status: JobStatus; startedAt: number; endedAt?: number; error?: string; pendingRequests: number;
 }
 export interface AgentRequest { requestId: string; message: string }
-export interface JobResult extends JobSummary { output: string; truncated: boolean; requests: AgentRequest[]; timedOut?: boolean }
+export interface AgentUsage { requests: number; input: number; output: number; estimatedCost: number }
+export interface JobResult extends JobSummary { output: string; truncated: boolean; requests: AgentRequest[]; usage?: AgentUsage; timedOut?: boolean }
 export interface AgentNotice { jobId: string; kind: "message" | "question" | "completed" | "failed"; message: string; requestId?: string }
 export interface SpawnOptions { task: string; todoId?: number; profile?: string; tools?: string[]; timeout?: number }
 export interface AgentRuntimeOptions {
@@ -141,12 +142,11 @@ class RpcPipe {
 }
 export interface JobActivity { kind: "thinking" | "tool" | "output"; tool?: string; since?: number }
 interface LiveJob {
-  summary: JobSummary; output: string; truncated: boolean; requests: Map<string, string>;
-  activity?: JobActivity; pipe?: RpcPipe; timer?: NodeJS.Timeout; listeners: Set<() => void>; finishing?: Promise<void>;
+  summary: JobSummary; output: string; truncated: boolean; requests: Map<string, string>; usage: AgentUsage;
+  activity?: JobActivity; activeTools: Map<string, { tool: string; since: number }>; pipe?: RpcPipe; timer?: NodeJS.Timeout; listeners: Set<() => void>; finishing?: Promise<void>;
   sawEnd: boolean; lastStop?: string; lastError?: string; settling: boolean; settleAgain: boolean; generation: number; sends: number;
 }
 function seconds(value: number | undefined, fallback: number, max: number): number {
-  if (value === 0) return 0;
   const result = value ?? fallback;
   if (!Number.isFinite(result) || result <= 0 || result > max) throw new Error(`timeout must be greater than 0 and at most ${max} seconds`);
   return result;
@@ -166,6 +166,12 @@ export class AgentRuntime {
   constructor(options: AgentRuntimeOptions) { this.options = options; }
   activeCount(): number { return [...this.jobs.values()].filter((job) => ACTIVE.has(job.summary.status) || job.pipe !== undefined).length; }
   inspect(jobId?: string): JobSummary[] { return structuredClone(jobId ? [this.job(jobId).summary] : [...this.jobs.values()].map((job) => job.summary)); }
+  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status'> & { activity?: JobActivity })[] {
+    return [...this.jobs.values()].map((job) => ({ id: job.summary.id, profile: job.summary.profile, status: job.summary.status,
+      ...(job.summary.todoId !== undefined ? { todoId: job.summary.todoId } : {}),
+      ...(job.activity ? { activity: { ...job.activity } } : {}),
+    }));
+  }
   exportSummaries(): JobSummary[] { return this.inspect(); }
   exportRecords(): JobResult[] { return [...this.jobs.values()].map((job) => this.result(job)); }
   activities(): { jobId: string; activity: JobActivity }[] {
@@ -194,7 +200,7 @@ export class AgentRuntime {
     const profile = this.options.profiles.resolve(input.profile, this.options.getInheritedModel(), input.tools);
     const timeout = seconds(input.timeout, DEFAULT_TIMEOUT, 86400);
     const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, status: "starting", startedAt: Date.now(), pendingRequests: 0 };
-    const job: LiveJob = { summary, output: "", truncated: false, requests: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 };
+    const job: LiveJob = { summary, output: "", truncated: false, usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 };
     this.jobs.set(summary.id, job);
     job.timer = setTimeout(() => { void this.finish(job, "failed", "Agent deadline exceeded"); }, timeout * 1000);
     this.changed(job); // Reserve the slot before the first await; concurrent spawn cannot exceed four.
@@ -234,23 +240,28 @@ export class AgentRuntime {
     if (record.type === "message_update") {
       const update = record.assistantMessageEvent as { type?: string } | undefined;
       const kind = update?.type === "thinking_delta" || update?.type === "thinking_start" ? "thinking" : update?.type === "text_delta" || update?.type === "text_start" ? "output" : undefined;
-      if (kind && job.activity?.kind !== kind) { job.activity = { kind, since: Date.now() }; this.options.onActivity?.(); }
+      if (kind && !job.activeTools.size && job.activity?.kind !== kind) { job.activity = { kind, since: Date.now() }; this.options.onActivity?.(); }
     } else if (record.type === "tool_execution_start") {
-      job.activity = { kind: "tool", tool: String(record.toolName ?? ""), since: Date.now() };
-      this.options.onActivity?.();
+      job.activeTools.set(String(record.toolCallId ?? record.toolName), { tool: String(record.toolName ?? ""), since: Date.now() });
+      this.toolActivity(job);
     } else if (record.type === "tool_execution_end") {
-      if (job.activity?.kind === "tool") { delete job.activity; this.options.onActivity?.(); }
+      job.activeTools.delete(String(record.toolCallId ?? record.toolName));
+      this.toolActivity(job);
     } else if (record.type === "message_end") {
-      const msg = record.message as { role?: string; content?: { type?: string; text?: string }[]; stopReason?: string; errorMessage?: string } | undefined;
+      const msg = record.message as { role?: string; content?: { type?: string; text?: string }[]; stopReason?: string; errorMessage?: string; usage?: { input?: number; output?: number; cost?: { total?: number } } } | undefined;
       if (msg?.role === "assistant") {
+        const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+        job.usage.requests++;
+        job.usage.input += number(msg.usage?.input); job.usage.output += number(msg.usage?.output);
+        job.usage.estimatedCost += number(msg.usage?.cost?.total);
         this.append(job, (msg.content ?? []).filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n") + "\n");
         job.lastStop = msg.stopReason ?? "stop";
         if (msg.errorMessage) job.lastError = msg.errorMessage.slice(0, 8192);
       }
     } else if (record.type === "agent_start") {
-      job.sawEnd = false; job.generation++; delete job.activity; job.summary.status = job.requests.size ? "waiting" : "running"; this.changed(job);
+      job.sawEnd = false; job.generation++; delete job.activity; job.activeTools.clear(); job.summary.status = job.requests.size ? "waiting" : "running"; this.changed(job);
     } else if (record.type === "agent_end") {
-      job.sawEnd = true; delete job.activity; this.options.onActivity?.();
+      job.sawEnd = true; delete job.activity; job.activeTools.clear(); this.options.onActivity?.();
     } else if (record.type === "agent_settled") {
       void this.settled(job);
     } else if (record.type === "extension_ui_request") {
@@ -267,6 +278,12 @@ export class AgentRuntime {
         void job.pipe?.write({ type: "extension_ui_response", id, cancelled: true }).catch(() => undefined);
       }
     }
+  }
+  private toolActivity(job: LiveJob): void {
+    const tool = [...job.activeTools.values()].at(-1);
+    if (tool) job.activity = { kind: "tool", tool: tool.tool, since: tool.since };
+    else delete job.activity;
+    this.options.onActivity?.();
   }
   private async settled(job: LiveJob): Promise<void> {
     if (!job.sawEnd || job.finishing || !job.pipe) return;
@@ -293,6 +310,8 @@ export class AgentRuntime {
       if (diagnostic) this.append(job, `[Error] ${diagnostic.slice(0, 8192)}\n`);
       await job.pipe?.stop();
       delete job.pipe;
+      delete job.activity;
+      job.activeTools.clear();
       job.requests.clear();
       job.summary.status = status; job.summary.endedAt = Date.now();
       if (error) job.summary.error = error;
@@ -329,11 +348,11 @@ export class AgentRuntime {
     }
   }
   private result(job: LiveJob, timedOut = false): JobResult {
-    return { ...structuredClone(job.summary), output: job.output, truncated: job.truncated, requests: [...job.requests].map(([requestId, text]) => ({ requestId, message: text })), ...(timedOut ? { timedOut: true } : {}) };
+    return { ...structuredClone(job.summary), output: job.output, truncated: job.truncated, usage: { ...job.usage }, requests: [...job.requests].map(([requestId, text]) => ({ requestId, message: text })), ...(timedOut ? { timedOut: true } : {}) };
   }
   async wait(jobId: string, options: { timeout?: number; signal?: AbortSignal } = {}): Promise<JobResult> {
     const job = this.job(jobId);
-    const timeout = options.timeout === undefined ? 30 : seconds(options.timeout, 30, 300);
+    const timeout = options.timeout === 0 ? 0 : seconds(options.timeout, 30, 300);
     if (options.signal?.aborted) throw new Error("Wait aborted (agent continues)");
     if (timeout === 0 || (!ACTIVE.has(job.summary.status) && !job.pipe) || job.requests.size) return this.result(job);
     return new Promise((resolveWait, reject) => {
@@ -378,7 +397,9 @@ export class AgentRuntime {
         const record = summaries[index] as Partial<JobResult>;
         const output = typeof record.output === "string" ? record.output : "";
         this.sequence = Math.max(this.sequence, Number(summary.id.slice(1)));
-        this.jobs.set(summary.id, { summary, output: output.slice(-OUTPUT_LIMIT), truncated: Boolean(record.truncated) || output.length > OUTPUT_LIMIT, requests: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 });
+        const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+        const usage = { requests: number(record.usage?.requests), input: number(record.usage?.input), output: number(record.usage?.output), estimatedCost: number(record.usage?.estimatedCost) };
+        this.jobs.set(summary.id, { summary, usage, output: output.slice(-OUTPUT_LIMIT), truncated: Boolean(record.truncated) || output.length > OUTPUT_LIMIT, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 });
       }
     } finally { this.unavailable = false; this.restoring = false; }
     this.changed();

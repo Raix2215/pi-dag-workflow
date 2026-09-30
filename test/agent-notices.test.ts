@@ -64,14 +64,14 @@ test("pure notices: drop removes all reports for one job, filter removes obsolet
   assert.equal(notices.drain(line), undefined);
 });
 
-test("pure notices: formatted payload is bounded to 16000 characters excluding header/separators", () => {
+test("pure notices: whole report is bounded to 16000 characters including header/separators", () => {
   const notices = new AgentNotices();
   for (let i = 0; i < 32; i++) notices.add({ jobId: `a${i}`, kind: "completed", message: "x".repeat(2048) });
   let calls = 0;
   const report = notices.drain((notice) => { calls++; return notice.message; })!;
   const payload = report.slice(reportHeader.length);
   assert.equal(calls, 8);
-  assert.equal(payload.replaceAll("\n", "").length, 16000);
-  assert.equal(payload.split("\n").at(-1)!.length, 1664);
+  assert.equal(report.length, 16000);
+  assert.equal(payload.split("\n").at(-1)!.length, 16000 - reportHeader.length - 7 - 2048 * 7);
   assert.equal(notices.drain(line), undefined, "overflow is discarded rather than becoming a delivery queue");
 });

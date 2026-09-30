@@ -25,8 +25,20 @@ export default function offlineModel(pi: ExtensionAPI): void {
           const prompt = latestUser?.role === "user" ? typeof latestUser.content === "string" ? latestUser.content : latestUser.content.filter((item) => item.type === "text").map((item) => item.text).join("\n") : "";
           const calls: { name: string; arguments: ToolCall["arguments"] }[] = [];
           if (last?.role !== "toolResult") {
-            const explicit = /TEST CALL (\w+) (\{[\s\S]*\})/.exec(prompt);
-            if (explicit) calls.push({ name: explicit[1]!, arguments: JSON.parse(explicit[2]!) });
+            if (prompt.startsWith('Goal #') && prompt.includes('中断测试')) {
+              await new Promise<void>((resolve, reject) => {
+                const timer = setTimeout(resolve, 2000);
+                options?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
+              });
+            }
+            const explicit = /^TEST CALL (\w+) (\{[\s\S]*\})$/.exec(prompt);
+            const childRequest = /requestId=([^\]]+)/.exec(prompt);
+            if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
+            else if (prompt.startsWith('Goal #') && prompt.includes('委派测试')) calls.push({ name: 'subagent_spawn', arguments: { task: 'TEST CALL subagent_send {"message":"M3预算提问","question":true}' } });
+            else if (prompt.startsWith('Goal #') && prompt.includes('预算测试')) calls.push({ name: 'goal', arguments: { action: 'update', progress: `离线预算进展-${sequence}`, nextStep: '预算测试下一步' } });
+            else if (prompt.startsWith('Goal #') && prompt.includes('研究测试')) calls.push({ name: 'goal', arguments: { action: 'update', progress: '同一份研究结论', nextStep: '研究测试下一步' } });
+            else if (prompt.startsWith('Goal #') && prompt.includes('完成测试')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
+            else if (explicit) calls.push({ name: explicit[1]!, arguments: JSON.parse(explicit[2]!) });
             else if (prompt.includes("创建两件待办")) {
               calls.push({ name: "todo", arguments: { action: "create", subject: "检查入口" } }, { name: "todo", arguments: { action: "create", subject: "汇总结果", blockedBy: [1] } });
             } else if (prompt.includes("第一项标为完成")) calls.push({ name: "todo", arguments: { action: "update", id: 1, status: "completed" } });

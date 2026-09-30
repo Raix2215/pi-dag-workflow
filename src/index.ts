@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { applyTodo, emptyState, restoreState, STATE_TYPE, TodoParamsSchema, type TodoParams, type WorkflowState } from "./todos.ts";
 import { NORMAL_GUIDANCE, PLAN_GUIDANCE, planViolation } from "./plan.ts";
 import { clean, renderDag, renderTasks } from "./view.ts";
 import { registerAgents } from "./agent-tools.ts";
+import { registerGoal } from "./goal-tools.ts";
+import { detailView } from "./detail-view.ts";
 
 const WIDGET = "pi-dag-workflow.todos";
 const asId = (text?: string): number => {
@@ -16,15 +18,21 @@ export default function piDagWorkflow(pi: ExtensionAPI): void {
   let state = emptyState();
   let restoreError: string | undefined;
   let warnedEphemeral = false;
+  let detailOpen = false;
+  let refreshDetail: (() => void) | undefined;
   let agents: ReturnType<typeof registerAgents>;
+  let goals: ReturnType<typeof registerGoal> | undefined;
 
   function paint(ctx: ExtensionContext): void {
-    if (!state.visible && !state.plan || !state.tasks.some((task) => task.status !== "deleted") && !state.plan && !restoreError) {
+    if (detailOpen) { refreshDetail?.(); return; }
+    const jobs = agents?.summaries() ?? [];
+    const goalTitle = goals?.title();
+    if (!state.visible && !state.plan || !state.tasks.some((task) => task.status !== "deleted") && !state.plan && !restoreError && !goalTitle && !jobs.length) {
       ctx.ui.setWidget(WIDGET, undefined);
       return;
     }
     const lines = (width: number) => {
-      const rendered = !state.visible && state.plan ? renderTasks(state, width, { maxRows: 0, theme: ctx.ui.theme, jobs: agents?.summaries() }) : state.view === "dag" ? renderDag(state, width, ctx.ui.theme, undefined, agents?.summaries()) : renderTasks(state, width, { theme: ctx.ui.theme, jobs: agents?.summaries() });
+      const rendered = !state.visible && state.plan ? renderTasks(state, width, { maxRows: 0, theme: ctx.ui.theme, jobs, goalTitle }) : state.view === "dag" ? renderDag(state, width, ctx.ui.theme, goalTitle, jobs, { maxLines: 11 }) : renderTasks(state, width, { theme: ctx.ui.theme, jobs, goalTitle });
       if (restoreError) rendered.push(truncateToWidth(`恢复失败：${restoreError}；工作流修改已禁用`, width));
       return rendered;
     };
@@ -48,10 +56,14 @@ export default function piDagWorkflow(pi: ExtensionAPI): void {
     pi.appendEntry(STATE_TYPE, next);
     state = next;
     paint(ctx);
+    warnEphemeral(ctx);
+  }
+
+  function warnEphemeral(ctx: ExtensionContext): void {
     const sessionFile = ctx.sessionManager.getSessionFile();
     if (!warnedEphemeral && (!sessionFile || !existsSync(sessionFile))) {
       warnedEphemeral = true;
-      ctx.ui.notify(sessionFile ? "Pi 尚未创建会话文件：发送一条消息后，当前 Todos／Plan 才会随会话保存。" : "当前为临时会话，退出后 Todos／Plan 不保存。", "warning");
+      ctx.ui.notify(sessionFile ? "Pi 尚未创建会话文件：发送一条消息后，当前工作流状态才会随会话保存。" : "当前为临时会话，退出后工作流状态不保存。", "warning");
     }
   }
 
@@ -119,20 +131,18 @@ export default function piDagWorkflow(pi: ExtensionAPI): void {
 
   async function show(ctx: ExtensionContext, view: "list" | "dag"): Promise<void> {
     if (ctx.mode !== "tui") {
-      ctx.ui.notify((view === "dag" ? renderDag(state, 80, undefined, undefined, agents.summaries()) : renderTasks(state, 80, { maxRows: Infinity, jobs: agents.summaries() })).join("\n") || "暂无任务", "info");
+      ctx.ui.notify((view === "dag" ? renderDag(state, 80, undefined, goals?.title(), agents.summaries()) : renderTasks(state, 80, { maxRows: Infinity, jobs: agents.summaries(), ...(goals?.title() ? { goalTitle: goals.title() } : {}) })).join("\n") || "暂无任务", "info");
       return;
     }
+    detailOpen = true;
     ctx.ui.setWidget(WIDGET, undefined); // The detail view replaces, rather than duplicates, the widget.
     try {
-      await ctx.ui.custom<void>((_tui, theme, _keys, done) => ({
-        render(width) {
-          const rows = view === "dag" ? renderDag(state, width, theme, undefined, agents.summaries()) : renderTasks(state, width, { maxRows: Infinity, theme, jobs: agents.summaries() });
-          return [...rows, "", truncateToWidth(theme.fg("dim", "Esc 返回 · /todos paths|flat · /todos view list|dag"), width)];
-        },
-        invalidate() {},
-        handleInput(data) { if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) done(); },
-      }));
-    } finally { paint(ctx); }
+      await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+        const panel = detailView((width) => view === "dag" ? renderDag(state, width, theme, goals?.title(), agents.summaries()) : renderTasks(state, width, { maxRows: Infinity, theme, jobs: agents.summaries(), goalTitle: goals?.title() }), () => tui.terminal.rows, () => tui.requestRender(), done, theme);
+        refreshDetail = () => { panel.invalidate(); tui.requestRender(); };
+        return panel;
+      });
+    } finally { detailOpen = false; refreshDetail = undefined; paint(ctx); }
   }
 
   pi.registerCommand("todos", {
@@ -141,6 +151,7 @@ export default function piDagWorkflow(pi: ExtensionAPI): void {
       try {
         const trimmed = args.trim();
         const [action, ...parts] = trimmed.split(/\s+/);
+        if (action === 'help') { ctx.ui.notify('/todos · add 标题 [--after 1,2] · start/done/pending/delete #编号 · edit #编号 标题 · clear · paths/flat · show/hide · view list/dag；/dag 查看实线图', 'info'); return; }
         if (!trimmed || action === "list") return await show(ctx, "list");
         if (action === "view") {
           if (!["list", "dag"].includes(parts[0] ?? "") || parts.length !== 1) throw new Error("用法：/todos view list|dag");
@@ -180,6 +191,7 @@ export default function piDagWorkflow(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       try {
         const trimmed = args.trim();
+        if (trimmed === 'help') { ctx.ui.notify('/plan start/off/status · tools 名称1,名称2（只读可信工具）；进入前需主会话空闲且子 Agent 已结束／取消。退出不自动恢复 Goal。', 'info'); return; }
         if (trimmed === "status") { ctx.ui.notify(state.plan ? "Plan（只读）：只探索和编辑 Todos，不实施／完成／委派" : "Normal：可实施任务", "info"); return; }
         if (restoreError) throw new Error("工作流状态损坏；先检查或明确 /todos clear 重置");
         if (trimmed === "tools" || trimmed.startsWith("tools ")) {
@@ -196,10 +208,19 @@ export default function piDagWorkflow(pi: ExtensionAPI): void {
         if (!ctx.isIdle()) throw new Error("主会话仍在运行；请先停止或等待，再切换 Plan");
         if (!off) agents.assertPlanEntry();
         commit({ ...state, plan: !off }, ctx);
+        if (!off) goals?.pause("进入 Plan", ctx);
         ctx.ui.notify(off ? "已退出 Plan；使用同一份 Todos 继续" : "已进入 Plan（只读）；可探索与编辑 Todos，不实施／完成／委派", "info");
         if (!off && trimmed && trimmed !== "start") pi.sendUserMessage(trimmed);
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     },
   });
-  agents = registerAgents(pi, { state: () => state, mutate, paint, protected: () => !!restoreError });
+  agents = registerAgents(pi, { state: () => state, mutate, paint, protected: () => !!restoreError,
+    canWake: () => goals?.canWake() ?? false,
+    reserveWake: (ctx) => goals?.reserveWake(ctx) ?? false,
+    pauseAuto: (ctx) => goals?.pause("用户暂停自动工作", ctx),
+    resumeAuto: () => goals?.resumeAgentReports() ?? false,
+  });
+  goals = registerGoal(pi, { state: () => state, jobs: () => agents.summaries(), paint, protected: () => !!restoreError,
+    pauseAgents: () => agents.pauseAutomatic(), resumeAgents: () => agents.resumeAutomatic(), onSaved: warnEphemeral,
+  });
 }

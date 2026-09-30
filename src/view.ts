@@ -1,11 +1,11 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { deriveDag, type DagProjection } from "./graph.ts";
+import { stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { dagStructure, type DagStructure } from "./graph-cache.ts";
+import { dagLayout } from "./dag-layout.ts";
 import { statusLabel, type Todo, type WorkflowState } from "./todos.ts";
 
 const icons = { pending: "○", in_progress: "◐", completed: "✓", deleted: "×" } as const;
 const colors: Record<Todo["status"], ThemeColor> = { pending: "muted", in_progress: "accent", completed: "success", deleted: "dim" };
-const projections = new WeakMap<readonly Todo[], DagProjection>();
 
 /** Untrusted text never contributes terminal controls; keep emoji ZWJ sequences intact. */
 export function clean(text: string): string {
@@ -22,11 +22,7 @@ const bounded = (line: string, width: number, theme?: Theme): string => {
 const reference = (task: Todo, dependencies: readonly number[]): string => `#${task.id}${dependencies.length ? `<-${dependencies.map((id) => `#${id}`).join(",")}` : ""}`;
 const rootMark = (tasks: readonly Todo[]): string => tasks.some((task) => task.status !== "completed") ? "●" : "○";
 
-function projection(tasks: readonly Todo[]): DagProjection {
-  let view = projections.get(tasks);
-  if (!view) { view = deriveDag(tasks); projections.set(tasks, view); }
-  return view;
-}
+function projection(tasks: readonly Todo[]): DagStructure { return dagStructure(tasks); }
 
 /** Goal is display input from a real focus controller, not a second Goal state store. */
 function header(state: WorkflowState, tasks: readonly Todo[], width: number, theme?: Theme, goalTitle?: string, dag = false): string[] {
@@ -58,8 +54,7 @@ const flatRows = (tasks: readonly Todo[], more = false): TreeRow[] => tasks.map(
 /** A visual spanning forest of real edges; hidden/extra predecessors stay in the left reference. */
 function pathRows(all: readonly Todo[], selected: readonly Todo[], width: number, more = false): TreeRow[] {
   const dag = projection(all);
-  const depth = new Map(dag.layers.flatMap((ids, layer) => ids.map((id) => [id, layer] as const)));
-  const order = new Map(all.map((task, index) => [task.id, index]));
+  const { depth, order } = dag;
   const visible = new Set(selected.map((task) => task.id));
   const parents = new Map<number, number>();
   const children = new Map<number, Todo[]>();
@@ -109,12 +104,13 @@ const agentLabels: Record<AgentView["status"], string> = { starting: "󰓦 启�
 const agentColors: Record<AgentView["status"], ThemeColor> = { starting: "accent", running: "accent", waiting: "warning", completed: "success", failed: "error", cancelled: "dim", interrupted: "warning" };
 /** Live labels use seconds capped at 99; tool names clipped to 10 columns (MCP shortened after the last separator). */
 function activityLabel(activity: NonNullable<AgentView["activity"]>, now: number): string {
-  const seconds = activity.since ? Math.min(99, Math.floor((now - activity.since) / 1000)) : 0;
+  const seconds = activity.since !== undefined ? Math.min(99, Math.max(0, Math.floor((now - activity.since) / 1000))) : 0;
   if (activity.kind === "thinking") return "󰧑 思考中";
   if (activity.kind === "output") return "󰏫 输出中";
   if (activity.tool) {
-    const name = activity.tool.split(/[_.:]/).filter(Boolean).at(-1) ?? activity.tool;
-    const clipped = visibleWidth(name) > 10 ? sliceByColumn(name, 0, 9) + "…" : name;
+    const raw = clean(activity.tool);
+    const name = raw.startsWith("mcp__") ? raw.split("__").at(-1)! : raw.includes(":") ? raw.split(":").at(-1)! : raw;
+    const clipped = clip(name, 10);
     return `󰆍 ${clipped}${seconds ? ` ${seconds}s` : ""}`;
   }
   return "󰆍 工具";
@@ -138,23 +134,28 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
     const title = clean(task.subject) || "(无标题)";
     const job = byTodo.get(task.id);
     const owner = job ? `${clean(job.id)} · ${clean(job.profile)}` : clean(task.owner ?? "") || "主会话";
-    const status = `[${job ? job.activity && ACTIVE_LIVE.has(job.status) ? activityLabel(job.activity, Date.now()) : agentLabels[job.status] : statusLabel[task.status]}]`;
+    const live = job?.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
+    const label = job ? live ? activityLabel(live, Date.now()) : agentLabels[job.status] : statusLabel[task.status];
     const minTitle = Math.min(6, visibleWidth(title));
-    const ownerBudget = available - minTitle - visibleWidth(status) - 2;
-    let suffix = "";
-    if (ownerBudget >= visibleWidth(owner) + 2) suffix = `[${owner}] ${status}`;
-    else if (available >= minTitle + visibleWidth(status) + 1) suffix = status;
+    const statusBudget = available - minTitle - 1;
+    const variants = live?.kind === "tool" ? [label, label.replace(/ \d+s$/, ""), "󰆍"] : [label];
+    const ownerText = `[${owner}]`;
+    const withOwner = variants.find((value) => visibleWidth(ownerText) + 1 + visibleWidth(value) + 2 <= statusBudget);
+    const chosen = withOwner ?? variants.find((value) => visibleWidth(value) + 2 <= statusBudget);
+    const status = chosen !== undefined ? `[${chosen}]` : "";
+    const ownerPart = withOwner !== undefined ? ownerText + " " : "";
+    const suffix = ownerPart + status;
     const titleBudget = available - (suffix ? visibleWidth(suffix) + 1 : 0);
     let body = clip(title, titleBudget);
     const active = task.status === "in_progress" ? clean(task.activeForm ?? "") : "";
     const activeBudget = titleBudget - visibleWidth(title) - visibleWidth(" · ");
     if (active && activeBudget >= 1) body = `${title} · ${clip(active, activeBudget)}`;
     const gap = suffix ? align ? " ".repeat(Math.max(1, available - visibleWidth(body) - visibleWidth(suffix))) : " " : "";
-    return bounded(left + " " + tint(body, "accent", theme) + gap + tint(suffix, job ? agentColors[job.status] : "muted", theme), width, theme);
+    return bounded(left + " " + tint(body, "accent", theme) + gap + tint(ownerPart, "muted", theme) + tint(status, job ? agentColors[job.status] : "muted", theme), width, theme);
   });
 }
 
-export interface TaskViewOptions { maxRows?: number; theme?: Theme; goalTitle?: string; jobs?: readonly AgentView[] }
+export interface TaskViewOptions { maxRows?: number; theme?: Theme; goalTitle?: string | undefined; jobs?: readonly AgentView[] }
 /** Default: main dependency paths. Flat mode retains all predecessor references. */
 export function renderTasks(state: WorkflowState, width: number, options?: TaskViewOptions): string[] {
   width = columns(width);
@@ -174,18 +175,65 @@ export function renderTasks(state: WorkflowState, width: number, options?: TaskV
   return lines;
 }
 
-/** Complete incoming references for the basic layered DAG view; richer routing remains separate. */
-export function renderDag(state: WorkflowState, width: number, theme?: Theme, goalTitle?: string, jobs?: readonly AgentView[]): string[] {
+/** Complete solid-line graph, not a spanning tree. Only fallback lists repeat predecessor ids. */
+export function renderDag(state: WorkflowState, width: number, theme?: Theme, goalTitle?: string, jobs: readonly AgentView[] = [], options?: { maxLines?: number }): string[] {
   width = columns(width);
   if (!width) return [];
-  if (width < 40) return renderTasks({ ...state, treeStyle: "flat" }, width, { maxRows: Infinity, ...(theme ? { theme } : {}), ...(goalTitle ? { goalTitle } : {}), ...(jobs ? { jobs } : {}) });
-  const dag = projection(state.tasks);
   const tasks = state.tasks.filter((task) => task.status !== "deleted");
-  const byId = new Map(tasks.map((task) => [task.id, task]));
   const lines = header(state, tasks, width, theme, goalTitle, true);
-  for (const [index, layer] of dag.layers.entries()) {
-    lines.push(tint(clip(`── 第 ${index + 1} 层 ──`, width), "dim", theme));
-    lines.push(...drawRows(flatRows(layer.map((id) => byId.get(id)!)), width, theme, jobs));
+  if (!tasks.length) return lines;
+  const limit = options?.maxLines !== undefined && Number.isFinite(options.maxLines) ? Math.max(3, Math.floor(options.maxLines)) : Infinity;
+  const result = dagLayout(projection(state.tasks), width);
+  if (!result.layout) {
+    lines.push(tint(clip(`图已降级为列表：${result.reason}；左编号保留完整前驱`, width), "dim", theme));
+    const selected = tasks.slice(0, limit === Infinity ? tasks.length : Math.max(1, limit - 2));
+    const rows = flatRows(selected, selected.length < tasks.length);
+    const rendered = drawRows(rows, width, theme, jobs);
+    for (const [index, row] of rows.entries()) {
+      if (lines.length >= limit) break;
+      lines.push(rendered[index]!);
+      const fullRef = reference(row.task, row.dependencies);
+      if (row.dependencies.length && !stripTerminalSequences(rendered[index]!).includes(fullRef)) {
+        // Never claim a truncated identifier contains all predecessors.
+        lines.push(...wrapTextWithAnsi(fullRef, width).map((part) => tint(part, 'dim', theme)));
+      }
+    }
+    if (selected.length < tasks.length || lines.length >= limit) return [...lines.slice(0, limit), tint(clip(`图预览 · 共 ${tasks.length} 项 · /dag 查看完整结构`, width), 'dim', theme)];
+    return lines;
   }
+  const layout = result.layout;
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const byTodo = new Map(jobs.filter((job) => job.todoId !== undefined).map((job) => [job.todoId!, job]));
+  const bodies = new Map<number, { left: number; width: number; text: string }[]>();
+  for (const box of layout.boxes) {
+    if (box.top + 1 >= limit) continue;
+    const task = byId.get(box.id)!;
+    const job = byTodo.get(box.id);
+    const budget = box.width - 4;
+    const prefix = `${icons[task.status]} #${task.id} `;
+    const title = clip(clean(task.subject), Math.max(0, budget - visibleWidth(prefix)));
+    const first = tint(icons[task.status], colors[task.status], theme) + tint(` #${task.id} `, "dim", theme) + tint(title, "accent", theme);
+    const owner = job ? `${clean(job.id)} · ${clean(job.profile)}` : clean(task.owner ?? "") || "主会话";
+    const label = job ? job.activity && ACTIVE_LIVE.has(job.status) ? activityLabel(job.activity, Date.now()) : agentLabels[job.status] : statusLabel[task.status];
+    const content = [first, tint(clip(`[${owner}]`, budget), "muted", theme), tint(clip(`[${label}]`, budget), job ? agentColors[job.status] : colors[task.status], theme)];
+    content.forEach((text, index) => {
+      const y = box.top + index + 1;
+      const group = bodies.get(y) ?? [];
+      group.push({ left: box.left + 1, width: box.width - 2, text: " " + text + " ".repeat(Math.max(0, box.width - 3 - visibleWidth(text))) });
+      bodies.set(y, group);
+    });
+  }
+  const offset = " ".repeat(Math.max(0, Math.floor((width - layout.width) / 2)));
+  for (const [y, raw] of layout.lines.slice(0, Math.max(0, limit - lines.length)).entries()) {
+    let x = 0; let row = offset;
+    for (const part of (bodies.get(y) ?? []).sort((a, b) => a.left - b.left)) {
+      row += tint(raw.slice(x, part.left), "dim", theme) + part.text;
+      x = part.left + part.width;
+    }
+    row += tint(raw.slice(x), "dim", theme);
+    lines.push(bounded(row, width, theme));
+  }
+  if (lines.length - 1 < layout.lines.length) lines.push(tint(clip(`图预览 ${lines.length}/${layout.lines.length + 1} 行 · /dag 滚动查看完整结构`, width), 'dim', theme));
+  else if (layout.crossings) lines.push(tint(clip("╳ 仅交叉、不汇合；依赖从上向下读取", width), "dim", theme));
   return lines;
 }

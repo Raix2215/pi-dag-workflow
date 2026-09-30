@@ -17,7 +17,7 @@ test("live activity replaces the coarse running label with the child's real curr
 });
 
 test("tool names are shortened and capped at ten columns with bounded seconds", () => {
-  assert.match(lines([job({ kind: "tool", tool: "mcp__github__list_repository_files", since: Date.now() - 200000 })]), /󰆍 files 99s/);
+  assert.match(lines([job({ kind: "tool", tool: "mcp__github__list_repository_files", since: Date.now() - 200000 })]), /󰆍 list_repo… 99s/);
   assert.match(lines([job({ kind: "tool", tool: "read", since: Date.now() - 500 })]), /󰆍 read/);
 });
 
@@ -36,6 +36,7 @@ test("narrow widths drop the tool detail before the owner column", () => {
   const wide = lines([job({ kind: "tool", tool: "list_repository_files", since: Date.now() - 3000 })], 60);
   assert.match(wide, /a1 · coding/);
   const narrow = lines([job({ kind: "tool", tool: "list_repository_files", since: Date.now() - 3000 })], 34);
-  assert.ok(!narrow.includes("已返回"));
+  assert.match(narrow, /\[a1 · coding\] \[󰆍\]/);
+  assert.doesNotMatch(narrow, /3s|list_repository|已返回/);
   assert.match(narrow, /#1/);
 });

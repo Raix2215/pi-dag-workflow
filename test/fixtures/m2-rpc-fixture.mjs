@@ -38,6 +38,15 @@ process.stdin.on('data', chunk => {
         end(`descendant=${child.pid}`);
       } else if (command.message === 'BAD JSON') process.stdout.write('not json\n');
       else if (command.message === 'OVERSIZED') process.stdout.write('x'.repeat(1100000));
+      else if (command.message === 'ACTIVITY') {
+        emit({type:'message_update',assistantMessageEvent:{type:'thinking_delta',delta:'reason'}});
+        emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'result'}});
+        emit({type:'tool_execution_start',toolCallId:'one',toolName:'very_long_tool_name'});
+        emit({type:'tool_execution_start',toolCallId:'two',toolName:'read'});
+        emit({type:'tool_execution_end',toolCallId:'one',toolName:'very_long_tool_name'});
+        emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'tool is still active'}});
+        setTimeout(()=> { emit({type:'tool_execution_end',toolCallId:'two',toolName:'read'}); end('done'); settled(); }, 100);
+      }
       else if (command.message === 'HOLD') { /* deliberately no completion */ }
       else { end(command.message); settled(); }
     } else response({});

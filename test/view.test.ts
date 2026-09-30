@@ -56,11 +56,13 @@ test("deleted tasks are neither shown nor counted, and activeForm does not repla
   assert.match(output, /检查中/);
 });
 
-test("DAG layers retain fan-in edges and degrade truthfully at narrow width", () => {
+test("DAG solid lines retain fan-in and explicitly degrade at narrow width", () => {
   const current = state([task(1), task(2, "pending", [1]), task(3, "pending", [1]), task(4, "pending", [2, 3])]);
   const output = renderDag(current, 100).join("\n");
-  assert.match(output, /第 1 层/);
-  assert.match(output, /第 3 层/);
-  assert.match(output, /#4<-#2,#3/);
-  assert.deepEqual(renderDag(current, 20), renderTasks({ ...current, treeStyle: "flat" }, 20, { maxRows: Infinity }));
+  assert.match(output, /┌.*─.*┐/);
+  assert.match(output, /┬/);
+  assert.doesNotMatch(output, /<-|前驱/);
+  const fallback = renderDag(current, 40).join("\n");
+  assert.match(fallback, /降级/);
+  assert.match(fallback, /#4<-#2,#3/);
 });

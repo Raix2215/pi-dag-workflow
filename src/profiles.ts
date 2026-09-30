@@ -52,9 +52,11 @@ export class ProfileStore {
     const name = nonempty(record.name, "profile name");
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$/.test(name) || name === "inherit") throw new Error("Profile name must be 1–48 letters, digits, '_' or '-' (inherit is reserved)");
     if (record.thinking !== undefined && !THINKING_LEVELS.includes(record.thinking as ThinkingLevel)) throw new Error("Invalid thinking level");
+    const model = record.model === undefined ? undefined : this.model(record.model);
+    if (model && record.thinking !== undefined && record.thinking !== 'off' && (this.options.registry.find(model.provider, model.id) as { reasoning?: boolean } | undefined)?.reasoning === false) throw new Error('Selected model does not support thinking; use off');
     return {
       name,
-      ...(record.model === undefined ? {} : { model: this.model(record.model) }),
+      ...(model === undefined ? {} : { model }),
       ...(record.thinking === undefined ? {} : { thinking: record.thinking as ThinkingLevel }),
       ...(record.tools === undefined ? {} : { tools: this.validateTools(record.tools) }),
     };
@@ -68,13 +70,16 @@ export class ProfileStore {
     if (name && !profile) throw new Error(`Unknown profile: ${name}`);
     const selected = profile?.model ?? inheritedModel;
     if (!selected) throw new Error("Select a parent model or configure a named profile model before spawning");
-    return { name: profile?.name ?? "inherit", model: this.model(selected), thinking: profile?.thinking ?? "off", tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...CORE_TOOLS]) };
+    const model = this.model(selected);
+    const thinking = profile?.thinking ?? 'off';
+    if (thinking !== 'off' && (this.options.registry.find(model.provider, model.id) as { reasoning?: boolean } | undefined)?.reasoning === false) throw new Error('Selected model does not support thinking; use off');
+    return { name: profile?.name ?? "inherit", model, thinking, tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...CORE_TOOLS]) };
   }
   async load(): Promise<void> {
     if (!this.options.path) return;
     let text: string;
     try { text = await readFile(this.options.path, "utf8"); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { this.profiles.clear(); return; } throw error; }
     if (Buffer.byteLength(text) > 65536) throw new Error("Profile configuration exceeds 64 KiB");
     const config = object(JSON.parse(text));
     exactKeys(config, ["profiles"]);

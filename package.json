@@ -17,6 +17,9 @@
     "test": "node --test test/*.test.ts",
     "test:tui": "node test/tmux-smoke.mjs",
     "test:flash": "node test/flash-smoke.ts",
+    "test:goal-flash": "node test/goal-flash-smoke.ts",
+    "test:joint-flash": "node test/m4-flash-smoke.ts",
+    "test:performance": "node test/m4-performance.ts",
     "check:pack": "npm pack --dry-run --ignore-scripts",
     "check": "npm run typecheck && npm test && npm run check:pack"
   },

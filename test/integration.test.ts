@@ -18,7 +18,7 @@ test("actual Pi RPC uses only the new plugin, executes Todo tools and keeps UI s
   const client = await IsolatedClient.start();
   t.after(() => client.close());
   const commands = (await client.send("get_commands")).data as { commands: { name: string }[] };
-  assert.deepEqual(commands.commands.map((item) => item.name).sort(), ["agents", "dag", "plan", "todos"]);
+  assert.deepEqual(commands.commands.map((item) => item.name).sort(), ["agents", "dag", "goal", "plan", "todos"]);
   const events = await client.prompt("帮我创建两件待办：检查入口，然后汇总结果，第二件依赖第一件。");
   assert.equal(events.filter((event) => event.type === "tool_execution_end").length, 2);
   assert.doesNotMatch(resultText(events), /错误/);

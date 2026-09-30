@@ -27,9 +27,9 @@ test("Pi's actual resource loader loads only this package without model calls or
     assert.equal(loaded.extensions.length, 1);
     const extension = loaded.extensions[0]!;
     assert.equal(extension.resolvedPath, entry);
-    assert.deepEqual([...extension.tools.keys()], ["todo", "subagent_spawn", "subagent_inspect", "subagent_send", "subagent_wait", "subagent_cancel"]);
-    assert.deepEqual([...extension.commands.keys()], ["todos", "dag", "plan", "agents"]);
-    assert.equal(extension.handlers.size, 13);
+    assert.deepEqual([...extension.tools.keys()], ["todo", "subagent_spawn", "subagent_inspect", "subagent_send", "subagent_wait", "subagent_cancel", "goal"]);
+    assert.deepEqual([...extension.commands.keys()], ["todos", "dag", "plan", "agents", "goal"]);
+    assert.deepEqual([...extension.handlers.keys()].sort(), ["agent_before_settle", "agent_end", "agent_settled", "before_agent_start", "input", "session_before_fork", "session_before_switch", "session_before_tree", "session_shutdown", "session_start", "session_tree", "tool_call", "tool_execution_end", "turn_end", "ui_prompt_start", "user_bash"]);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import { deriveDag } from "./graph.ts";
+import { dagStructure, reuseDagStructure } from "./graph-cache.ts";
 
 const Status = Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("deleted")]);
 export const TodoParamsSchema = Type.Object({
@@ -78,7 +78,7 @@ export function validateState(state: WorkflowState): void {
     validateTask(task);
     if (task.id >= state.nextId) throw new Error("任务计数器不能复用已有编号");
   }
-  deriveDag(state.tasks);
+  dagStructure(state.tasks);
 }
 
 /** Atomic pure mutation: errors never modify the current state. */
@@ -125,7 +125,7 @@ export function applyTodo(state: WorkflowState, params: TodoParams): { state: Wo
   validateTask(task);
   const tasks = params.action === "create" ? [...state.tasks, task] : state.tasks.map((item) => item.id === task.id ? task : item);
   const next = { ...state, tasks, nextId: state.nextId + (params.action === "create" ? 1 : 0) };
-  deriveDag(tasks); // includes delete safety, dangling dependencies and cycles
+  if (!reuseDagStructure(state.tasks, tasks)) dagStructure(tasks); // delete safety, dangling dependencies, cycles
   if (["in_progress", "completed"].includes(task.status)) {
     const unfinished = task.blockedBy.filter((id) => tasks.find((item) => item.id === id)?.status !== "completed");
     if (unfinished.length) throw new Error(`前置未完成：${unfinished.map((id) => `#${id}`).join(",")}；不能开始或完成 #${task.id}`);
