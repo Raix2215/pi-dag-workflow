@@ -17,7 +17,7 @@ export interface AgentNotice { jobId: string; kind: "message" | "question" | "co
 export interface SpawnOptions { task: string; todoId?: number; profile?: string; tools?: string[]; timeout?: number }
 export interface AgentRuntimeOptions {
   cwd: string; profiles: ProfileStore; getInheritedModel: () => ModelRef | undefined;
-  onChanged?: (summaries: JobSummary[]) => void; onNotice?: (notice: AgentNotice) => void;
+  onChanged?: (summaries: JobSummary[]) => void; onNotice?: (notice: AgentNotice) => void; onActivity?: () => void;
   childEnv?: NodeJS.ProcessEnv;
   getModelBootstrap?: (ref: ModelRef) => Promise<{ model: Record<string, unknown>; apiKey?: string; env?: NodeJS.ProcessEnv }>;
   /** Explicit test provider/resource paths only. Production children load only child.ts. */
@@ -139,9 +139,10 @@ class RpcPipe {
     return this.stopPromise;
   }
 }
+export interface JobActivity { kind: "thinking" | "tool" | "output"; tool?: string; since?: number }
 interface LiveJob {
   summary: JobSummary; output: string; truncated: boolean; requests: Map<string, string>;
-  pipe?: RpcPipe; timer?: NodeJS.Timeout; listeners: Set<() => void>; finishing?: Promise<void>;
+  activity?: JobActivity; pipe?: RpcPipe; timer?: NodeJS.Timeout; listeners: Set<() => void>; finishing?: Promise<void>;
   sawEnd: boolean; lastStop?: string; lastError?: string; settling: boolean; settleAgain: boolean; generation: number; sends: number;
 }
 function seconds(value: number | undefined, fallback: number, max: number): number {
@@ -167,6 +168,9 @@ export class AgentRuntime {
   inspect(jobId?: string): JobSummary[] { return structuredClone(jobId ? [this.job(jobId).summary] : [...this.jobs.values()].map((job) => job.summary)); }
   exportSummaries(): JobSummary[] { return this.inspect(); }
   exportRecords(): JobResult[] { return [...this.jobs.values()].map((job) => this.result(job)); }
+  activities(): { jobId: string; activity: JobActivity }[] {
+    return [...this.jobs.values()].filter((job): job is LiveJob & { activity: JobActivity } => Boolean(job.activity)).map((job) => ({ jobId: job.summary.id, activity: structuredClone(job.activity) }));
+  }
   private job(id: string): LiveJob { const job = this.jobs.get(id); if (!job) throw new Error(`Unknown agent: ${id}`); return job; }
   private changed(job?: LiveJob): void {
     if (job) { job.summary.pendingRequests = job.requests.size; for (const listener of job.listeners) listener(); }
@@ -227,7 +231,16 @@ export class AgentRuntime {
   }
   private record(job: LiveJob, record: RpcRecord): void {
     if (job.finishing || this.jobs.get(job.summary.id) !== job) return;
-    if (record.type === "message_end") {
+    if (record.type === "message_update") {
+      const update = record.assistantMessageEvent as { type?: string } | undefined;
+      const kind = update?.type === "thinking_delta" || update?.type === "thinking_start" ? "thinking" : update?.type === "text_delta" || update?.type === "text_start" ? "output" : undefined;
+      if (kind && job.activity?.kind !== kind) { job.activity = { kind, since: Date.now() }; this.options.onActivity?.(); }
+    } else if (record.type === "tool_execution_start") {
+      job.activity = { kind: "tool", tool: String(record.toolName ?? ""), since: Date.now() };
+      this.options.onActivity?.();
+    } else if (record.type === "tool_execution_end") {
+      if (job.activity?.kind === "tool") { delete job.activity; this.options.onActivity?.(); }
+    } else if (record.type === "message_end") {
       const msg = record.message as { role?: string; content?: { type?: string; text?: string }[]; stopReason?: string; errorMessage?: string } | undefined;
       if (msg?.role === "assistant") {
         this.append(job, (msg.content ?? []).filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n") + "\n");
@@ -235,9 +248,9 @@ export class AgentRuntime {
         if (msg.errorMessage) job.lastError = msg.errorMessage.slice(0, 8192);
       }
     } else if (record.type === "agent_start") {
-      job.sawEnd = false; job.generation++; job.summary.status = job.requests.size ? "waiting" : "running"; this.changed(job);
+      job.sawEnd = false; job.generation++; delete job.activity; job.summary.status = job.requests.size ? "waiting" : "running"; this.changed(job);
     } else if (record.type === "agent_end") {
-      job.sawEnd = true;
+      job.sawEnd = true; delete job.activity; this.options.onActivity?.();
     } else if (record.type === "agent_settled") {
       void this.settled(job);
     } else if (record.type === "extension_ui_request") {

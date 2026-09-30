@@ -3,7 +3,8 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { AgentRuntime, type JobSummary, type JobResult } from "./agents.ts";
+import { AgentRuntime, type JobActivity, type JobSummary, type JobResult } from "./agents.ts";
+import type { AgentView } from "./view.ts";
 import { ProfileStore, type Profile } from "./profiles.ts";
 import { AgentNotices, type Notice } from "./agent-notices.ts";
 import { clean } from "./view.ts";
@@ -64,11 +65,27 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     notices.add(notice);
     if (context?.isIdle() && !timer) timer = setTimeout(deliverIdle, 25);
   };
+  /** Live activity refreshes only the widget; throttled and never appended to the session. */
+  let activityTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastActivityStamp = 0;
+  const onActivity = () => {
+    if (restoring || !context || context.mode !== "tui") return;
+    if (activityTimer) return;
+    const elapsed = Date.now() - lastActivityStamp;
+    activityTimer = setTimeout(() => {
+      activityTimer = undefined;
+      lastActivityStamp = Date.now();
+      hooks.paint(context!);
+      // Tool seconds tick: keep the elapsed counter current while a tool runs.
+      if (runtime?.activities().length && context?.mode === "tui") onActivity();
+    }, Math.max(0, 300 - elapsed));
+  };
   const onChanged = () => {
     if (restoring || !runtime || !context) return;
     try { pi.appendEntry(AGENTS_TYPE, { version: 1, jobs: runtime.exportRecords() }); }
     catch (cause) { error = `运行状态无法保存：${String(cause)}`; paused = true; clearDelivery(); context.ui.notify(error, "error"); }
     hooks.paint(context);
+    onActivity();
   };
   async function restore(ctx: ExtensionContext) {
     restoring = true;
@@ -83,7 +100,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       profiles = new ProfileStore({ path: join(getAgentDir(), "pi-dag-workflow", "pi-dag-workflow-profile.json"), registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write"] });
       await profiles.load();
       const provider = pi.getFlag("dag-workflow-test-child-provider");
-      runtime = new AgentRuntime({ cwd: ctx.cwd, profiles, getInheritedModel: () => context?.model ? { provider: context.model.provider, id: context.model.id } : undefined, onChanged, onNotice,
+      runtime = new AgentRuntime({ cwd: ctx.cwd, profiles, getInheritedModel: () => context?.model ? { provider: context.model.provider, id: context.model.id } : undefined, onChanged, onNotice, onActivity,
         ...(typeof provider === "string" && provider ? { testExtensions: [provider] } : {
           getModelBootstrap: async (ref) => {
             const model = context?.modelRegistry.find(ref.provider, ref.id);
@@ -217,7 +234,11 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     } catch (cause) { ctx.ui.notify(String(cause), "error"); }
   } });
   return {
-    summaries: () => runtime?.inspect() ?? [],
+    summaries: () => {
+      const jobs: AgentView[] = runtime?.inspect() ?? [];
+      const live = new Map((runtime?.activities() ?? []).map((item): [string, JobActivity] => [item.jobId, item.activity]));
+      return jobs.map((job): AgentView => live.has(job.id) ? { ...job, activity: live.get(job.id)! } : job);
+    },
     assertPlanEntry() { if (restoring || error) throw new Error(error ?? "Agent 状态正在恢复"); if (runtime?.activeCount()) throw new Error("子 Agent 仍在执行／等待；请先等待结束或明确取消，再进入 Plan"); clearDelivery(); paused = true; },
     assertTodoMutation(params: TodoParams) {
       if (params.action === "list" || params.action === "get" || params.action === "create" || claiming !== undefined && params.action === "update" && params.id === claiming) return;

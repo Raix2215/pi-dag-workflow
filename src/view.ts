@@ -1,5 +1,5 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { deriveDag, type DagProjection } from "./graph.ts";
 import { statusLabel, type Todo, type WorkflowState } from "./todos.ts";
 
@@ -99,9 +99,27 @@ function pathRows(all: readonly Todo[], selected: readonly Todo[], width: number
   return rows;
 }
 
-export interface AgentView { id: string; todoId?: number; profile: string; status: "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted" }
-const agentLabels: Record<AgentView["status"], string> = { starting: "启动中", running: "运行中", waiting: "等待回复", completed: "已返回", failed: "失败", cancelled: "已取消", interrupted: "已中断" };
+export interface AgentView {
+  id: string; todoId?: number; profile: string;
+  status: "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
+  /** Live activity from the child's real event stream; display-only, never persisted. */
+  activity?: { kind: "thinking" | "tool" | "output"; tool?: string; since?: number };
+}
+const agentLabels: Record<AgentView["status"], string> = { starting: "󰀡 启动中", running: "󰥔 运行中", waiting: "󰋗 等待回复", completed: "󰄬 已返回", failed: "󰅤 失败", cancelled: "󰅤 已取消", interrupted: "󰅤 已中断" };
 const agentColors: Record<AgentView["status"], ThemeColor> = { starting: "accent", running: "accent", waiting: "warning", completed: "success", failed: "error", cancelled: "dim", interrupted: "warning" };
+/** Live labels use seconds capped at 99; tool names clipped to 10 columns (MCP shortened after the last separator). */
+function activityLabel(activity: NonNullable<AgentView["activity"]>, now: number): string {
+  const seconds = activity.since ? Math.min(99, Math.floor((now - activity.since) / 1000)) : 0;
+  if (activity.kind === "thinking") return "󰧑 思考中";
+  if (activity.kind === "output") return "󰏫 输出中";
+  if (activity.tool) {
+    const name = activity.tool.split(/[_.:]/).filter(Boolean).at(-1) ?? activity.tool;
+    const clipped = visibleWidth(name) > 10 ? sliceByColumn(name, 0, 9) + "…" : name;
+    return `󰆍 ${clipped}${seconds ? ` ${seconds}s` : ""}`;
+  }
+  return "󰆍 工具";
+}
+const ACTIVE_LIVE = new Set(["starting", "running"]);
 function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: readonly AgentView[] = []): string[] {
   const byTodo = new Map(jobs.filter((job) => job.todoId !== undefined).map((job) => [job.todoId!, job]));
   const refWidth = rows.reduce((max, row) => Math.max(max, visibleWidth(reference(row.task, row.dependencies))), 0);
@@ -120,7 +138,7 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
     const title = clean(task.subject) || "(无标题)";
     const job = byTodo.get(task.id);
     const owner = job ? `${clean(job.id)} · ${clean(job.profile)}` : clean(task.owner ?? "") || "主会话";
-    const status = `[${job ? agentLabels[job.status] : statusLabel[task.status]}]`; 
+    const status = `[${job ? job.activity && ACTIVE_LIVE.has(job.status) ? activityLabel(job.activity, Date.now()) : agentLabels[job.status] : statusLabel[task.status]}]`;
     const minTitle = Math.min(6, visibleWidth(title));
     const ownerBudget = available - minTitle - visibleWidth(status) - 2;
     let suffix = "";
