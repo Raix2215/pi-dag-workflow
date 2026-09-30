@@ -24,7 +24,10 @@ test("tool names are shortened and capped at ten columns with bounded seconds", 
 test("stable statuses never show live activity and restore never fakes one", () => {
   assert.match(lines([job(undefined, "completed")]), /󰄬 已返回/);
   assert.match(lines([job(undefined, "waiting")]), /󰋗 等待回复/);
-  assert.match(lines([job(undefined, "interrupted")]), /󰅤 已中断/);
+  assert.match(lines([job(undefined, "interrupted")]), /󰙦 已中断/);
+  assert.match(lines([job(undefined, "failed")]), /󰅙 失败/);
+  assert.match(lines([job(undefined, "cancelled")]), /󰓛 已取消/);
+  assert.match(lines([job(undefined, "starting")]), /󰓦 启动中/);
   assert.match(lines([job({ kind: "thinking" }, "waiting")]), /󰋗 等待回复/);
   assert.doesNotMatch(lines([job({ kind: "thinking" }, "waiting")]), /思考/);
 });

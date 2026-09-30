@@ -105,7 +105,7 @@ export interface AgentView {
   /** Live activity from the child's real event stream; display-only, never persisted. */
   activity?: { kind: "thinking" | "tool" | "output"; tool?: string; since?: number };
 }
-const agentLabels: Record<AgentView["status"], string> = { starting: "󰀡 启动中", running: "󰥔 运行中", waiting: "󰋗 等待回复", completed: "󰄬 已返回", failed: "󰅤 失败", cancelled: "󰅤 已取消", interrupted: "󰅤 已中断" };
+const agentLabels: Record<AgentView["status"], string> = { starting: "󰓦 启动中", running: "󰥔 运行中", waiting: "󰋗 等待回复", completed: "󰄬 已返回", failed: "󰅙 失败", cancelled: "󰓛 已取消", interrupted: "󰙦 已中断" };
 const agentColors: Record<AgentView["status"], ThemeColor> = { starting: "accent", running: "accent", waiting: "warning", completed: "success", failed: "error", cancelled: "dim", interrupted: "warning" };
 /** Live labels use seconds capped at 99; tool names clipped to 10 columns (MCP shortened after the last separator). */
 function activityLabel(activity: NonNullable<AgentView["activity"]>, now: number): string {
