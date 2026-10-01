@@ -14,11 +14,10 @@ test("default main paths show every node once and only label the additional inco
   const lines = renderTasks(sample(), 120, { maxRows: Infinity });
   assert.deepEqual(ids(lines), [1, 2, 4, 6, 5, 3, 7]);
   assert.ok(lines[0]!.startsWith("●  Todo (1/7)"));
-  assert.ok(lines.some((line) => line.startsWith("         ├─ #1")));
-  assert.ok(lines.some((line) => line.startsWith("      │  ├─ #2")));
-  assert.ok(lines.some((line) => line.startsWith("   │  │  ├─ #4<-#3")));
+  assert.ok(lines.some((line) => line.startsWith("│  ├─ #2")));
+  assert.ok(lines.some((line) => line.startsWith("│  │  ├─ #4<-#3")));
   assert.ok(lines.some((line) => line.startsWith("│  │  │  └─ #6<-#5")));
-  assert.ok(lines.at(-1)!.startsWith("         └─ #7"));
+  assert.ok(lines.at(-1)!.startsWith("└─ #7"));
   assert.doesNotMatch(lines.join("\n"), /#2<-#1|#4<-#2,#3|#6<-#4,#5/);
 });
 
@@ -53,12 +52,12 @@ test("hidden parents never silently remove predecessor references or imply false
 
 test("40 columns retain the main path but remove fixed reference and right-side alignment", () => {
   const lines = renderTasks(sample(), 40, { maxRows: Infinity });
-  const first = lines.find((line) => line.includes("├─ #1"))!;
-  assert.equal(first, "         ├─ #1 ✓ 节点1 [主会话] [已完成]");
-  assert.ok(lines.some((line) => line.includes("├─ #4<-#3 ○")));
+  const first = lines.find((line) => line.startsWith("├─ #1"))!;
+  assert.equal(first, "├─ #1 ✓ 节点1 [主会话] [已完成]");
+  assert.ok(lines.some((line) => line.startsWith("│  │  ├─ #4<-#3 ○")));
   for (const line of lines) assert.ok(visibleWidth(line) <= 40);
   const wide = renderTasks(sample(), 120, { maxRows: Infinity });
-  assert.ok(wide.find((line) => line.includes("├─ #1"))!.includes("#1     ✓"));
+  assert.ok(wide.find((line) => line.startsWith("├─ #1"))!.includes("#1     ✓"));
 });
 
 test("extremely narrow paths flatten truthfully rather than inventing or hiding edges", () => {
