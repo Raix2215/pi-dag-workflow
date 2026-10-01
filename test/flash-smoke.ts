@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { IsolatedClient } from "./fixtures/isolated-client.ts";
+import { IsolatedClient, liveModel } from "./fixtures/isolated-client.ts";
 import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
 
 // Explicit opt-in only: this script uses the real provider and may consume credits.
-const evidence = fileURLToPath(new URL("../../docs/evidence/m1/", import.meta.url));
+const evidence = fileURLToPath(new URL("../artifacts/live/m1/", import.meta.url));
 await mkdir(evidence, { recursive: true });
 const client = await IsolatedClient.startFlash();
 let budgetStopped = false;
@@ -44,7 +44,8 @@ finally {
   const messages = client.records.filter((event) => event.type === "message_end").map((event) => event.message as { role?: string; provider?: string; model?: string; content?: { type: string; text?: string }[]; usage?: { input?: number; output?: number; cacheRead?: number; cost?: { total?: number } } }).filter((message) => message.role === "assistant");
   const reports = messages.map((message) => message.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n")).filter(Boolean);
   const totals = messages.reduce((total, message) => ({ input: total.input + (message.usage?.input ?? 0), output: total.output + (message.usage?.output ?? 0), cacheRead: total.cacheRead + (message.usage?.cacheRead ?? 0), declaredCost: total.declaredCost + (message.usage?.cost?.total ?? 0) }), { input: 0, output: 0, cacheRead: 0, declaredCost: 0 });
-  const summary = { passed, ...(failure ? { failure } : {}), provider: "example-provider", model: "example-model", thinking: "low", turns: client.records.filter((event) => event.type === "turn_start").length, tools: client.records.filter((event) => event.type === "tool_execution_end").map((event) => ({ name: event.toolName, isError: event.isError })), usage: totals, reports, sessionRoot: client.root, budgetStopped };
+  const model = liveModel();
+  const summary = { passed, ...(failure ? { failure } : {}), provider: model.provider, model: model.id, thinking: model.thinking, turns: client.records.filter((event) => event.type === "turn_start").length, tools: client.records.filter((event) => event.type === "tool_execution_end").map((event) => ({ name: event.toolName, isError: event.isError })), usage: totals, reports, sessionRoot: client.root, budgetStopped };
   await writeFile(join(evidence, "flash-summary.json"), JSON.stringify(summary, null, 2) + "\n");
   await client.close(false);
   console.log(JSON.stringify({ passed, failure, turns: summary.turns, tools: summary.tools.length, usage: totals, evidence: join(evidence, "flash-summary.json") }, null, 2));

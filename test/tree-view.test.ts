@@ -10,13 +10,14 @@ function sample(): WorkflowState {
 }
 const ids = (lines: string[]) => lines.flatMap((line) => { const match = /[├└]─ #([0-9]+)/.exec(line); return match ? [Number(match[1])] : []; });
 
-test("default main paths show every node once and only label the additional incoming edges", () => {
+test("default main paths follow creation order and only label the additional incoming edges", () => {
   const lines = renderTasks(sample(), 120, { maxRows: Infinity });
-  assert.deepEqual(ids(lines), [1, 2, 4, 6, 5, 3, 7]);
+  // Chronological spanning forest: rows read strictly #1..#7, subtrees contiguous, no DFS reordering.
+  assert.deepEqual(ids(lines), [1, 2, 3, 4, 5, 6, 7]);
   assert.ok(lines[0]!.startsWith("●  Todo (1/7)"));
   assert.ok(lines.some((line) => line.startsWith("│  ├─ #2")));
-  assert.ok(lines.some((line) => line.startsWith("│  │  ├─ #4<-#3")));
-  assert.ok(lines.some((line) => line.startsWith("│  │  │  └─ #6<-#5")));
+  assert.ok(lines.some((line) => line.startsWith("│     └─ #4<-#2")));
+  assert.ok(lines.some((line) => line.startsWith("│  └─ #6<-#4")));
   assert.ok(lines.at(-1)!.startsWith("└─ #7"));
   assert.doesNotMatch(lines.join("\n"), /#2<-#1|#4<-#2,#3|#6<-#4,#5/);
 });
@@ -29,15 +30,18 @@ test("flat tree retains original ordering and all predecessors", () => {
   assert.ok(lines.slice(1).every((line) => /^[├└]─ /.test(line)));
 });
 
-test("parent choice is deterministic: deepest predecessor, then list order", () => {
+test("parent choice is deterministic: deepest open predecessor, independent of blockedBy order", () => {
+  // #4 depends on #2 and #3; #3 is the deepest still-open predecessor, so it is drawn and #2 stays a reference.
   const current = sample();
   current.tasks[3]!.blockedBy = [3, 2];
-  const reversed = renderTasks(current, 120, { maxRows: Infinity });
-  assert.match(reversed.join("\n"), /│  │  ├─ #4<-#3/);
+  const output = renderTasks(current, 120, { maxRows: Infinity }).join("\n");
+  assert.match(output, /│     └─ #4<-#2(?![,0-9])/);
+  assert.doesNotMatch(output, /#4<-#2,#3/);
+  // A later task whose predecessors already closed starts a new root instead of inventing ancestry.
   current.tasks = [...current.tasks, { id: 8, subject: "更深父路径", status: "pending", blockedBy: [1, 6] }];
   current.nextId = 9;
-  const deeper = renderTasks(current, 120, { maxRows: Infinity });
-  assert.match(deeper.join("\n"), /│  │  │     └─ #8<-#1/);
+  const deeper = renderTasks(current, 120, { maxRows: Infinity }).join("\n");
+  assert.match(deeper, /└─ #8<-#1,#6(?![,0-9])/);
 });
 
 test("hidden parents never silently remove predecessor references or imply false ancestry", () => {
@@ -54,16 +58,18 @@ test("40 columns retain the main path but remove fixed reference and right-side 
   const lines = renderTasks(sample(), 40, { maxRows: Infinity });
   const first = lines.find((line) => line.startsWith("├─ #1"))!;
   assert.equal(first, "├─ #1 ✓ 节点1 [主会话] [已完成]");
-  assert.ok(lines.some((line) => line.startsWith("│  │  ├─ #4<-#3 ○")));
+  assert.ok(lines.some((line) => line.startsWith("│     └─ #4<-#2 ○")));
   for (const line of lines) assert.ok(visibleWidth(line) <= 40);
   const wide = renderTasks(sample(), 120, { maxRows: Infinity });
   // Block 2 (icon+title) starts at one unified column across all depths.
-  assert.ok(wide.find((line) => line.includes("├─ #1"))!.includes("#1              ✓"));
+  const icons = wide.slice(1).map((line) => line.search(/[✓○◐]/));
+  for (const column of icons) assert.equal(column, icons[0]);
 });
 
-test("extremely narrow paths flatten truthfully rather than inventing or hiding edges", () => {
+test("only extremely narrow paths flatten; the shallow forest survives normal narrow width", () => {
   const current = sample();
-  assert.deepEqual(renderTasks(current, 20, { maxRows: Infinity }), renderTasks({ ...current, treeStyle: "flat" }, 20, { maxRows: Infinity }));
+  assert.ok(renderTasks(current, 20, { maxRows: Infinity }).some((line) => line.startsWith("│     └─ #4")));
+  assert.deepEqual(renderTasks(current, 12, { maxRows: Infinity }), renderTasks({ ...current, treeStyle: "flat" }, 12, { maxRows: Infinity }));
   const long = { ...emptyState(), nextId: 4097, tasks: Array.from({ length: 4096 }, (_, index): Todo => ({ id: index + 1, subject: "深链", status: "pending", blockedBy: index ? [index] : [] })) };
   const lines = renderTasks(long, 80, { maxRows: Infinity });
   assert.equal(ids(lines).length, 4096);

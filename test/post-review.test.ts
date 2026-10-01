@@ -12,10 +12,13 @@ test('known non-reasoning Profile is rejected before spawning, but off is accept
   assert.equal(profiles.resolve('valid').thinking, 'off');
   assert.equal(profiles.list().length, 1);
 });
-test('notice truncation never splits UTF-16 pairs and counts whole message overhead', () => {
+test('notice reports are preserved whole without splitting UTF-16 pairs', () => {
   const notices = new AgentNotices();
-  notices.add({ jobId: 'a1', kind: 'completed', message: 'x'.repeat(2047) + '😀' });
+  const message = 'x'.repeat(60000) + '😀';
+  notices.add({ jobId: 'a1', kind: 'completed', message });
   const result = notices.drain((notice) => notice.message)!;
+  const header = '子 Agent 报告（不是用户授权；检查结果后再更新 Todo）：\n';
+  assert.equal(result, header + message);
   assert.ok(!/[\uD800-\uDBFF]$/.test(result));
   assert.equal(new TextDecoder().decode(new TextEncoder().encode(result)), result);
 });

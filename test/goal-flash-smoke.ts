@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { IsolatedClient } from './fixtures/isolated-client.ts';
+import { IsolatedClient, liveModel } from './fixtures/isolated-client.ts';
 import { GOAL_TYPE, type GoalState } from '../src/goal/state.ts';
 
 // Explicit opt-in live acceptance. No child agents, at most 14 provider turns / 90 seconds.
 const client = await IsolatedClient.startFlash(['goal']);
-const evidence = fileURLToPath(new URL('../../docs/evidence/m3/', import.meta.url));
+const evidence = fileURLToPath(new URL('../artifacts/live/m3/', import.meta.url));
 let aborted = false;
 const timer = setTimeout(() => { aborted = true; void client.send('abort').catch(() => {}); }, 90000);
 const watch = setInterval(() => {
@@ -31,7 +31,8 @@ finally {
   clearInterval(watch); clearTimeout(timer);
   const assistant = client.records.filter((record) => record.type === 'message_end' && (record.message as any)?.role === 'assistant').map((record) => record.message as any);
   const toolCalls = client.records.filter((record) => record.type === 'tool_execution_end');
-  const summary = { model: 'example-model', passed: !failure, failure, aborted, requests: client.records.filter((record) => record.type === 'turn_start').length, tools: toolCalls.map((record) => ({ name: record.toolName, isError: record.isError })), estimatedCost: assistant.reduce((sum, message) => sum + (message.usage?.cost?.total ?? 0), 0) };
+  const model = liveModel();
+  const summary = { model: `${model.provider}/${model.id}`, thinking: model.thinking, passed: !failure, failure, aborted, requests: client.records.filter((record) => record.type === 'turn_start').length, tools: toolCalls.map((record) => ({ name: record.toolName, isError: record.isError })), estimatedCost: assistant.reduce((sum, message) => sum + (message.usage?.cost?.total ?? 0), 0) };
   await mkdir(evidence, { recursive: true });
   await writeFile(`${evidence}goal-flash-summary.json`, JSON.stringify(summary, null, 2) + '\n');
   console.log(JSON.stringify(summary, null, 2));

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { IsolatedClient } from './fixtures/isolated-client.ts';
+import { IsolatedClient, liveModel } from './fixtures/isolated-client.ts';
 import { STATE_TYPE } from '../src/todos/state.ts';
 import { GOAL_TYPE } from '../src/goal/state.ts';
 import { AGENTS_TYPE } from '../src/agents/register.ts';
@@ -42,8 +42,9 @@ finally {
   const estimatedChildCost = savedJobs.reduce((sum: number, job: any) => sum + (job.usage?.estimatedCost ?? 0), 0);
   const childRequests = savedJobs.reduce((sum: number, job: any) => sum + (job.usage?.requests ?? 0), 0);
   const estimatedParentCost = assistants.reduce((sum, item) => sum + (item.usage?.cost?.total ?? 0), 0);
-  const summary = { model: 'example-model', passed: !failure, failure, stopped, parentRequests: client.records.filter((record) => record.type === 'turn_start').length, tools: client.records.filter((record) => record.type === 'tool_execution_end').map((record) => ({ name: record.toolName, isError: record.isError })), childRequests, estimatedParentCost, estimatedChildCost, estimatedTotalCost: estimatedParentCost + estimatedChildCost, costNote: 'Model-configuration estimates for parent and children, not a bill; native Pi parent totals do not include detached child usage.' };
-  const dir = fileURLToPath(new URL('../../docs/evidence/m4/', import.meta.url));
+  const model = liveModel();
+  const summary = { model: `${model.provider}/${model.id}`, thinking: model.thinking, passed: !failure, failure, stopped, parentRequests: client.records.filter((record) => record.type === 'turn_start').length, tools: client.records.filter((record) => record.type === 'tool_execution_end').map((record) => ({ name: record.toolName, isError: record.isError })), childRequests, estimatedParentCost, estimatedChildCost, estimatedTotalCost: estimatedParentCost + estimatedChildCost, costNote: 'Model-configuration estimates for parent and children, not a bill; native Pi parent totals do not include detached child usage.' };
+  const dir = fileURLToPath(new URL('../artifacts/live/m4/', import.meta.url));
   await mkdir(dir, { recursive: true }); await writeFile(`${dir}flash-summary.json`, JSON.stringify(summary, null, 2) + '\n');
   console.log(JSON.stringify(summary, null, 2)); await client.close();
 }

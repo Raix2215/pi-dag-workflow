@@ -161,7 +161,7 @@ test("actual Pi widget switches path/flat trees, keeps the Plan block conditiona
     return (record.widgetLines as string[]).map(stripTerminalSequences).join("\n");
   };
   assert.match(widget(), /●  Todo \(0\/4\)/);
-  assert.match(widget(), /   │  └─ #4<-#3/);
+  assert.match(widget(), /      └─ #4<-#2/);
   assert.doesNotMatch(widget(), /Plan|Goal|#2<-#1/);
   await client.prompt("/todos flat");
   assert.match(widget(), /└─ #4<-#2,#3/);
@@ -176,6 +176,6 @@ test("actual Pi widget switches path/flat trees, keeps the Plan block conditiona
   assert.match(widget(), /#4<-#2,#3/);
   assert.ok(!client.records.some((event) => event.type === "agent_start"));
   await client.prompt("/todos paths");
-  assert.match(widget(), /#4<-#3/);
+  assert.match(widget(), /#4<-#2(?![,0-9])/);
   assert.doesNotMatch(widget(), /#4<-#2,#3/);
 });

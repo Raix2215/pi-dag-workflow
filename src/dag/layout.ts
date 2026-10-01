@@ -1,4 +1,5 @@
 import type { DagStructure } from './cache.ts';
+import { chinese, type Translator } from '../shared/i18n.ts';
 
 export interface DagBox { id: number; left: number; top: number; width: number }
 export interface DagRoute { from: number; to: number; points: readonly [number, number][] }
@@ -11,21 +12,27 @@ const glyphs: Record<number, string> = { 0: ' ', 1: '│', 2: '│', 3: '│', 4
 const layouts = new WeakMap<DagStructure, Map<number, DagLayoutResult>>();
 
 /** Stable top-down orthogonal routing; long edges get unlabelled transit slots, not duplicate Todos. */
-export function dagLayout(structure: DagStructure, available: number): DagLayoutResult {
+export function dagLayout(structure: DagStructure, available: number, msg: Translator = chinese): DagLayoutResult {
   const width = Math.max(0, Math.floor(available));
   let entries = layouts.get(structure);
   if (!entries) { entries = new Map(); layouts.set(structure, entries); }
   const existing = entries.get(width);
-  if (existing) return existing;
-  const result = build(structure, width);
+  if (existing) return localizedResult(existing, msg);
+  // Cache geometry and canonical message keys, never a caller's translated reason.
+  const result = build(structure, width, chinese);
   entries.set(width, result);
   if (entries.size > 4) entries.delete(entries.keys().next().value!);
-  return result;
+  return localizedResult(result, msg);
 }
-function build(structure: DagStructure, width: number): DagLayoutResult {
+function localizedResult(result: DagLayoutResult, msg: Translator): DagLayoutResult {
+  if (result.layout) return result;
+  const reason = msg(result.reason);
+  return reason === result.reason ? result : { reason };
+}
+function build(structure: DagStructure, width: number, msg: Translator): DagLayoutResult {
   if (!structure.layers.length) return { layout: { width: 0, lines: [], boxes: [], routes: [], crossings: 0 } };
-  if (width < 24) return { reason: '宽度不足' };
-  if (structure.layers.length > 2000 || structure.edges.length > 4096) return { reason: '图过长／连线过多' };
+  if (width < 24) return { reason: msg('宽度不足') };
+  if (structure.layers.length > 2000 || structure.edges.length > 4096) return { reason: msg('图过长／连线过多') };
   const layerOf = new Map(structure.layers.flatMap((ids, index) => ids.map((id) => [id, index] as const)));
   const layers: Vertex[][] = structure.layers.map((ids) => ids.map((id) => ({ key: `n${id}`, id, center: 0, top: 0, inX: 0, outX: 0 })));
   const vertices = new Map(layers.flat().map((vertex) => [vertex.key, vertex]));
@@ -40,14 +47,14 @@ function build(structure: DagStructure, width: number): DagLayoutResult {
       else {
         target = { key: `e${index}:${layer}`, edge: index, center: 0, top: 0, inX: 0, outX: 0 };
         layers[layer]!.push(target);
-        if (layers[layer]!.length > maxSlots) return { reason: '并行节点或跨层连线超出宽度' };
+        if (layers[layer]!.length > maxSlots) return { reason: msg('并行节点或跨层连线超出宽度') };
       }
       segments[layer - 1]!.push({ edge: index, from: previous, to: target, gap: layer - 1 });
       previous = target;
     }
   }
   const slots = Math.max(...layers.map((layer) => layer.length));
-  if (slots > maxSlots) return { reason: '并行节点超出宽度' };
+  if (slots > maxSlots) return { reason: msg('并行节点超出宽度') };
   // Multiples of 12 keep source and target rails in distinct x lanes even on aligned layers.
   const span = Math.min(36, Math.floor(width / slots / 12) * 12);
   const canvasWidth = span * slots;
@@ -64,7 +71,7 @@ function build(structure: DagStructure, width: number): DagLayoutResult {
     }
     top += 5 + (gapGroups[index]?.length ?? 0) + (index < layers.length - 1 ? 2 : 0);
   }
-  if (top * canvasWidth > 200000) return { reason: '图过长，改用紧凑列表' };
+  if (top * canvasWidth > 200000) return { reason: msg('图过长，改用紧凑列表') };
   const grid: Map<number, Cell>[] = Array.from({ length: top }, () => new Map());
   const boxes: DagBox[] = [];
   const routes: DagRoute[] = structure.edges.map((edge) => ({ ...edge, points: [] }));

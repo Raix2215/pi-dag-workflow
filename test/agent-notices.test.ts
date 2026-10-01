@@ -16,14 +16,16 @@ test("pure notices: merge latest job/kind report while retaining distinct reques
   assert.equal(notices.drain(line), undefined);
 });
 
-test("pure notices: terminal/control/bidi text is sanitized before the 2048-character limit", () => {
+test("pure notices: terminal/control/bidi text is sanitized while whole reports are preserved", () => {
   const notices = new AgentNotices();
   notices.add({ jobId: "a1", kind: "message", message: "\x1b[31mred\x1b[0m\n\tline\r\u202e\0\x1b]52;c;ZXZpbA==\x07" });
-  notices.add({ jobId: "a2", kind: "failed", message: "x".repeat(3000) });
+  const long = "x".repeat(60000) + "😀";
+  notices.add({ jobId: "a2", kind: "failed", message: long });
   const seen: Notice[] = [];
   const report = notices.drain((notice) => { seen.push(notice); return line(notice); });
   assert.equal(seen[0]!.message, "red line");
-  assert.equal(seen[1]!.message, "x".repeat(2048));
+  assert.equal(seen[1]!.message, long);
+  assert.ok(!/[\uD800-\uDBFF]$/.test(seen[1]!.message));
   assert.doesNotMatch(report!, /[\x1b\0\u202e]|ZXZpbA/);
 });
 
@@ -64,14 +66,14 @@ test("pure notices: drop removes all reports for one job, filter removes obsolet
   assert.equal(notices.drain(line), undefined);
 });
 
-test("pure notices: whole report is bounded to 16000 characters including header/separators", () => {
+test("pure notices: a merged batch keeps every character beyond the old 16000 budget", () => {
   const notices = new AgentNotices();
-  for (let i = 0; i < 32; i++) notices.add({ jobId: `a${i}`, kind: "completed", message: "x".repeat(2048) });
+  for (let i = 0; i < 32; i++) notices.add({ jobId: `a${i}`, kind: "completed", message: "x".repeat(50000) });
   let calls = 0;
   const report = notices.drain((notice) => { calls++; return notice.message; })!;
   const payload = report.slice(reportHeader.length);
-  assert.equal(calls, 8);
-  assert.equal(report.length, 16000);
-  assert.equal(payload.split("\n").at(-1)!.length, 16000 - reportHeader.length - 7 - 2048 * 7);
-  assert.equal(notices.drain(line), undefined, "overflow is discarded rather than becoming a delivery queue");
+  assert.equal(calls, 32);
+  assert.equal(report.length, reportHeader.length + 32 * 50000 + 31);
+  assert.equal(payload.length, 32 * 50000 + 31);
+  assert.equal(notices.drain(line), undefined, "delivered reports are not replayed");
 });

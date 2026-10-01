@@ -13,12 +13,13 @@ import { ProfileStore } from "../src/agents/profiles.ts";
 const model = { provider: "dag-test", id: "scripted" };
 const offline = fileURLToPath(new URL("./fixtures/offline-model.ts", import.meta.url));
 const fixture = fileURLToPath(new URL("./fixtures/m2-rpc-fixture.mjs", import.meta.url));
-async function setup(fake = false) {
+const reportFixture = fileURLToPath(new URL("./fixtures/report-rpc-fixture.mjs", import.meta.url));
+async function setup(fake = false, cli = fixture) {
   const root = await mkdtemp(join(tmpdir(), "pi-dag-m2-agents-"));
   const profiles = new ProfileStore({ registry: { find: (provider, id) => provider === model.provider && id === model.id ? model : undefined } });
   const notices: AgentNotice[] = [];
   const changes: JobSummary[][] = [];
-  const runtime = new AgentRuntime({ cwd: root, profiles, getInheritedModel: () => model, childEnv: { HOME: root, PI_CODING_AGENT_DIR: join(root, "agent") }, ...(fake ? { testCliPath: fixture } : { testExtensions: [offline] }), onNotice: (notice) => notices.push(notice), onChanged: (summaries) => changes.push(summaries) });
+  const runtime = new AgentRuntime({ cwd: root, profiles, getInheritedModel: () => model, childEnv: { HOME: root, PI_CODING_AGENT_DIR: join(root, "agent") }, ...(fake ? { testCliPath: cli } : { testExtensions: [offline] }), onNotice: (notice) => notices.push(notice), onChanged: (summaries) => changes.push(summaries) });
   return { root, runtime, profiles, notices, changes, close: async () => { await runtime.shutdown(); await rm(root, { recursive: true, force: true }); } };
 }
 const question = (text: string) => `TEST CALL subagent_send ${JSON.stringify({ message: text, question: true })}`;
@@ -130,10 +131,10 @@ test("agent_end alone and even settled with pending followups cannot complete a 
   } finally { await ctx.close(); }
 });
 
-test("unexpected exit, model errors, malformed and oversized protocol all fail and clean up", async () => {
+test("unexpected exit, model errors and malformed protocol all fail and clean up", async () => {
   const ctx = await setup(true);
   try {
-    for (const task of ["EXIT", "ERROR", "BAD JSON", "OVERSIZED"]) {
+    for (const task of ["EXIT", "ERROR", "BAD JSON"]) {
       const job = await ctx.runtime.spawn({ task });
       const result = await ctx.runtime.wait(job.id, { timeout: 3 });
       assert.equal(result.status, "failed", task);
@@ -144,7 +145,7 @@ test("unexpected exit, model errors, malformed and oversized protocol all fail a
   } finally { await ctx.close(); }
 });
 
-test("startup failure and execution timeout cleanly fail with bounded output", async () => {
+test("startup failure and execution timeout cleanly fail while keeping full output", async () => {
   const ctx = await setup(true);
   try {
     const invalid = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-missing-cli.mjs") });
@@ -158,12 +159,128 @@ test("startup failure and execution timeout cleanly fail with bounded output", a
     const huge = await ctx.runtime.spawn({ task: "HUGE" });
     const result = await ctx.runtime.wait(huge.id, { timeout: 2 });
     assert.equal(result.status, "completed");
-    assert.equal(result.truncated, true);
-    assert.equal(result.output.length, 32768);
+    assert.equal(result.truncated, false);
+    assert.equal(result.output, "🦊\u2028\u2029" + "bounded output ".repeat(12000) + "\n");
   } finally { await ctx.close(); }
 });
 
-test("recovery imports compact records, preserves bounded output, interrupts active and never spawns", async () => {
+test("long child reports and >1 MiB output are delivered and stored whole", async () => {
+  const ctx = await setup(true, reportFixture);
+  try {
+    const report = await ctx.runtime.spawn({ task: "BIGREPORT" });
+    const reportResult = await ctx.runtime.wait(report.id, { timeout: 15 });
+    assert.equal(reportResult.status, "completed");
+    assert.equal(reportResult.truncated, false);
+    assert.ok(reportResult.output.includes("r".repeat(1100000)));
+    assert.equal(ctx.notices.find((item) => item.kind === "message")?.message, "r".repeat(1100000));
+
+    const output = await ctx.runtime.spawn({ task: "BIGOUTPUT" });
+    const outputResult = await ctx.runtime.wait(output.id, { timeout: 15 });
+    assert.equal(outputResult.status, "completed");
+    assert.equal(outputResult.truncated, false);
+    assert.equal(outputResult.output, "o".repeat(1100000) + "\n");
+  } finally { await ctx.close(); }
+});
+
+test("export/import and full completion keep long child output and reports intact", async () => {
+  const ctx = await setup(true, reportFixture);
+  try {
+    const job = await ctx.runtime.spawn({ task: "BIGOUTPUT" });
+    const completed = await ctx.runtime.wait(job.id, { timeout: 15 });
+    assert.equal(completed.output.length, 1100001);
+    const records = ctx.runtime.exportRecords();
+    assert.equal(records[0]!.output, "o".repeat(1100000) + "\n");
+    assert.equal(records[0]!.truncated, false);
+    const restored = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-cannot-spawn.mjs") });
+    try {
+      await restored.importSummaries(records);
+      const restoredResult = await restored.wait(job.id);
+      assert.equal(restoredResult.output, "o".repeat(1100000) + "\n");
+      assert.equal(restoredResult.truncated, false);
+    } finally { await restored.shutdown(); }
+  } finally { await ctx.close(); }
+});
+
+test("child questions larger than the old 1 MiB cap round-trip through requestId replies", async () => {
+  const ctx = await setup(true, reportFixture);
+  try {
+    const job = await ctx.runtime.spawn({ task: "BIGQUESTION" });
+    const pending = await ctx.runtime.wait(job.id, { timeout: 15 });
+    assert.equal(pending.status, "waiting");
+    const request = pending.requests[0]!;
+    assert.equal(request.message, "q".repeat(1100000));
+    assert.equal(ctx.notices.find((item) => item.kind === "question")?.message, "q".repeat(1100000));
+    await ctx.runtime.send({ recipient: job.id, requestId: request.requestId, message: "a".repeat(1100000) });
+    const completed = await ctx.runtime.wait(job.id, { timeout: 15 });
+    assert.equal(completed.status, "completed");
+    assert.match(completed.output, /answered:1100000/);
+  } finally { await ctx.close(); }
+});
+
+test("terminal reports stay pending until the parent context acknowledges delivery", async () => {
+  const ctx = await setup(true);
+  try {
+    const job = await ctx.runtime.spawn({ task: "plain result" });
+    const result = await ctx.runtime.wait(job.id, { timeout: 3 });
+    assert.equal(result.status, "completed");
+    assert.equal(result.reportDelivery, "pending");
+    assert.equal(ctx.runtime.inspect(job.id)[0]!.reportDelivery, "pending");
+    assert.equal(ctx.runtime.viewSummaries()[0]!.reportDelivery, "pending");
+    assert.equal(ctx.runtime.markReportDelivered(job.id), true);
+    assert.equal(ctx.runtime.inspect(job.id)[0]!.reportDelivery, "delivered");
+    assert.equal(ctx.runtime.markReportDelivered(job.id), false, "acknowledgement is idempotent");
+  } finally { await ctx.close(); }
+});
+
+test("cancelled and interrupted records carry no pending delivery acknowledgement", async () => {
+  const ctx = await setup(true);
+  try {
+    const cancelled = await ctx.runtime.spawn({ task: "HOLD" });
+    await ctx.runtime.cancel(cancelled.id);
+    assert.equal(ctx.runtime.inspect(cancelled.id)[0]!.reportDelivery, undefined);
+    assert.equal(ctx.runtime.markReportDelivered(cancelled.id), false);
+    const active = await ctx.runtime.spawn({ task: "HOLD" });
+    const records = ctx.runtime.exportRecords();
+    const restored = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-cannot-spawn.mjs") });
+    try {
+      await restored.importSummaries(records);
+      assert.equal(restored.inspect(active.id)[0]!.reportDelivery, undefined);
+      assert.equal(restored.markReportDelivered(active.id), false);
+    } finally { await restored.shutdown(); }
+  } finally { await ctx.close(); }
+});
+
+test("restore preserves pending delivery without auto replay; manual wait acknowledges", async () => {
+  const ctx = await setup(true);
+  try {
+    const job = await ctx.runtime.spawn({ task: "restored report" });
+    await ctx.runtime.wait(job.id, { timeout: 3 });
+    const records = ctx.runtime.exportRecords();
+    assert.equal(records[0]!.reportDelivery, "pending");
+    await assert.rejects(ctx.runtime.importSummaries([{ ...records[0]!, reportDelivery: "bogus" } as never]), /Invalid/);
+    const restored = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-cannot-spawn.mjs") });
+    try {
+      await restored.importSummaries(records);
+      assert.equal(restored.inspect(job.id)[0]!.reportDelivery, "pending");
+      // Restoring never replays or starts work: the result stays pending until an explicit wait acks it.
+      assert.equal((await restored.wait(job.id, { timeout: 0 })).reportDelivery, "pending");
+      assert.equal(restored.markReportDelivered(job.id), true);
+      assert.equal((await restored.wait(job.id, { timeout: 0 })).reportDelivery, "delivered");
+    } finally { await restored.shutdown(); }
+    // Legacy records without the field remain compatible and never acknowledge.
+    const legacy = { ...records[0]! } as Record<string, unknown>;
+    delete legacy.reportDelivery;
+    const old = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-cannot-spawn.mjs") });
+    try {
+      await old.importSummaries([legacy as never]);
+      assert.equal(old.inspect(job.id)[0]!.reportDelivery, undefined);
+      assert.equal(old.markReportDelivered(job.id), false);
+      assert.doesNotMatch(JSON.stringify(old.viewSummaries()), /reportDelivery/);
+    } finally { await old.shutdown(); }
+  } finally { await ctx.close(); }
+});
+
+test("recovery imports compact records, preserves stored output, interrupts active and never spawns", async () => {
   const ctx = await setup(true);
   try {
     const completed = await ctx.runtime.spawn({ task: "Result to keep" });

@@ -1,0 +1,30 @@
+# Changelog
+
+All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.0] - Unreleased
+
+First public preview.
+
+### Added
+
+- **Todo workflow** — one session-scoped Todo list with numeric IDs and `blockedBy` prerequisites. The dependency graph is derived from the list itself; unfinished prerequisites block starting and completing downstream work. Commands cover add/edit/start/done/pending/delete/clear and list or graph views.
+- **Read-only Plan mode** — explore, search, ask, and rearrange Todos while implementation, shell commands, and dispatch are blocked. Extra trusted read-only tools can be opted in explicitly. Plan is an execution guard, not an OS sandbox.
+- **Single-tier subagents** — spawn up to four independent Pi child processes, each with a task, an optional Todo link, and an optional named profile. Send direction, answer requests by ID, wait for results, cancel, or remove records. Children cannot spawn grandchildren and never complete a Todo automatically.
+- **Bounded Goal continuation** — create a Goal without starting it, then enable, focus, switch, or resume a single focused target. Automatic continuation and child-report wakes share one allowance (20 by default); a Goal pauses after three consecutive rounds without new progress. Pause, disable, and off stop continuation while keeping focus, and resuming opens a fresh allowance.
+- **Visible progress UI** — a Nerd Font panel with a task tree, a solid-line DAG, and scrollable detail views. Live thinking/tool/output activity is rendered without entering model context or persisted workflow state.
+- **Session-scoped persistence** — Todo, Goal, budget, and job snapshots follow the active Pi branch. Restoring pauses automatic work and never revives child processes.
+- **Independent modules** — five selectable Pi resources (`todos`, `plan`, `agents`, `goal`, `ui`) chosen with `pi config`. Loaded entries share one runtime coordinator; there is no required core module and no plugin `modules` setting.
+- **Configuration and profiles** — an optional config file for continuation limits and interface language, plus named subagent profiles that can inherit the main-session model or name a registered model and tool set.
+- **Bilingual interface text** — English and Simplified Chinese labels, help, notifications, and workflow messages. The `language` setting accepts `auto`, `en`, or `zh-CN`, where `auto` follows the terminal locale. User-authored content, command names, and structured tool fields stay unchanged.
+- **Complete child reports** — reports, output, questions, and answers are preserved without character caps. Prompt guidance encourages task-appropriate detail, and the communication reference documents when each message enters model context.
+- **Report handoff state** — a finished child remains Pending delivery until its terminal report or a full `subagent_wait` result reaches the main conversation.
+
+### Fixed
+
+- Rendered Todo rows as aligned blocks with their tree identifiers attached, keeping ordering and column alignment stable.
+- Added slash-command argument completion and recent-work preview selection. Selected tasks render in creation order, oldest first, across status changes and dependency merges.
+- Consuming a job through `subagent_wait` prevents its current notices from being repeated as an automatic completion report.
+- Resolve child-process entry points from the running Pi host, so the distribution does not need a bundled development copy of Pi.
+- Refined subagent status icons, including starting, failed, interrupted, and cancelled states.
+- Routed the solid-line DAG with scrolling and an explicit predecessor-list fallback for dense graphs, so a clipped widget is never shown as a complete graph.

@@ -1,5 +1,6 @@
 import { Type, type Static } from "typebox";
 import { dagStructure, reuseDagStructure } from "../dag/cache.ts";
+import { chinese, type Translator } from "../shared/i18n.ts";
 
 const Status = Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("deleted")]);
 export const TodoParamsSchema = Type.Object({
@@ -57,59 +58,59 @@ export function todoRef(todo: Todo): string {
 export const statusLabel: Record<TodoStatus, string> = { pending: "待执行", in_progress: "进行中", completed: "已完成", deleted: "已删除" };
 const textFields = ["subject", "description", "activeForm", "owner"] as const;
 
-function validateTask(task: Todo): void {
-  if (!task.subject.trim() || Array.from(task.subject).length > 60) throw new Error("标题需为 1–60 个字符；详细指示请写 description");
+function validateTask(task: Todo, msg: Translator = chinese): void {
+  if (!task.subject.trim() || Array.from(task.subject).length > 60) throw new Error(msg("标题需为 1–60 个字符；详细指示请写 description"));
   for (const field of textFields) {
     const value = task[field];
-    if (value !== undefined && (typeof value !== "string" || Buffer.byteLength(value) > 8192)) throw new Error(`${field} 需为不超过 8 KiB 的文本`);
+    if (value !== undefined && (typeof value !== "string" || Buffer.byteLength(value) > 8192)) throw new Error(msg`${field} 需为不超过 8 KiB 的文本`);
   }
-  if (!Object.hasOwn(transitions, task.status)) throw new Error("未知任务状态");
-  if (!Array.isArray(task.blockedBy) || task.blockedBy.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("依赖需为有效任务编号");
+  if (!Object.hasOwn(transitions, task.status)) throw new Error(msg("未知任务状态"));
+  if (!Array.isArray(task.blockedBy) || task.blockedBy.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error(msg("依赖需为有效任务编号"));
   if (task.metadata !== undefined) {
-    if (!task.metadata || typeof task.metadata !== "object" || Array.isArray(task.metadata) || Buffer.byteLength(JSON.stringify(task.metadata)) > 8192) throw new Error("metadata 需为不超过 8 KiB 的 JSON 对象");
+    if (!task.metadata || typeof task.metadata !== "object" || Array.isArray(task.metadata) || Buffer.byteLength(JSON.stringify(task.metadata)) > 8192) throw new Error(msg("metadata 需为不超过 8 KiB 的 JSON 对象"));
   }
 }
-export function validateState(state: WorkflowState): void {
-  if (state.version !== 1 || !Array.isArray(state.tasks) || !Number.isSafeInteger(state.nextId) || state.nextId < 1) throw new Error("不支持或损坏的工作流状态");
-  if (typeof state.plan !== "boolean" || typeof state.visible !== "boolean" || !["list", "dag"].includes(state.view)) throw new Error("损坏的模式／视图状态");
-  if (state.treeStyle !== undefined && !["paths", "flat"].includes(state.treeStyle)) throw new Error("损坏的任务树样式");
-  if (!Array.isArray(state.planTools) || state.planTools.some((name) => typeof name !== "string" || !/^[\w-]+$/.test(name))) throw new Error("损坏的 Plan 工具列表");
+export function validateState(state: WorkflowState, msg: Translator = chinese): void {
+  if (state.version !== 1 || !Array.isArray(state.tasks) || !Number.isSafeInteger(state.nextId) || state.nextId < 1) throw new Error(msg("不支持或损坏的工作流状态"));
+  if (typeof state.plan !== "boolean" || typeof state.visible !== "boolean" || !["list", "dag"].includes(state.view)) throw new Error(msg("损坏的模式／视图状态"));
+  if (state.treeStyle !== undefined && !["paths", "flat"].includes(state.treeStyle)) throw new Error(msg("损坏的任务树样式"));
+  if (!Array.isArray(state.planTools) || state.planTools.some((name) => typeof name !== "string" || !/^[\w-]+$/.test(name))) throw new Error(msg("损坏的 Plan 工具列表"));
   for (const task of state.tasks) {
-    validateTask(task);
-    if (task.id >= state.nextId) throw new Error("任务计数器不能复用已有编号");
+    validateTask(task, msg);
+    if (task.id >= state.nextId) throw new Error(msg("任务计数器不能复用已有编号"));
   }
   dagStructure(state.tasks);
 }
 
 /** Atomic pure mutation: errors never modify the current state. */
-export function applyTodo(state: WorkflowState, params: TodoParams): { state: WorkflowState; text: string } {
+export function applyTodo(state: WorkflowState, params: TodoParams, msg: Translator = chinese): { state: WorkflowState; text: string } {
   const allowed = fields[params.action];
-  if (!allowed) throw new Error("未知 Todo 操作");
-  for (const key of Object.keys(params)) if (key !== "action" && !allowed.includes(key)) throw new Error(`${params.action} 不接受字段 ${key}`);
+  if (!allowed) throw new Error(msg("未知 Todo 操作"));
+  for (const key of Object.keys(params)) if (key !== "action" && !allowed.includes(key)) throw new Error(msg`${params.action} 不接受字段 ${key}`);
   if (params.action === "list") {
     const tasks = state.tasks.filter((task) => (params.includeDeleted || task.status !== "deleted") && (!params.status || task.status === params.status));
-    return { state, text: tasks.length ? tasks.map((task) => `${todoRef(task)} [${statusLabel[task.status]}] ${task.subject}`).join("\n") : "暂无任务" };
+    return { state, text: tasks.length ? tasks.map((task) => `${todoRef(task)} [${msg(statusLabel[task.status])}] ${task.subject}`).join("\n") : msg("暂无任务") };
   }
   const current = params.id === undefined ? undefined : state.tasks.find((task) => task.id === params.id);
-  if (["get", "update", "delete"].includes(params.action) && !current) throw new Error(`找不到任务 #${params.id ?? "?"}`);
+  if (["get", "update", "delete"].includes(params.action) && !current) throw new Error(msg`找不到任务 #${params.id ?? "?"}`);
   if (params.action === "get") return { state, text: JSON.stringify(current, null, 2) };
-  if (state.plan && params.status && ["in_progress", "completed"].includes(params.status)) throw new Error("Plan 只允许整理任务，不允许开始或完成；先 /plan off");
+  if (state.plan && params.status && ["in_progress", "completed"].includes(params.status)) throw new Error(msg("Plan 只允许整理任务，不允许开始或完成；先 /plan off"));
   if (params.action === "clear") {
-    if (!state.tasks.length) return { state, text: "暂无任务" };
-    return { state: { ...state, tasks: [] }, text: `已清空 ${state.tasks.length} 项，编号不复用` };
+    if (!state.tasks.length) return { state, text: msg("暂无任务") };
+    return { state: { ...state, tasks: [] }, text: msg`已清空 ${state.tasks.length} 项，编号不复用` };
   }
   let task: Todo;
   if (params.action === "create") {
-    if (!params.subject?.trim()) throw new Error("create 需要 subject");
+    if (!params.subject?.trim()) throw new Error(msg("create 需要 subject"));
     task = { id: state.nextId, subject: params.subject.trim(), status: "pending", blockedBy: [...new Set(params.blockedBy ?? [])] };
   } else {
     task = { ...current!, blockedBy: [...current!.blockedBy] };
-    if (task.status === "deleted") throw new Error(`任务 #${task.id} 已删除`);
+    if (task.status === "deleted") throw new Error(msg`任务 #${task.id} 已删除`);
     if (params.action === "delete") task.status = "deleted";
     if (params.action === "update") {
-      if (Object.keys(params).every((key) => key === "action" || key === "id")) throw new Error("update 需要至少一个修改字段");
+      if (Object.keys(params).every((key) => key === "action" || key === "id")) throw new Error(msg("update 需要至少一个修改字段"));
       if (params.status) {
-        if (!transitions[task.status].includes(params.status)) throw new Error(`不允许 ${task.status} → ${params.status}；返工请新建任务`);
+        if (!transitions[task.status].includes(params.status)) throw new Error(msg`不允许 ${task.status} → ${params.status}；返工请新建任务`);
         task.status = params.status;
       }
       const removed = new Set(params.removeBlockedBy ?? []);
@@ -122,26 +123,26 @@ export function applyTodo(state: WorkflowState, params: TodoParams): { state: Wo
     for (const [key, value] of Object.entries(params.metadata)) value === null ? merged.delete(key) : merged.set(key, value);
     if (merged.size) task.metadata = structuredClone(Object.fromEntries(merged)); else delete task.metadata;
   }
-  validateTask(task);
+  validateTask(task, msg);
   const tasks = params.action === "create" ? [...state.tasks, task] : state.tasks.map((item) => item.id === task.id ? task : item);
   const next = { ...state, tasks, nextId: state.nextId + (params.action === "create" ? 1 : 0) };
   if (!reuseDagStructure(state.tasks, tasks)) dagStructure(tasks); // delete safety, dangling dependencies, cycles
   if (["in_progress", "completed"].includes(task.status)) {
     const unfinished = task.blockedBy.filter((id) => tasks.find((item) => item.id === id)?.status !== "completed");
-    if (unfinished.length) throw new Error(`前置未完成：${unfinished.map((id) => `#${id}`).join(",")}；不能开始或完成 #${task.id}`);
+    if (unfinished.length) throw new Error(msg`前置未完成：${unfinished.map((id) => `#${id}`).join(",")}；不能开始或完成 #${task.id}`);
   }
-  if (JSON.stringify(task) === JSON.stringify(current)) return { state, text: `#${task.id} 无变化` };
-  return { state: next, text: `${params.action === "create" ? "已创建" : "已更新"} #${task.id}：${task.subject} [${statusLabel[task.status]}]` };
+  if (JSON.stringify(task) === JSON.stringify(current)) return { state, text: msg`#${task.id} 无变化` };
+  return { state: next, text: msg`${params.action === "create" ? msg("已创建") : msg("已更新")} #${task.id}：${task.subject} [${msg(statusLabel[task.status])}]` };
 }
 
 /** Only walk the active branch; never replay abandoned branches or model summaries. */
-export function restoreState(branch: readonly { type: string; customType?: string; data?: unknown; message?: unknown }[]): WorkflowState {
+export function restoreState(branch: readonly { type: string; customType?: string; data?: unknown; message?: unknown }[], msg: Translator = chinese): WorkflowState {
   let legacy: unknown;
   for (let index = branch.length - 1; index >= 0; index--) {
     const entry = branch[index]!;
     if (entry.type === "custom" && entry.customType === STATE_TYPE) {
       const state = structuredClone(entry.data) as WorkflowState;
-      validateState(state);
+      validateState(state, msg);
       return state;
     }
     if (legacy === undefined && entry.type === "message" && entry.message && typeof entry.message === "object") {
@@ -152,7 +153,7 @@ export function restoreState(branch: readonly { type: string; customType?: strin
   if (legacy) {
     const data = structuredClone(legacy) as { tasks: Todo[]; nextId: number };
     const state = { ...emptyState(), tasks: data.tasks.map((task) => ({ ...task, blockedBy: task.blockedBy ?? [] })), nextId: data.nextId };
-    validateState(state);
+    validateState(state, msg);
     return state;
   }
   return emptyState();

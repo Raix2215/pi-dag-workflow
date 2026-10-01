@@ -3,13 +3,16 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CHILD_NOTICE_PREFIX, CHILD_QUESTION_PREFIX, MAX_MESSAGE_CHARS } from "./child.ts";
+import { getPackageDir } from '@earendil-works/pi-coding-agent';
+import { CHILD_NOTICE_PREFIX, CHILD_QUESTION_PREFIX } from "./child.ts";
 import { ProfileStore, type ModelRef, type ThinkingLevel } from "./profiles.ts";
 
 export type JobStatus = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface JobSummary {
   id: string; todoId?: number; profile: string; model: ModelRef; thinking: ThinkingLevel;
   tools: string[]; status: JobStatus; startedAt: number; endedAt?: number; error?: string; pendingRequests: number;
+  /** Terminal jobs stay "pending" until their report is delivered into the parent context. */
+  reportDelivery?: "pending" | "delivered";
 }
 export interface AgentRequest { requestId: string; message: string }
 export interface AgentUsage { requests: number; input: number; output: number; estimatedCost: number }
@@ -29,14 +32,12 @@ export interface AgentRuntimeOptions {
 interface RpcRecord { type: string; id?: string; success?: boolean; error?: string; [key: string]: unknown }
 interface PendingCommand { resolve: (record: RpcRecord) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
 const ACTIVE = new Set<JobStatus>(["starting", "running", "waiting"]);
-const OUTPUT_LIMIT = 32768;
-const RECORD_LIMIT = 1024 * 1024;
 const DEFAULT_TIMEOUT = 600;
 
-/** Resolve the installed package's bin, never a shell/PATH alias or a hard-coded global install. */
+/** Resolve the running Pi host first; package installs need not carry their own Pi copy. */
 export function resolvePiCli(): string {
   const require = createRequire(import.meta.url);
-  const folders = (require.resolve.paths("@earendil-works/pi-coding-agent") ?? []).map((path) => join(path, "@earendil-works/pi-coding-agent"));
+  const folders = [getPackageDir(), ...(require.resolve.paths('@earendil-works/pi-coding-agent') ?? []).map((path) => join(path, '@earendil-works/pi-coding-agent'))];
   for (const folder of folders) {
     try {
       const pkg = JSON.parse(readFileSync(join(folder, "package.json"), "utf8")) as { name?: string; bin?: string | { pi?: string } };
@@ -81,7 +82,6 @@ class RpcPipe {
       this.buffer += chunk;
       let at: number;
       while ((at = this.buffer.indexOf("\n")) >= 0) {
-        if (at > RECORD_LIMIT) { this.buffer = ""; fail(new Error("Pi RPC record exceeds 1 MiB")); return; }
         const line = this.buffer.slice(0, at).replace(/\r$/, "");
         this.buffer = this.buffer.slice(at + 1);
         if (!line) continue;
@@ -96,7 +96,6 @@ class RpcPipe {
           }
         } else onRecord(record);
       }
-      if (this.buffer.length > RECORD_LIMIT) { this.buffer = ""; fail(new Error("Pi RPC record exceeds 1 MiB")); }
     });
   }
   command(type: string, fields: Record<string, unknown> = {}): Promise<RpcRecord> {
@@ -152,7 +151,7 @@ function seconds(value: number | undefined, fallback: number, max: number): numb
   return result;
 }
 function message(value: string): string {
-  if (typeof value !== "string" || !value.trim() || value.length > MAX_MESSAGE_CHARS) throw new Error(`message must contain 1–${MAX_MESSAGE_CHARS} characters`);
+  if (typeof value !== "string" || !value.trim()) throw new Error("message must contain text");
   return value;
 }
 
@@ -166,9 +165,10 @@ export class AgentRuntime {
   constructor(options: AgentRuntimeOptions) { this.options = options; }
   activeCount(): number { return [...this.jobs.values()].filter((job) => ACTIVE.has(job.summary.status) || job.pipe !== undefined).length; }
   inspect(jobId?: string): JobSummary[] { return structuredClone(jobId ? [this.job(jobId).summary] : [...this.jobs.values()].map((job) => job.summary)); }
-  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status'> & { activity?: JobActivity })[] {
+  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status' | 'reportDelivery'> & { activity?: JobActivity })[] {
     return [...this.jobs.values()].map((job) => ({ id: job.summary.id, profile: job.summary.profile, status: job.summary.status,
       ...(job.summary.todoId !== undefined ? { todoId: job.summary.todoId } : {}),
+      ...(job.summary.reportDelivery !== undefined ? { reportDelivery: job.summary.reportDelivery } : {}),
       ...(job.activity ? { activity: { ...job.activity } } : {}),
     }));
   }
@@ -185,11 +185,7 @@ export class AgentRuntime {
   private notice(job: LiveJob, notice: Omit<AgentNotice, "jobId">): void {
     if (this.jobs.get(job.summary.id) === job && !job.finishing && !this.restoring) this.options.onNotice?.({ jobId: job.summary.id, ...notice });
   }
-  private append(job: LiveJob, text: string): void {
-    const output = job.output + text;
-    if (output.length > OUTPUT_LIMIT) job.truncated = true;
-    job.output = output.slice(-OUTPUT_LIMIT);
-  }
+  private append(job: LiveJob, text: string): void { job.output += text; }
   async spawn(input: SpawnOptions): Promise<JobSummary> {
     if (this.unavailable) throw new Error("Agent runtime is resetting or shut down");
     if (typeof input.task !== "string" || !input.task.trim() || input.task.length > 65536) throw new Error("task must contain 1–65536 characters");
@@ -256,7 +252,7 @@ export class AgentRuntime {
         job.usage.estimatedCost += number(msg.usage?.cost?.total);
         this.append(job, (msg.content ?? []).filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n") + "\n");
         job.lastStop = msg.stopReason ?? "stop";
-        if (msg.errorMessage) job.lastError = msg.errorMessage.slice(0, 8192);
+        if (msg.errorMessage) job.lastError = msg.errorMessage;
       }
     } else if (record.type === "agent_start") {
       job.sawEnd = false; job.generation++; delete job.activity; job.activeTools.clear(); job.summary.status = job.requests.size ? "waiting" : "running"; this.changed(job);
@@ -267,11 +263,11 @@ export class AgentRuntime {
     } else if (record.type === "extension_ui_request") {
       const id = record.id;
       if (record.method === "notify" && typeof record.message === "string" && record.message.startsWith(CHILD_NOTICE_PREFIX)) {
-        const text = record.message.slice(CHILD_NOTICE_PREFIX.length, CHILD_NOTICE_PREFIX.length + MAX_MESSAGE_CHARS);
+        const text = record.message.slice(CHILD_NOTICE_PREFIX.length);
         this.append(job, `[Report] ${text}\n`); this.notice(job, { kind: "message", message: text });
       } else if (record.method === "input" && id && typeof record.title === "string" && record.title.startsWith(CHILD_QUESTION_PREFIX)) {
         if (job.requests.size >= 16) { void this.finish(job, "failed", "Too many pending child questions"); return; }
-        const text = record.title.slice(CHILD_QUESTION_PREFIX.length, CHILD_QUESTION_PREFIX.length + MAX_MESSAGE_CHARS);
+        const text = record.title.slice(CHILD_QUESTION_PREFIX.length);
         job.requests.set(id, text); job.summary.status = "waiting"; this.changed(job);
         this.notice(job, { kind: "question", message: text, requestId: id });
       } else if (id && ["input", "select", "confirm", "editor"].includes(String(record.method))) {
@@ -307,16 +303,18 @@ export class AgentRuntime {
     if (!ACTIVE.has(job.summary.status) && !job.pipe) return Promise.resolve();
     job.finishing = (async () => {
       if (job.timer) clearTimeout(job.timer);
-      if (diagnostic) this.append(job, `[Error] ${diagnostic.slice(0, 8192)}\n`);
+      if (diagnostic) this.append(job, `[Error] ${diagnostic}\n`);
       await job.pipe?.stop();
       delete job.pipe;
       delete job.activity;
       job.activeTools.clear();
       job.requests.clear();
       job.summary.status = status; job.summary.endedAt = Date.now();
+      if (status === "completed" || status === "failed") job.summary.reportDelivery = "pending";
       if (error) job.summary.error = error;
+      // Queue the terminal notice before the completion paint so a pending report never flashes as returned.
+      if (!this.restoring && this.jobs.get(job.summary.id) === job && (status === "completed" || status === "failed")) this.options.onNotice?.({ jobId: job.summary.id, kind: status, message: status === "completed" ? job.output : error ?? "Child failed" });
       this.changed(job);
-      if (!this.restoring && this.jobs.get(job.summary.id) === job && (status === "completed" || status === "failed")) this.options.onNotice?.({ jobId: job.summary.id, kind: status, message: status === "completed" ? job.output.slice(-MAX_MESSAGE_CHARS) : error ?? "Child failed" });
     })();
     return job.finishing;
   }
@@ -372,17 +370,29 @@ export class AgentRuntime {
     if (options.remove) { this.jobs.delete(jobId); this.changed(); }
   }
   async remove(jobId: string): Promise<void> { await this.cancel(jobId, { remove: true }); }
+  /** Acknowledge that a terminal report reached the parent context. Never revives a process. */
+  markReportDelivered(jobId: string): boolean {
+    const job = this.jobs.get(jobId);
+    if (!job || (job.summary.status !== "completed" && job.summary.status !== "failed") || job.summary.reportDelivery !== "pending") return false;
+    job.summary.reportDelivery = "delivered";
+    this.changed(job);
+    return true;
+  }
   async importSummaries(summaries: readonly (JobSummary | JobResult)[]): Promise<void> {
     // Decode untrusted branch entries before touching the live runtime.
     if (!Array.isArray(summaries) || summaries.length > 128) throw new Error("Invalid agent summaries");
     const restored = summaries.map((item) => {
       if (!item || !/^a[1-9]\d{0,8}$/.test(item.id) || ![...ACTIVE, "completed", "failed", "cancelled", "interrupted"].includes(item.status) || !Number.isFinite(item.startedAt) || typeof item.profile !== "string" || !Array.isArray(item.tools) || !item.model || typeof item.model.provider !== "string" || typeof item.model.id !== "string") throw new Error("Invalid agent summary");
+      const delivery = (item as { reportDelivery?: unknown }).reportDelivery;
+      if (delivery !== undefined && delivery !== "pending" && delivery !== "delivered") throw new Error("Invalid agent summary");
+      const terminal = item.status === "completed" || item.status === "failed";
       const summary: JobSummary = {
         id: item.id, ...(Number.isSafeInteger(item.todoId) && item.todoId! > 0 ? { todoId: item.todoId } : {}),
         profile: item.profile.slice(0, 48), model: { provider: item.model.provider.slice(0, 200), id: item.model.id.slice(0, 200) },
         thinking: item.thinking, tools: item.tools.filter((tool: unknown): tool is string => typeof tool === "string").slice(0, 8),
         status: ACTIVE.has(item.status) ? "interrupted" : item.status, startedAt: item.startedAt, pendingRequests: 0,
         ...(typeof item.endedAt === "number" ? { endedAt: item.endedAt } : {}),
+        ...(terminal && (delivery === "pending" || delivery === "delivered") ? { reportDelivery: delivery } : {}),
         ...(ACTIVE.has(item.status) ? { endedAt: Date.now(), error: "Interrupted on session restore; process was not revived" } : item.error ? { error: String(item.error).slice(0, 200) } : {}),
       };
       return summary;
@@ -399,7 +409,7 @@ export class AgentRuntime {
         this.sequence = Math.max(this.sequence, Number(summary.id.slice(1)));
         const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
         const usage = { requests: number(record.usage?.requests), input: number(record.usage?.input), output: number(record.usage?.output), estimatedCost: number(record.usage?.estimatedCost) };
-        this.jobs.set(summary.id, { summary, usage, output: output.slice(-OUTPUT_LIMIT), truncated: Boolean(record.truncated) || output.length > OUTPUT_LIMIT, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 });
+        this.jobs.set(summary.id, { summary, usage, output, truncated: Boolean(record.truncated), requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 });
       }
     } finally { this.unavailable = false; this.restoring = false; }
     this.changed();

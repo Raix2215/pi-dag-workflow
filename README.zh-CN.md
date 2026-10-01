@@ -2,136 +2,149 @@
 
 [English](README.md) | 简体中文
 
-为 [Pi](https://pi.dev) 提供可见、会话内的工作流：一份 Todo 清单、派生 DAG、只读 Plan、单层子 Agent 和有界 Goal 续跑。主模型决定执行什么，插件负责依赖校验和进度展示。
+为 [Pi](https://pi.dev) 提供可见、会话内的工作流：一份带 `blockedBy` 依赖的 Todo 清单、只读 Plan、最多四个独立 Pi 子 Agent，以及有界续跑的 Goal 循环。主模型决定执行什么，插件负责依赖校验并把进度保持在屏幕上。
 
-## 你能获得什么
+## 功能
 
-- **一份任务清单**：任务和前驱无需另一份 DAG 队列或数据库。前置未完成，下游不能开始／完成。
-- **先规划再实施**：Plan 允许探索、搜索、提问和整理 Todo；退出后才允许实施和派发。
-- **真实子进程**：最多 4 个 Pi 子 Agent，支持具名 Profile、消息、提问、等待、取消和移除。返回结果不自动完成 Todo。
-- **有界目标**：一次选择一个 Goal。Goal 续跑与 Agent 报告唤醒共享默认 20 次额度；中断、恢复、Plan、预算耗尽、无新进展时暂停。
-- **可读进度**：Nerd Font 面板、主路径／平铺任务树、可滚动的实线 DAG，以及真实思考／工具／输出活动。界面活动不进入模型上下文或任务持久化。
-- **原生会话恢复**：Todo、Goal、预算和 Job 快照跟随 Pi 活动分支；恢复不复活子进程，也不自行重启自动工作。
+- **一份任务清单，一张派生 DAG**：Todo 通过 `blockedBy` 携带前驱。前置未完成时，下游不能开始或完成；`/dag` 从同一份清单绘制真实依赖图，没有第二份队列或数据库。
+- **先规划再实施**：Plan 是只读模式，用于阅读、搜索、提问和整理 Todo。实施、shell 命令和派发在退出 Plan 前都会被拦截。
+- **真实子进程**：最多运行四个 Pi 子进程。每个可带任务、可选的 Todo 关联和具名 Profile；支持发消息、回答提问、等待、取消或移除记录。执行结束后先显示“待交付”，报告进入主会话后才显示“已返回”；返回结果不会自动完成 Todo。
+- **有界目标**：一次聚焦一个 Goal。自动续跑与子报告唤醒共享默认 20 次额度；连续三轮没有新进展也会暂停。中断、会话恢复、进入 Plan、额度耗尽或原地打转时，Goal 都会暂停。
+- **可读进度**：Nerd Font 面板展示任务树、实线 DAG 和真实的思考／工具／输出活动。界面活动不会写入模型上下文或持久化的工作流状态。
+- **会话内持久化**：Todo、Goal、预算和 Job 快照跟随 Pi 活动分支。恢复会话不会复活子进程，也不会自行重启自动工作。
+
+## 环境要求
+
+- Pi `>= 0.99.2`
+- Node.js `>= 22.19.0`
+- 建议使用 Nerd Font，以正常显示面板图标（是图标，不是 emoji）
 
 ## 安装
 
-使用 Pi 包安装器从插件的 GitHub 仓库安装。
+```bash
+pi install https://github.com/<owner>/pi-dag-workflow
+```
 
-## 快速开始
+把 `<owner>` 替换为仓库拥有者。Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 Pi 或执行 `/reload`，再用 `pi config` 选择要加载的模块（见下文）。
 
-直接告诉主模型：
+若其他插件已提供 Todo、Plan、Goal 或子 Agent 工具，启用本插件时请先停用它们。工具名相似，但参数与持久化状态并不通用。
 
-> 用 Todo 记录调查、实现和测试；实现依赖调查，整合依赖实现与测试。有收益时才委派独立工作，检查结果后再完成任务。
+## 快速上手
 
-用 `/plan start` 只读探索，实施前 `/plan off`。`/todos` 查看完整清单，`/dag` 查看真实连线。`/goal new 改造解析器` 只创建目标；`/goal enable #1` 开始围绕它推进，`/goal off` 暂停，`/goal resume` 明确恢复。
+直接把需求告诉主模型：
 
-研究不强制创建 Todo：主模型可通过 `goal update` 报告新的 `progress` 和具体 `nextStep`，需要用户答复时暂停。
+> 用 Todo 记录调查、实现和测试；实现依赖调查，整合依赖实现与测试。只在确有收益时委派独立工作，检查结果后再完成任务。
 
-## 工具与命令
+使用过程中的常用入口：
+
+- `/plan start` 只读探索，实施前 `/plan off`。
+- `/todos` 查看完整清单，`/dag` 查看依赖图。
+- `/goal new 改造解析器` 只创建 Goal，不启动；`/goal enable #1` 开始围绕它续跑。
+
+研究不强制创建 Todo：主模型可用 `goal update` 报告新的进展和具体下一步，或在等待你答复时暂停。
+
+## 工具
 
 | 工具 | 用途 |
 |---|---|
-| `todo` | create/update/list/get/delete/clear；数字编号、blockedBy 前驱 |
+| `todo` | create/update/list/get/delete/clear；数字编号与 `blockedBy` 前驱 |
 | `goal` | create/update/list/get/delete；enable/focus/switch/resume；disable/pause/complete |
-| `subagent_spawn` | 启动子进程，task 及可选 todoId/profile/tools/timeout |
-| `subagent_send` | 给 recipient jobId 发消息，或回答 requestId |
-| `subagent_wait` | 等结果／提问；超时和取消等待不停止子进程 |
-| `subagent_inspect` | Job 摘要和 Profile，不默认回传完整子对话 |
-| `subagent_cancel` | 停止子进程；可选 remove 移除记录，不撤销项目修改 |
+| `subagent_spawn` | 启动一个子进程，字段为 `task` 及可选 `todoId`/`profile`/`tools`/`timeout` |
+| `subagent_send` | 给 `recipient` 编号发消息，或回答 `requestId` |
+| `subagent_wait` | 等待结果或提问；超时、取消等待不会停止子进程 |
+| `subagent_inspect` | Job 摘要与 Profile，不默认回传完整子对话 |
+| `subagent_cancel` | 停止子进程；可选 `remove` 移除记录，不撤销项目修改 |
+
+## 命令
 
 | 命令 | 示例 |
 |---|---|
-| `/todos` | `add 标题 --after 1,2`、`start #2`、`done #2`、`edit #2 新标题`、`delete #2`、`clear` |
+| `/todos` | `add 标题 --after 1,2`、`start #2`、`done #2`、`pending #2`、`edit #2 新标题`、`delete #2`、`clear` |
 | 任务展示 | `/todos paths`、`/todos flat`、`show`、`hide`、`view list`、`view dag` |
-| `/dag` | 实线框图；↑/↓、PgUp/PgDn、Home/End；Esc 返回 |
-| `/plan` | `start`、`off`、`status`；`tools 名称1,名称2` 明确允许可信只读工具 |
-| `/goal` | `new 标题`、`enable #1`、`switch #2`、`resume`、`off`、`edit #1 标题`、`complete #1`、`delete #1` |
+| `/dag` | 实线依赖图；↑/↓、PgUp/PgDn、Home/End；Esc 返回 |
+| `/plan` | `start`、`off`、`status`；`tools 名称1,名称2` 明确信任额外只读工具，`tools none` 清空 |
+| `/goal` | `new 标题`、`enable #1`、`focus #1`、`switch #2`、`resume`、`off`、`pause`、`edit #1 标题`、`complete #1`、`delete #1`、`config` |
 | `/agents` | `wait a1`、`send a1 消息`、`reply requestId 回答`、`cancel a1`、`remove a1`、`pause`、`resume` |
 | Profile | `/agents profiles`、`profile 名称 provider/model [thinking] [工具逗号列表]`、`unprofile 名称` |
 
-这些入口都有本地 `help`，不调用模型、不切模式。自然语言也能驱动已注册工具。
+各命令组都支持 `help`；查看帮助不调用模型，也不切换模式。自然语言也能驱动已注册的工具。
 
-## 用 `pi config` 选择模块
+### Goal 生命周期
 
-运行 `pi config`，找到本地 `pi-dag-workflow` 包，分别勾选其资源。选择由 Pi 原生资源过滤保存；保存后在会话中 `/reload`，或重新启动 Pi。
+`new` 只记录 Goal，创建后保持暂停。`enable`、`focus`、`switch`、`resume` 是同一种激活：同一时间只有一个聚焦 Goal 在跑，已完成或已删除的 Goal 都不能重启——返工请新建一个。`pause`、`disable`、`off` 是同一种停止，并保留焦点，便于之后恢复。暂停后 `resume` 开启的是新一轮完整额度，而不是上一轮的剩余额度。切换 Goal 不会清空共用的 Todo 清单。暂停 Goal 不会杀死正在运行的子 Agent，停止它们请用 `/agents cancel`。
 
-| 入口 | 提供的功能 |
+## 模块选择
+
+运行 `pi config`，找到 `pi-dag-workflow` 包，分别勾选它的独立资源。选择由 Pi 原生资源过滤保存；在会话中 `/reload` 或启动新的 Pi 进程即可生效。
+
+| Pi 资源 | 提供的功能 |
 |---|---|
-| `src/todos/index.ts` | Todo 工具、任务命令和派生 DAG |
-| `src/plan/index.ts` | Plan 命令与执行限制 |
-| `src/agents/index.ts` | 子进程、消息和 Profile |
+| `src/todos/index.ts` | Todo 工具、`/todos`、`/dag` 与派生 DAG |
+| `src/plan/index.ts` | `/plan` 命令与只读限制 |
+| `src/agents/index.ts` | 子进程、消息与 Profile |
 | `src/goal/index.ts` | Goal 工具与有界续跑 |
-| `src/ui/index.ts` | 实时面板和可滚动详情 |
+| `src/ui/index.ts` | 实时面板与可滚动详情 |
 
-勾选 Todo＋Plan＋UI 可只规划／管理任务；Goal＋UI 可独立研究；只选 Agents 可独立派发子进程。DAG、todoId 关联需要 Todo。不选 UI 仍可看本地命令输出，不启动活动刷新计时器。只选 UI 时没有工作流数据可展示。
+组合 Todo＋Plan＋UI 可规划并执行；Goal＋UI 可做独立研究；只选 Agents 可派发独立子进程。DAG 绘制与 `todoId` 关联需要 Todo。不选 UI 时命令输出仍可用，也不启动活动刷新计时器；只选 UI 时没有工作流数据可展示。
 
-各入口都是真正的 Pi 扩展默认工厂。已加载入口通过 Pi 事件总线共享一份运行时协调状态；没有必选的 core 复选框，也不创建多份预算。重载释放旧订阅和子进程资源。未勾选的入口不注册工具／指导。**没有插件自己的 `modules` 开关**。
+每个入口都是真正的 Pi 扩展，拥有各自的默认工厂。已加载入口通过 Pi 事件总线共享一份运行时协调状态，因此没有必选的 core 复选框，也不会重复创建预算。重载会释放旧订阅和子进程资源，未勾选的入口不注册任何工具或指导语。插件**没有自己的 `modules` 配置**。
 
 ## 配置
 
-配置目录为 `~/.pi/agent/pi-dag-workflow/`，遵循 Pi 的 `PI_CODING_AGENT_DIR` 和 `~` 展开。配置不是另一份任务状态库。
+配置只保存插件设置，与 Pi 的会话记录分开存放，使用以下文件名。可运行 `/goal config` 定位它们。
 
 ### `pi-dag-workflow-config.json`
 
-可选，只设置续跑限制；模块开关用 `pi config`，不在此文件控制。修改后 `/reload`。
+可选。模块开关用 `pi config` 控制，不在此文件。修改后 `/reload` 生效。
 
 ```json
 {
+  "language": "auto",
   "goalMaxTurns": 20,
   "goalNoProgressLimit": 3
 }
 ```
 
-曾使用旧版 `modules` 字段时请删除它；Goal 会报配置错误，不悄悄保留第二套开关。
+- `language` —— `"auto"`、`"en"` 或 `"zh-CN"`。`auto` 在终端 locale 为中文时选 `zh-CN`，否则选 `en`。插件标签、帮助、通知和工作流消息会本地化；用户内容、命令名和工具结构化字段保持原样。
+- `goalMaxTurns` —— 新建 Goal 的默认额度（1–200），由自动续跑和子报告唤醒共享。
+- `goalNoProgressLimit` —— Goal 在连续多少轮没有新进展后暂停（1–10）。
+
+请删除旧版的 `modules` 字段。未知或无效字段会作为配置错误处理，而不是悄悄保留第二套开关。
 
 ### `pi-dag-workflow-profile.json`
 
-可用 `/agents profile …` 保存，也可手动编辑这个可选用户级文件：
+可用 `/agents profile …` 保存，或手动编辑这个可选用户级文件：
 
 ```json
 {
   "profiles": [
     {
       "name": "research",
-      "model": { "provider": "example-provider", "id": "example-model" },
-      "thinking": "low",
+      "thinking": "off",
       "tools": ["read", "grep", "find", "ls"]
     }
   ]
 }
 ```
 
-未指定 Profile 时继承主会话所选模型，默认 read/grep/find/ls、thinking off。明确指定的内置工具可增加 write/edit/bash；不自动复制任意主会话扩展工具。保存时校验模型和工具；只有显式保存才写用户配置。
+命令形式为 `/agents profile 名称 provider/model [thinking] [工具逗号列表]`，其中 `provider/model` 是已在 Pi 注册的模型占位符。Profile 不含 `model` 字段时继承当前主会话所选模型；子 Agent 默认使用 `read`、`grep`、`find`、`ls`，thinking 关闭。明确指定的内置工具可增加 `write`、`edit` 或 `bash`。不会自动复制主会话中任意扩展工具；保存时会校验模型和工具。
 
 ## 必须了解的边界
 
-- 20 次是**插件额外续跑／唤醒额度**，不是 API 总请求上限。Pi 原生工具结果 follow-up 和重试另算；主模型报告的进展需要实际核验。
-- 已完成 Todo 不悄悄重开，返工建新项。clear 不复用编号。切换／删除 Goal 不清空 Todo，不撤销文件。
-- 进入 Plan 需要主会话空闲且受管理子进程不再活动。退出 Plan、查看和恢复不会重启暂停的 Goal。
-- 全新会话仅有命令元数据时可能尚未创建会话文件。发送正常消息后随 Pi 落盘；插件只提示，不另写任务文件。`--no-session` 不持久化。
-- 扩展和有写入能力的子进程使用你的 OS 权限。Plan／工具选择**不是沙箱**，分支导航不会回滚项目修改。
-- 子用量随 Job 结果保存（`/agents wait jobId`）。原生父会话费用不包含独立子进程；报告金额是配置估算，不是账单。
-- 密集／大 DAG 明确退回完整前驱列表；裁剪小组件明确标注预览，不冒充完整图。
+- 额度是**插件额外续跑与唤醒**的预算，不是 Pi 或 API 调用上限。原生工具结果 follow-up 和重试另算，模型报告的进展也应实际核验，而不是直接采信。
+- 已完成 Todo 不能悄悄重开；返工请新建任务。`clear` 不复用编号。切换或删除 Goal 既不清空 Todo，也不撤销项目文件。
+- 全部 Todo 完成不会自动把 Goal 标记为完成；核验结果后，由主模型或用户明确标记完成。
+- Plan 和工具选择是执行限制，**不是操作系统沙箱**。扩展和有写入能力的子进程使用你的操作系统权限，分支导航不会回滚项目修改。
+- 恢复会话后自动续跑保持暂停，子 Agent 不会复活。进入 Plan 需要主会话空闲且没有活动的受管理子进程。
+- 全新会话只有命令元数据时可能尚未创建会话文件；发送一条正常消息，Pi 才能持久化工作流。
+- 子用量随 Job 结果保留。原生父会话统计不包含独立子进程，报告金额是配置估算，不是账单。
+- 子报告和结果输出不设插件级字符上限，使用提示词引导合适篇幅；长报告仍会占用模型上下文和会话存储。各类报告及工具结果的交付时机见[通信说明](docs/COMMUNICATION.md)。
+- 密集或大型 DAG 会退回前驱列表；被裁剪的小组件会明确标注为预览，不冒充完整依赖图。
 
-## 开发
+## 致谢
 
-```bash
-npm run check                 # 类型、离线／实际 Pi 回归、打包检查
-npm run test:performance      # 本机绘制基准，不调用模型
-npm run test:goal-flash       # 显式真实模型 Goal 验收，会消耗额度
-npm run test:joint-flash      # 有界主会话＋两子 Agent 联合验收
-```
+pi-dag-workflow 是独立实现。它在可见任务图、只读规划、子 Agent 和界面双语方面的思路，受到 Pi 社区相关探索的启发，包括 [pi-workflow](https://github.com/AgwaB/pi-workflow)、[pi-subagents](https://github.com/nicobailon/pi-subagents)、[pi-plan-mode](https://github.com/narumitw/pi-plan-mode)、[rpiv-todo](https://github.com/juicesharp/rpiv-todo) 和 [pi-i18n](https://github.com/jerryfan/pi-i18n)。这些项目是参考来源，不是运行时依赖。
 
-测试使用隔离 Pi 0.99.2 会话和原生包资源过滤。工具提供命名空间／按需指导与操作提示，支持原生 codemode；嵌套调用仍经过 Plan 限制。工具默认直接可用，不替你启用 codemode 或选择模型。真实验收需要已配置 `example-model`，会消耗额度。tmux 测试按当前要求暂停，不属于默认检查。
+## 许可证
 
-```text
-src/
-  workflow/      共享会话状态、运行时协调与绘制生命周期
-  todos/         Todo 状态、工具与命令
-  plan/          规划命令与只读限制
-  agents/        子进程、消息、Profile 与用量
-  goal/          Goal 状态、注意力与共享续跑预算
-  dag/           图校验、临时缓存与实线路由
-  ui/            主题绘制与滚动
-  shared/        配置路径与模块选择
-```
+[MIT](LICENSE)

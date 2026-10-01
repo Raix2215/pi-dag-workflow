@@ -6,6 +6,14 @@ import { fileURLToPath } from "node:url";
 
 export interface RpcRecord { type: string; id?: string; command?: string; success?: boolean; data?: unknown; error?: string; [key: string]: unknown }
 
+/** Opt-in live tests require a caller-selected model; no personal provider defaults. */
+export function liveModel() {
+  const reference = process.env.PI_DAG_TEST_MODEL?.trim() ?? '';
+  const split = reference.indexOf('/');
+  if (split < 1 || split === reference.length - 1) throw new Error('Set PI_DAG_TEST_MODEL to a registered provider/model before running a live test');
+  return { provider: reference.slice(0, split), id: reference.slice(split + 1), thinking: process.env.PI_DAG_TEST_THINKING ?? 'off' };
+}
+
 /** Actual isolated Pi process, using only the new package and an offline test provider. */
 export class IsolatedClient {
   readonly records: RpcRecord[] = [];
@@ -34,14 +42,14 @@ export class IsolatedClient {
     child.on("error", () => { for (const listener of this.listeners) listener(); });
     child.on("close", () => { for (const listener of this.listeners) listener(); });
   }
-  static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = [], configuredPackage = false, entries?: string[]): Promise<IsolatedClient> {
+  static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = [], configuredPackage = false, entries?: string[], language = 'zh-CN'): Promise<IsolatedClient> {
     const home = root ?? await mkdtemp(join(tmpdir(), "pi-dag-m1-"));
     const cli = resolve(fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url)));
     const entry = fileURLToPath(new URL("../../", import.meta.url));
     const model = fileURLToPath(new URL("./offline-model.ts", import.meta.url));
     const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", ...configuredPackage ? [] : ['--no-extensions', ...(entries ?? [entry]).flatMap((path) => ['-e', path])], "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", ...extraArgs.includes('--approve') ? [] : ['--no-approve'], "--session-id", session, "--provider", "dag-test", "--model", "scripted", "-e", model, ...extraExtensions.flatMap((path) => ["-e", path]), ...extraArgs], {
       cwd: home,
-      env: { PATH: process.env.PATH ?? "", HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_CODING_AGENT_SESSION_DIR: join(home, "sessions"), PI_OFFLINE: "1", TERM: "xterm-256color" },
+      env: { PATH: process.env.PATH ?? "", HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_CODING_AGENT_SESSION_DIR: join(home, "sessions"), PI_OFFLINE: "1", TERM: "xterm-256color", LANGUAGE: language },
       stdio: "pipe",
     });
     const client = new IsolatedClient(child, home);
@@ -49,10 +57,11 @@ export class IsolatedClient {
     return client;
   }
   static async startFlash(extraTools: string[] = []): Promise<IsolatedClient> {
-    const root = await mkdtemp(join(tmpdir(), "pi-dag-flash-"));
+    const model = liveModel();
+    const root = await mkdtemp(join(tmpdir(), "pi-dag-live-"));
     const cli = fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url));
     const entry = fileURLToPath(new URL("../../", import.meta.url));
-    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-dir", join(root, "sessions"), "--provider", "example-provider", "--model", "example-model", "--thinking", "low", "--tools", ["todo", "read", "grep", "find", "ls", "write", ...extraTools].join(","), "-e", entry], {
+    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-dir", join(root, "sessions"), "--provider", model.provider, "--model", model.id, "--thinking", model.thinking, "--tools", ["todo", "read", "grep", "find", "ls", "write", ...extraTools].join(","), "-e", entry], {
       cwd: root,
       env: { ...process.env, PI_OFFLINE: "1", PI_CODING_AGENT_SESSION_DIR: join(root, "sessions") },
       stdio: "pipe",

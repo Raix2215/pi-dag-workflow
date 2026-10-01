@@ -1,11 +1,11 @@
 {
   "name": "pi-dag-workflow",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "A lightweight, session-local Todo DAG workflow for Pi",
+  "license": "MIT",
   "type": "module",
-  "keywords": ["pi-package"],
-  "files": ["src", "README.md", "README.zh-CN.md"],
+  "keywords": ["pi-package", "pi", "workflow", "dag", "todo", "subagents"],
+  "files": ["src", "README.md", "README.zh-CN.md", "LICENSE", "CHANGELOG.md", "docs"],
   "pi": {
     "extensions": ["./src/todos/index.ts", "./src/plan/index.ts", "./src/agents/index.ts", "./src/goal/index.ts", "./src/ui/index.ts"]
   },
@@ -21,7 +21,8 @@
     "test:joint-flash": "node test/m4-flash-smoke.ts",
     "test:performance": "node test/m4-performance.ts",
     "check:pack": "npm pack --dry-run --ignore-scripts",
-    "check": "npm run typecheck && npm test && npm run check:pack"
+    "check:release": "node scripts/check-release.mjs",
+    "check": "npm run typecheck && npm test && npm run check:pack && npm run check:release"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

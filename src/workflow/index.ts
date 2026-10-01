@@ -10,9 +10,12 @@ import { detailView } from "../ui/detail.ts";
 import { noFeatures, type Feature } from './features.ts';
 import { registerTodos } from '../todos/register.ts';
 import { registerPlan } from '../plan/register.ts';
+import { loadLocale } from '../shared/config.ts';
+import { createTranslator } from '../shared/i18n.ts';
 
 const WIDGET = "pi-dag-workflow.todos";
 export function createWorkflow(pi: ExtensionAPI) {
+  const msg = createTranslator(loadLocale());
   const modules = noFeatures();
   const attached = new Set<Feature>();
   const started = new WeakSet<object>();
@@ -40,8 +43,8 @@ export function createWorkflow(pi: ExtensionAPI) {
       return;
     }
     const lines = (width: number) => {
-      const rendered = !state.visible && state.plan ? renderTasks(displayedState, width, { maxRows: 0, theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle }) : state.view === "dag" ? renderDag(displayedState, width, ctx.ui.theme, goalTitle, snapshotJobs, { maxLines: 11 }) : renderTasks(displayedState, width, { theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle });
-      if (restoreError) rendered.push(truncateToWidth(`恢复失败：${restoreError}；工作流修改已禁用`, width));
+      const rendered = !state.visible && state.plan ? renderTasks(displayedState, width, { maxRows: 0, theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle, msg }) : state.view === "dag" ? renderDag(displayedState, width, ctx.ui.theme, goalTitle, snapshotJobs, { maxLines: 11, msg }) : renderTasks(displayedState, width, { theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle, msg });
+      if (restoreError) rendered.push(truncateToWidth(msg`恢复失败：${restoreError}；工作流修改已禁用`, width));
       return rendered;
     };
     if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET, () => {
@@ -71,28 +74,28 @@ export function createWorkflow(pi: ExtensionAPI) {
     const sessionFile = ctx.sessionManager.getSessionFile();
     if (!warnedEphemeral && (!sessionFile || !existsSync(sessionFile))) {
       warnedEphemeral = true;
-      ctx.ui.notify(sessionFile ? "Pi 尚未创建会话文件：发送一条消息后，当前工作流状态才会随会话保存。" : "当前为临时会话，退出后工作流状态不保存。", "warning");
+      ctx.ui.notify(msg(sessionFile ? 'Pi 尚未创建会话文件：发送一条消息后，当前工作流状态才会随会话保存。' : '当前为临时会话，退出后工作流状态不保存。'), 'warning');
     }
   }
 
   function restore(ctx: ExtensionContext): void {
     warnedEphemeral = false;
     try {
-      state = modules.todos || modules.plan ? restoreState(ctx.sessionManager.getBranch()) : emptyState();
+      state = modules.todos || modules.plan ? restoreState(ctx.sessionManager.getBranch(), msg) : emptyState();
       if (!modules.plan) state = { ...state, plan: false }; // Disabled Plan cannot strand a read-only session.
       restoreError = undefined;
     } catch (error) {
       state = { ...emptyState(), plan: true };
       restoreError = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`工作流状态恢复失败：${restoreError}。保留原记录，修改已禁用；/todos clear 可明确重置。`, "error");
+      ctx.ui.notify(msg`工作流状态恢复失败：${restoreError}。保留原记录，修改已禁用；/todos clear 可明确重置。`, 'error');
     }
     paint(ctx);
   }
 
   function mutate(params: TodoParams, ctx: ExtensionContext) {
-    if (restoreError && params.action !== "list" && params.action !== "get") throw new Error(`状态恢复失败，不能修改：${restoreError}`);
+    if (restoreError && params.action !== "list" && params.action !== "get") throw new Error(msg`状态恢复失败，不能修改：${restoreError}`);
     agents?.assertTodoMutation(params);
-    const result = applyTodo(state, params);
+    const result = applyTodo(state, params, msg);
     commit(result.state, ctx);
     agents?.afterTodoMutation(params);
     return result;
@@ -120,14 +123,14 @@ export function createWorkflow(pi: ExtensionAPI) {
   }
   async function show(ctx: ExtensionContext, view: "list" | "dag"): Promise<void> {
     if (!modules.ui || ctx.mode !== "tui") {
-      ctx.ui.notify((view === "dag" ? renderDag(state, 80, undefined, goals?.title(), jobs()) : renderTasks(state, 80, { maxRows: Infinity, jobs: jobs(), ...(goals?.title() ? { goalTitle: goals.title() } : {}) })).join("\n") || "暂无任务", "info");
+      ctx.ui.notify((view === "dag" ? renderDag(state, 80, undefined, goals?.title(), jobs(), { msg }) : renderTasks(state, 80, { maxRows: Infinity, jobs: jobs(), msg, ...(goals?.title() ? { goalTitle: goals.title() } : {}) })).join('\n') || msg('暂无任务'), "info");
       return;
     }
     detailOpen = true;
     ctx.ui.setWidget(WIDGET, undefined); // The detail view replaces, rather than duplicates, the widget.
     try {
       await ctx.ui.custom<void>((tui, theme, _keys, done) => {
-        const panel = detailView((width) => view === "dag" ? renderDag(state, width, theme, goals?.title(), jobs()) : renderTasks(state, width, { maxRows: Infinity, theme, jobs: jobs(), goalTitle: goals?.title() }), () => tui.terminal.rows, () => tui.requestRender(), done, theme);
+        const panel = detailView((width) => view === "dag" ? renderDag(state, width, theme, goals?.title(), jobs(), { msg }) : renderTasks(state, width, { maxRows: Infinity, theme, jobs: jobs(), goalTitle: goals?.title(), msg }), () => tui.terminal.rows, () => tui.requestRender(), done, theme, msg);
         refreshDetail = () => { panel.invalidate(); tui.requestRender(); };
         return panel;
       });
@@ -137,22 +140,22 @@ export function createWorkflow(pi: ExtensionAPI) {
   return {
     onDispose(off: () => void) { dispose = off; },
     attach(feature: Feature, owner: ExtensionAPI): void {
-      if (attached.has(feature)) throw new Error(`重复加载工作流模块：${feature}`);
+      if (attached.has(feature)) throw new Error(msg`重复加载工作流模块：${feature}`);
       attached.add(feature);
       registerLifecycle(owner, feature);
-      if (feature === 'todos') registerTodos(owner, { state: () => state, mutate, commit, show, protected: () => !!restoreError,
+      if (feature === 'todos') registerTodos(owner, { msg, state: () => state, mutate, commit, show, protected: () => !!restoreError,
         reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
       });
-      if (feature === 'plan') registerPlan(owner, { state: () => state, commit, protected: () => !!restoreError,
-        assertCanEnter: () => agents?.assertPlanEntry(), onEnter: (ctx) => goals?.pause('进入 Plan', ctx),
+      if (feature === 'plan') registerPlan(owner, { msg, state: () => state, commit, protected: () => !!restoreError,
+        assertCanEnter: () => agents?.assertPlanEntry(), onEnter: (ctx) => goals?.pause(msg('进入 Plan'), ctx),
       });
-      if (feature === 'agents') agents = registerAgents(owner, { state: activeState, mutate, paint, protected: () => !!restoreError, ui: () => modules.ui,
+      if (feature === 'agents') agents = registerAgents(owner, { msg, state: activeState, mutate, paint, protected: () => !!restoreError, ui: () => modules.ui,
         canWake: () => !modules.goal || (goals?.canWake() ?? false),
         reserveWake: (ctx) => !modules.goal || (goals?.reserveWake(ctx) ?? false),
-        pauseAuto: (ctx) => { if (modules.goal) goals?.pause('用户暂停自动工作', ctx); },
+        pauseAuto: (ctx) => { if (modules.goal) goals?.pause(msg('用户暂停自动工作'), ctx); },
         resumeAuto: () => !modules.goal || (goals?.resumeAgentReports() ?? false),
       });
-      if (feature === 'goal') goals = registerGoal(owner, { state: activeState, jobs, paint, protected: () => !!restoreError,
+      if (feature === 'goal') goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError,
         pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: warnEphemeral,
       });
     },

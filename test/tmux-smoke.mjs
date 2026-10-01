@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const project = fileURLToPath(new URL("../", import.meta.url));
 const root = await mkdtemp(join(tmpdir(), "pi-dag-tui-"));
-const evidence = resolve(project, "../docs/evidence/m1");
+const evidence = resolve(project, "artifacts/tui");
 await mkdir(evidence, { recursive: true });
 const run = (...args) => {
   const result = spawnSync("tmux", args, { encoding: "utf8", timeout: 5000 });
@@ -51,7 +51,7 @@ const save = async (label) => {
 };
 const quoted = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const args = [process.execPath, join(project, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-id", "m1-tui", "--provider", "dag-test", "--model", "scripted", "-e", project, "-e", join(project, "test/fixtures/offline-model.ts")];
-const launch = `cd ${quoted(root)} && env -i HOME=${quoted(root)} PATH=${quoted(process.env.PATH ?? "")} TERM=xterm-256color LANG=C.UTF-8 PI_OFFLINE=1 PI_CODING_AGENT_DIR=${quoted(join(root, "agent"))} PI_CODING_AGENT_SESSION_DIR=${quoted(join(root, "sessions"))} ${args.map(quoted).join(" ")}`;
+const launch = `cd ${quoted(root)} && env -i HOME=${quoted(root)} PATH=${quoted(process.env.PATH ?? "")} TERM=xterm-256color LANGUAGE=zh-CN PI_OFFLINE=1 PI_CODING_AGENT_DIR=${quoted(join(root, "agent"))} PI_CODING_AGENT_SESSION_DIR=${quoted(join(root, "sessions"))} ${args.map(quoted).join(" ")}`;
 
 try {
   send(launch);
@@ -88,7 +88,7 @@ try {
   run("send-keys", "-t", pane, "Escape");
   await delay(300);
   send("/dag");
-  await poll(() => capture().includes("第 2 层"), "派生 DAG");
+  await poll(() => capture().includes("DAG") && /[┌┐└┘┬─]/.test(capture()), "派生 DAG 实线图");
   await save("08-dag-panel");
   run("send-keys", "-t", pane, "Escape");
   await delay(300);

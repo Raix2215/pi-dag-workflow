@@ -8,12 +8,16 @@ import goal from '../src/goal/index.ts';
 import ui from '../src/ui/index.ts';
 import { FEATURE_NAMES } from '../src/workflow/features.ts';
 
-test('manifest exposes five independently selectable Pi resources and no host runtime dependency', () => {
+test('manifest exposes five independently selectable Pi resources and release metadata', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.deepEqual(manifest.pi.extensions, FEATURE_NAMES.map((name) => `./src/${name}/index.ts`));
-  assert.equal(manifest.private, true);
+  assert.notEqual(manifest.private, true, 'package must be publishable');
+  assert.equal(manifest.version, '0.1.0');
+  assert.equal(manifest.license, 'MIT');
   assert.equal(manifest.peerDependencies['@earendil-works/pi-coding-agent'], '*');
   assert.equal(manifest.dependencies, undefined);
+  for (const entry of ['src', 'README.md', 'README.zh-CN.md', 'LICENSE', 'CHANGELOG.md', 'docs']) assert.ok(manifest.files.includes(entry), `files must include ${entry}`);
+  assert.ok(manifest.keywords.includes('pi-package'));
 });
 test('each public resource exports a factory, without an aggregate root entry', () => {
   for (const factory of [todos, plan, agents, goal, ui]) assert.equal(typeof factory, 'function');

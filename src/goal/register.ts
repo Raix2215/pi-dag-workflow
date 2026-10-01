@@ -7,12 +7,14 @@ import { deriveDag } from '../dag/graph.ts';
 import type { WorkflowState } from '../todos/state.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
+import { chinese, type Translator } from '../shared/i18n.ts';
 
-interface Hooks { state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void }
+interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void }
 /** One shared budget for plugin continuations and child-report wakes. No goal dispatcher. */
 export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
+  const msg = hooks.msg ?? chinese;
   let state = emptyGoalState();
-  let config: WorkflowConfig = { goalMaxTurns: 20, goalNoProgressLimit: 3 };
+  let config: WorkflowConfig = { language: 'auto', goalMaxTurns: 20, goalNoProgressLimit: 3 };
   let error: string | undefined;
   let userAuthority = false;
   let automaticRound = false;
@@ -26,30 +28,30 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const activatable = new Set(['enable', 'on', 'focus', 'switch', 'resume']);
   const completion: CompletionSpec = {
     actions: [
-      { action: 'new', description: '创建目标（不启动）：new 标题' },
-      { action: 'list', description: '查看目标与预算' },
-      { action: 'status', description: '查看目标与预算' },
-      { action: 'enable', description: '启用并推进目标：enable #编号' },
-      { action: 'resume', description: '恢复自动续跑：resume [ #编号]' },
-      { action: 'focus', description: '聚焦目标：focus #编号' },
-      { action: 'switch', description: '切换焦点目标：switch #编号' },
-      { action: 'edit', description: '修改标题：edit #编号 新标题' },
-      { action: 'pause', description: '暂停目标续跑：pause [ #编号]' },
-      { action: 'disable', description: '停用目标：disable #编号' },
-      { action: 'off', description: '停用当前目标' },
-      { action: 'on', description: '启用目标：on #编号' },
-      { action: 'complete', description: '标记完成：complete #编号' },
-      { action: 'done', description: '标记完成：done #编号' },
-      { action: 'delete', description: '删除目标：delete #编号' },
-      { action: 'get', description: '查看目标详情：get #编号' },
-      { action: 'config', description: '查看配置路径与值' },
-      { action: 'reset', description: '清除 Goal 状态' },
-      { action: 'help', description: '查看命令帮助' },
+      { action: 'new', description: msg('创建目标（不启动）：new 标题') },
+      { action: 'list', description: msg('查看目标与预算') },
+      { action: 'status', description: msg('查看目标与预算') },
+      { action: 'enable', description: msg('启用并推进目标：enable #编号') },
+      { action: 'resume', description: msg('恢复自动续跑：resume [ #编号]') },
+      { action: 'focus', description: msg('聚焦目标：focus #编号') },
+      { action: 'switch', description: msg('切换焦点目标：switch #编号') },
+      { action: 'edit', description: msg('修改标题：edit #编号 新标题') },
+      { action: 'pause', description: msg('暂停目标续跑：pause [ #编号]') },
+      { action: 'disable', description: msg('停用目标：disable #编号') },
+      { action: 'off', description: msg('停用当前目标') },
+      { action: 'on', description: msg('启用目标：on #编号') },
+      { action: 'complete', description: msg('标记完成：complete #编号') },
+      { action: 'done', description: msg('标记完成：done #编号') },
+      { action: 'delete', description: msg('删除目标：delete #编号') },
+      { action: 'get', description: msg('查看目标详情：get #编号') },
+      { action: 'config', description: msg('查看配置路径与值') },
+      { action: 'reset', description: msg('清除 Goal 状态') },
+      { action: 'help', description: msg('查看命令帮助') },
     ],
     freeText: ['new', 'create'],
     tokens: (action) => ['enable', 'on', 'resume', 'focus', 'switch', 'edit', 'pause', 'disable', 'off', 'complete', 'done', 'delete', 'get'].includes(action) ? state.goals
       .filter((goal) => goal.status !== 'deleted' && (!activatable.has(action) || goal.status !== 'completed'))
-      .map((goal) => ({ token: `#${goal.id}`, label: `#${goal.id} ${goal.title}`, description: goalStatusLabel[goal.status] })) : null,
+      .map((goal) => ({ token: `#${goal.id}`, label: `#${goal.id} ${goal.title}`, description: msg(goalStatusLabel[goal.status]) })) : null,
   };
   function commit(next: GoalState, ctx: ExtensionContext) {
     if (next === state) return;
@@ -62,7 +64,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if (!focusedGoal(state) || state.run.paused) return;
     commit(pauseGoal(state, reason), ctx);
     hooks.pauseAgents();
-    ctx.ui.notify(`Goal 已暂停：${reason}；/goal resume 明确恢复`, 'warning');
+    ctx.ui.notify(msg`Goal 已暂停：${reason}；/goal resume 明确恢复`, 'warning');
   }
   const available = () => !error && !hooks.protected() && !hooks.state().plan && (!focusedGoal(state) ? standaloneReports : !state.run.paused && state.run.used < focusedGoal(state)!.maxTurns);
   function reserveWake(ctx: ExtensionContext): boolean {
@@ -81,16 +83,16 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const consumed = { ...state, run: { ...state.run } };
     delete consumed.run.nextStep;
     commit(consumed, ctx); // Never replay a stale action indefinitely.
-    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: `Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? `要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 pause，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
+    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 pause，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
   }
   async function restore(ctx: ExtensionContext) {
     userAuthority = false; automaticRound = false; revision = 0; error = undefined;
     try {
-      state = restoreGoalState(ctx.sessionManager.getBranch());
-      state = pauseGoal(state, focusedGoal(state) ? '会话恢复' : state.run.reason ?? '');
+      state = restoreGoalState(ctx.sessionManager.getBranch(), msg);
+      state = pauseGoal(state, focusedGoal(state) ? msg('会话恢复') : state.run.reason ?? '');
       if (!focusedGoal(state) && !state.run.reason) delete state.run.reason;
-      config = await loadConfig();
-    } catch (cause) { error = String(cause); state = emptyGoalState(); ctx.ui.notify(`Goal／配置恢复失败：${error}；保留历史，/goal reset 明确清除 Goal，配置错误请修复后重载`, 'error'); }
+      config = await loadConfig(msg);
+    } catch (cause) { error = String(cause); state = emptyGoalState(); ctx.ui.notify(msg`Goal／配置恢复失败：${error}；保留历史，/goal reset 明确清除 Goal，配置错误请修复后重载`, 'error'); }
     standaloneReports = !state.run.reason;
     baseline = workStamp(); lastProgress = state.run.progress ?? '';
     paint(ctx);
@@ -108,50 +110,51 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if (event.isError) return;
     if (['write', 'edit'].includes(event.toolName) || event.toolName === 'subagent_spawn' && !(event.result as { isError?: boolean })?.isError) revision++;
   });
-  pi.on('ui_prompt_start', (event, ctx) => { if (event.kind !== 'custom') pause('等待用户答复', ctx); });
+  pi.on('ui_prompt_start', (event, ctx) => { if (event.kind !== 'custom') pause(msg('等待用户答复'), ctx); });
   // Pi skips before_settle when an operation is aborted; observe the run/turn too.
-  pi.on('turn_end', (event, ctx) => { if (event.outcome !== 'completed') pause(event.outcome === 'aborted' ? '用户中断' : '模型出错', ctx); });
+  pi.on('turn_end', (event, ctx) => { if (event.outcome !== 'completed') pause(msg(event.outcome === 'aborted' ? '用户中断' : '模型出错'), ctx); });
   pi.on('agent_end', (event, ctx) => {
     const last = event.messages.findLast((message) => message.role === 'assistant');
-    if (ctx.signal?.aborted || last?.role === 'assistant' && last.stopReason === 'aborted') pause('用户中断', ctx);
-    else if (last?.role === 'assistant' && last.stopReason === 'error') pause('模型出错', ctx);
+    if (ctx.signal?.aborted || last?.role === 'assistant' && last.stopReason === 'aborted') pause(msg('用户中断'), ctx);
+    else if (last?.role === 'assistant' && last.stopReason === 'error') pause(msg('模型出错'), ctx);
   });
   pi.on('agent_before_settle', (event, ctx) => {
-    if (event.outcome !== 'completed') { pause(event.outcome === 'aborted' ? '用户中断' : '模型出错', ctx); return; }
+    if (event.outcome !== 'completed') { pause(msg(event.outcome === 'aborted' ? '用户中断' : '模型出错'), ctx); return; }
     if (!focusedGoal(state) || state.run.paused || error || hooks.protected() || hooks.state().plan) return;
     if (event.continue) return; // An Agent report already requested and paid for this next request.
     const goal = focusedGoal(state)!;
-    if (state.run.used >= goal.maxTurns) { pause(`自动续跑达到 ${goal.maxTurns} 轮上限`, ctx); return; }
+    if (state.run.used >= goal.maxTurns) { pause(msg`自动续跑达到 ${goal.maxTurns} 轮上限`, ctx); return; }
     const progressed = workStamp() !== baseline || Boolean(state.run.progress?.trim() && state.run.progress !== lastProgress);
     // Only completed automatic rounds count as stalled; user inspections do not refill/consume the budget.
     const stalled = progressed ? 0 : automaticRound ? state.run.stalled + 1 : state.run.stalled;
     commit({ ...state, run: { ...state.run, stalled } }, ctx);
     baseline = workStamp(); lastProgress = state.run.progress ?? '';
-    if (stalled >= config.goalNoProgressLimit) { pause(`连续 ${stalled} 轮无新进展`, ctx); return; }
+    if (stalled >= config.goalNoProgressLimit) { pause(msg`连续 ${stalled} 轮无新进展`, ctx); return; }
     const jobs = hooks.jobs().filter((job) => ['starting', 'running', 'waiting'].includes(job.status));
     const assigned = new Set(jobs.map((job) => job.todoId));
     const tasks = hooks.state().tasks;
     const ready = new Set(deriveDag(tasks).ready);
     const task = tasks.find((task) => !assigned.has(task.id) && (ready.has(task.id) || task.status === 'in_progress'));
     // A checkpoint nextStep can name independent main work even while children run.
-    if (state.run.nextStep === '') { pause('等待用户答复', ctx); return; }
-    const initial = state.run.used === 0 && state.run.nextStep === `推进目标：${goal.title}`;
-    const nextStep = initial && jobs.length ? (task ? `推进并核验 Todo #${task.id}：${task.subject}` : undefined) : state.run.nextStep?.trim() || (task ? `推进并核验 Todo #${task.id}：${task.subject}` : undefined);
+    if (state.run.nextStep === '') { pause(msg('等待用户答复'), ctx); return; }
+    const initial = state.run.used === 0 && state.run.nextStep === msg`推进目标：${goal.title}`;
+    const taskStep = task ? msg`推进并核验 Todo #${task.id}：${task.subject}` : undefined;
+    const nextStep = initial && jobs.length ? taskStep : state.run.nextStep?.trim() || taskStep;
     if (!nextStep) {
       if (initial) { const waiting = { ...state, run: { ...state.run } }; delete waiting.run.nextStep; commit(waiting, ctx); }
       if (jobs.length) return; // Wait for real child reports, no polling model calls.
-      pause('没有具体下一步，等待用户', ctx); return;
+      pause(msg('没有具体下一步，等待用户'), ctx); return;
     }
     const entry = continuation(ctx, nextStep);
     if (entry) return { entries: [entry], continue: true };
   });
   function mutate(params: GoalParams, ctx: ExtensionContext, explicit = false) {
-    if ((error || hooks.protected()) && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(error ?? '工作流状态受保护');
-    if (hooks.state().plan && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error('Plan 只查看／停用 Goal；先 /plan off');
+    if ((error || hooks.protected()) && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(error ?? msg('工作流状态受保护'));
+    if (hooks.state().plan && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(msg('Plan 只查看／停用 Goal；先 /plan off'));
     const current = focusedGoal(state);
-    if (automaticRound && !userAuthority && params.action === 'update' && (params.title !== undefined || params.description !== undefined || params.maxTurns !== undefined)) throw new Error('自动续跑修改目标范围／上限前需用户确认；progress/nextStep 不受此限制');
-    if (activates(params.action) && !explicit && !userAuthority && (state.run.paused || params.id !== undefined && params.id !== current?.id)) throw new Error('自动续跑不能自行重置预算／切换目标；请等待用户明确恢复');
-    const result = applyGoal(state, params, config.goalMaxTurns);
+    if (automaticRound && !userAuthority && params.action === 'update' && (params.title !== undefined || params.description !== undefined || params.maxTurns !== undefined)) throw new Error(msg('自动续跑修改目标范围／上限前需用户确认；progress/nextStep 不受此限制'));
+    if (activates(params.action) && !explicit && !userAuthority && (state.run.paused || params.id !== undefined && params.id !== current?.id)) throw new Error(msg('自动续跑不能自行重置预算／切换目标；请等待用户明确恢复'));
+    const result = applyGoal(state, params, config.goalMaxTurns, msg);
     const changedFocus = result.state.focusId !== state.focusId;
     const started = activates(params.action) && result.state !== state;
     commit(result.state, ctx);
@@ -165,7 +168,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       if (entry) {
         // Full prompt path refreshes before_agent_start (especially after leaving Plan).
         try { pi.sendUserMessage(entry.content); }
-        catch (cause) { pause(`启动失败：${String(cause)}`, ctx); }
+        catch (cause) { pause(msg`启动失败：${String(cause)}`, ctx); }
       }
     }
     return result;
@@ -178,30 +181,30 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     renderCall(args, theme) { return new Text(theme.fg('toolTitle', `󰓾 goal ${clean(args.action ?? '')}${args.id ? ` #${args.id}` : ''}`), 0, 0); },
     renderResult(result, _options, theme) { return new Text(theme.fg(result.isError ? 'error' : 'text', result.content.filter((item) => item.type === 'text').map((item) => item.text.split('\n').map(clean).join('\n')).join('\n')), 0, 0); },
   });
-  pi.registerCommand('goal', { description: '目标 list/new/enable/resume/off/switch/edit/complete/delete/reset/config，或自然语言', getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
+  pi.registerCommand('goal', { description: msg('目标 list/new/enable/resume/off/switch/edit/complete/delete/reset/config，或自然语言'), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
-      if (action === 'help') { ctx.ui.notify('/goal list/status · new 标题 · enable/focus/switch #编号 · resume/off（当前焦点） · edit #编号 标题 · complete/delete #编号 · config · reset；创建不启动，查看不重置预算，暂停后需明确恢复。', 'info'); return; }
-      const id = (value?: string) => { if (value === undefined && state.focusId !== undefined) return state.focusId; if (!value || !/^#?[1-9]\d*$/.test(value)) throw new Error('请给出目标编号'); return Number(value.replace(/^#/, '')); };
-      if (!args.trim() || action === 'list' || action === 'status') { ctx.ui.notify(`${applyGoal(state, { action: 'list' }).text}\n续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? state.run.reason || '未启用' : '运行'}${error ? `\n错误：${error}` : ''}`, 'info'); return; }
+      if (action === 'help') { ctx.ui.notify(msg('/goal list/status · new 标题 · enable/focus/switch #编号 · resume/off（当前焦点） · edit #编号 标题 · complete/delete #编号 · config · reset；创建不启动，查看不重置预算，暂停后需明确恢复。'), 'info'); return; }
+      const id = (value?: string) => { if (value === undefined && state.focusId !== undefined) return state.focusId; if (!value || !/^#?[1-9]\d*$/.test(value)) throw new Error(msg('请给出目标编号')); return Number(value.replace(/^#/, '')); };
+      if (!args.trim() || action === 'list' || action === 'status') { ctx.ui.notify(`${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? state.run.reason || msg('未启用') : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
       if (action === 'config') { ctx.ui.notify(JSON.stringify({ path: configPaths().config, ...config }), 'info'); return; }
       if (action === 'reset') {
-        if (!ctx.hasUI || !await ctx.ui.confirm('清除 Goal 状态？', '保留历史、Todos、Job 和项目文件；自动续跑停止。')) return;
-        hooks.pauseAgents(); commit(emptyGoalState(), ctx); config = await loadConfig(); error = undefined; return;
+        if (!ctx.hasUI || !await ctx.ui.confirm(msg('清除 Goal 状态？'), msg('保留历史、Todos、Job 和项目文件；自动续跑停止。'))) return;
+        hooks.pauseAgents(); commit(emptyGoalState(), ctx); config = await loadConfig(msg); error = undefined; return;
       }
       let params: GoalParams | undefined;
       if (action === 'new' || action === 'create') params = { action: 'create', title: parts.join(' ') };
       else if (action === 'edit') params = { action: 'update', id: id(parts[0]), title: parts.slice(1).join(' ') };
       else {
         const mapped = action === 'off' ? 'disable' : action === 'on' ? 'enable' : action === 'done' ? 'complete' : action === 'del' ? 'delete' : action;
-        if (['enable', 'resume', 'focus', 'switch', 'disable', 'pause', 'complete', 'delete', 'get'].includes(mapped ?? '')) { if (parts.length > 1) throw new Error('此命令只接受一个编号'); params = { action: mapped as GoalParams['action'], id: id(parts[0]) }; }
+        if (['enable', 'resume', 'focus', 'switch', 'disable', 'pause', 'complete', 'delete', 'get'].includes(mapped ?? '')) { if (parts.length > 1) throw new Error(msg('此命令只接受一个编号')); params = { action: mapped as GoalParams['action'], id: id(parts[0]) }; }
       }
       if (params) { ctx.ui.notify(mutate(params, ctx, true).text, 'info'); return; }
-      pi.sendUserMessage(`请管理当前 Goal：${args}`, ctx.isIdle() ? undefined : { deliverAs: 'followUp' });
+      pi.sendUserMessage(msg`请管理当前 Goal：${args}`, ctx.isIdle() ? undefined : { deliverAs: 'followUp' });
     } catch (cause) { ctx.ui.notify(String(cause), 'error'); }
   } });
   return {
-    title: () => { const goal = focusedGoal(state); return goal ? `#${goal.id} ${goal.title}${state.run.paused ? '（暂停）' : ''}` : undefined; },
+    title: () => { const goal = focusedGoal(state); return goal ? `#${goal.id} ${goal.title}${state.run.paused ? msg('（暂停）') : ''}` : undefined; },
     canWake: available,
     resumeAgentReports: () => {
       if (focusedGoal(state)) return available(); // Never bypass a paused or exhausted Goal.

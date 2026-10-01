@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a problem with pi-dag-workflow
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for the report. Please search existing issues first, and do not include secrets, tokens, or personal file paths.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A minimal sequence of commands or prompts that triggers the issue.
+      placeholder: |
+        1. Run ...
+        2. Enter ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: pi-dag-workflow version
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: pi-version
+    attributes:
+      label: Pi version
+      placeholder: e.g. 0.99.2
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      placeholder: e.g. 22.19.0
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste any relevant errors. Remove secrets, tokens, and personal paths first.
+      render: text
+    validations:
+      required: false

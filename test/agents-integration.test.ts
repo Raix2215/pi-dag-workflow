@@ -81,24 +81,52 @@ test("actual Pi cancels/removes jobs, preserves terminal output on reload and ne
   result = await call(client, "subagent_wait", { jobId: done, timeout: 0 }); assert.equal(result.details.output, output);
 });
 
-test("actual Pi inserts child reports after the complete tool batch, marks origin and suppresses paused old wakes", { timeout: 30000 }, async (t) => {
+test("actual Pi consumes wait results without duplicate auto reports and suppresses paused old wakes", { timeout: 30000 }, async (t) => {
   const client = await start(); t.after(() => client.close());
   const result = await call(client, "subagent_spawn", { task: 'TEST CALL subagent_send {"message":"请求核验","question":true}' });
   const jobId = result.details.jobId;
   const pending = await call(client, "subagent_wait", { jobId, timeout: 10 });
+  assert.equal(pending.details.status, "waiting");
+  assert.match(JSON.stringify(pending.details.requests), /请求核验/);
   const entries = await client.entries();
   const reports = entries.filter((item: any) => item.type === "custom_message" && item.customType === "pi-dag-workflow.agent-report") as any[];
-  assert.ok(reports.length, JSON.stringify(entries));
-  assert.match(JSON.stringify(reports), /不是用户授权/);
-  const firstTool = client.records.findIndex((item) => item.type === "tool_execution_end" && item.toolName === "subagent_spawn");
-  const firstReportEntry = entries.findIndex((item: any) => item.type === "custom_message" && item.customType === "pi-dag-workflow.agent-report");
-  assert.ok(firstReportEntry >= 0);
-  const firstReport = client.records.findIndex((item) => item.type === "entry_appended" && (item.entry as any)?.customType === "pi-dag-workflow.agent-report");
-  if (firstReport >= 0) assert.ok(firstReport > firstTool);
+  // The wait tool result already carries the question into model context; no duplicate automatic report.
+  assert.ok(!JSON.stringify(reports).includes("请求核验"), JSON.stringify(entries));
   await client.prompt("/agents pause");
   await client.prompt(`/agents reply ${pending.details.requests[0].requestId} 完成即可`);
   await client.until(() => client.records.some((item) => item.type === "entry_appended" && (item.entry as any)?.data?.jobs?.some((job: any) => job.id === jobId && job.status === "completed")));
   const after = client.records.length;
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.ok(!client.records.slice(after).some((item) => item.type === "agent_start"));
+});
+
+test("actual Pi keeps paused terminal reports pending until an explicit wait acknowledges delivery", { timeout: 30000 }, async (t) => {
+  const client = await start(); t.after(() => client.close());
+  const jobs = (entries: unknown[]) => ((entries as any[]).findLast((entry) => entry.customType === AGENTS_TYPE)?.data?.jobs ?? []) as any[];
+  const result = await call(client, "subagent_spawn", { task: "完成只读调查" });
+  const jobId = result.details.jobId;
+  await client.prompt("/agents pause");
+  await client.until(() => client.records.some((item) => item.type === "entry_appended" && (item.entry as any)?.data?.jobs?.some((job: any) => job.id === jobId && job.status === "completed")));
+  assert.equal(jobs(client.records.filter((item) => item.type === "entry_appended").map((item) => (item as any).entry)).find((job) => job.id === jobId)!.reportDelivery, "pending");
+  // A UI-only /agents wait never enters model context and must not acknowledge the report.
+  await client.prompt(`/agents wait ${jobId}`);
+  assert.equal(jobs(await client.entries()).find((job) => job.id === jobId)!.reportDelivery, "pending");
+  const waited = await call(client, "subagent_wait", { jobId, timeout: 0 });
+  assert.equal(waited.details.status, "completed");
+  assert.equal(waited.details.reportDelivery, "delivered");
+  await client.until(() => client.records.some((item) => item.type === "entry_appended" && (item.entry as any)?.data?.jobs?.some((job: any) => job.id === jobId && job.reportDelivery === "delivered")));
+  assert.equal(jobs(await client.entries()).find((job) => job.id === jobId)!.reportDelivery, "delivered");
+});
+
+test("actual Pi delivers an idle terminal report automatically and marks it delivered once", { timeout: 30000 }, async (t) => {
+  const client = await start(); t.after(() => client.close());
+  const jobs = (entries: unknown[]) => ((entries as any[]).findLast((entry) => entry.customType === AGENTS_TYPE)?.data?.jobs ?? []) as any[];
+  const result = await call(client, "subagent_spawn", { task: 'TEST CALL subagent_send {"message":"自动交付报告"}' });
+  const jobId = result.details.jobId;
+  await client.until(() => client.records.some((item) => item.type === "entry_appended" && (item.entry as any)?.data?.jobs?.some((job: any) => job.id === jobId && job.reportDelivery === "delivered")));
+  const entries = await client.entries();
+  const reports = entries.filter((entry: any) => entry.customType === "pi-dag-workflow.agent-report");
+  assert.ok(reports.length, JSON.stringify(entries));
+  assert.match(JSON.stringify(reports), /自动交付报告/);
+  assert.equal(jobs(entries).find((job) => job.id === jobId)!.reportDelivery, "delivered");
 });

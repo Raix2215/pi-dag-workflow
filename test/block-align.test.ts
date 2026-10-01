@@ -56,6 +56,7 @@ test('block 3 stays right-aligned and every row fits the width', () => {
       // Suffix ends the row: the last character is the closing bracket of the status tag.
       assert.ok(plain.endsWith(']'), plain);
       assert.ok(plain.lastIndexOf('[') > 0);
+      assert.equal(visibleWidth(line), width, 'metadata must end at the terminal right edge');
     }
   }
 });

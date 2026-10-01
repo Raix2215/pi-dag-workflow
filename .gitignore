@@ -2,3 +2,21 @@ node_modules/
 coverage/
 *.tgz
 *.log
+
+# Local evidence and Pi runtime state
+artifacts/
+.pi/
+*.jsonl
+
+# Secrets and local environment
+.env*
+!.env.example
+
+# Local auth/model/settings configs (root only; never ignore src/shared/config.ts)
+/auth.json
+/models.json
+/settings.json
+
+# Local workflow config and profiles
+pi-dag-workflow-config.json
+pi-dag-workflow-profile.json
