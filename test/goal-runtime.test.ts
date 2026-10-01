@@ -98,3 +98,13 @@ test('mock host: explicit idle resume reserves and starts once; unknown extra ar
   assert.equal(h.controller.snapshot().run.used, 1);
   assert.match(h.wakes[0].message, /Goal #1.*不是用户新授权/);
 });
+
+test('mock host: explicit goal edit is user-authorized after an automatic round, without refilling budget', async () => {
+  const h = host(); await h.enable(2);
+  assert.equal(h.controller.reserveWake(h.ctx), true);
+  assert.equal((await h.call({ action: 'update', title: 'model expanded scope' })).isError, true);
+  await h.commands.get('goal').handler('edit #1 User revised title', h.ctx);
+  assert.equal(h.controller.snapshot().goals[0]!.title, 'User revised title');
+  assert.equal(h.controller.snapshot().run.used, 1);
+  assert.equal((await h.call({ action: 'update', maxTurns: 200 })).isError, true);
+});

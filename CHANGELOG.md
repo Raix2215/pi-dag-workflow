@@ -26,5 +26,6 @@ First public preview.
 - Added slash-command argument completion and recent-work preview selection. Selected tasks render in creation order, oldest first, across status changes and dependency merges.
 - Consuming a job through `subagent_wait` prevents its current notices from being repeated as an automatic completion report.
 - Resolve child-process entry points from the running Pi host, so the distribution does not need a bundled development copy of Pi.
+- Keep explicit `/goal edit` user-authorized after automatic work, without refilling the allowance, and display saved Goal reasons in the selected language.
 - Refined subagent status icons, including starting, failed, interrupted, and cancelled states.
 - Routed the solid-line DAG with scrolling and an explicit predecessor-list fallback for dense graphs, so a clipped widget is never shown as a complete graph.

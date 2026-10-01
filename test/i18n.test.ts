@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { chinese, createTranslator, resolveLocale } from "../src/shared/i18n.ts";
+import { chinese, createTranslator, localizeSavedMessage, resolveLocale } from "../src/shared/i18n.ts";
 import { englishMessages } from "../src/shared/messages.en.ts";
 import { configPaths, loadConfig, loadLocale } from "../src/shared/config.ts";
 import { applyTodo, emptyState, statusLabel, type Todo, type WorkflowState } from "../src/todos/state.ts";
@@ -81,6 +81,13 @@ test("interleaved translators keep their own locale without leaking global state
   // Repeated calls remain stable and the exported default still speaks Chinese.
   assert.equal(en("已完成"), "Completed");
   assert.equal(chinese("已完成"), "已完成");
+});
+
+test('saved plugin reasons follow the new locale without changing unknown text', () => {
+  assert.equal(localizeSavedMessage('目标已完成', en), 'Goal completed');
+  assert.equal(localizeSavedMessage('Goal completed', chinese), '目标已完成');
+  assert.equal(localizeSavedMessage('Goal completed', en), 'Goal completed');
+  assert.equal(localizeSavedMessage('Unknown historical reason {0}', en), 'Unknown historical reason {0}');
 });
 
 test("English catalog values never contain Han characters and mirror key placeholders", () => {

@@ -7,7 +7,7 @@ import { deriveDag } from '../dag/graph.ts';
 import type { WorkflowState } from '../todos/state.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
-import { chinese, type Translator } from '../shared/i18n.ts';
+import { chinese, localizeSavedMessage, type Translator } from '../shared/i18n.ts';
 
 interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void }
 /** One shared budget for plugin continuations and child-report wakes. No goal dispatcher. */
@@ -152,7 +152,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if ((error || hooks.protected()) && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(error ?? msg('工作流状态受保护'));
     if (hooks.state().plan && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(msg('Plan 只查看／停用 Goal；先 /plan off'));
     const current = focusedGoal(state);
-    if (automaticRound && !userAuthority && params.action === 'update' && (params.title !== undefined || params.description !== undefined || params.maxTurns !== undefined)) throw new Error(msg('自动续跑修改目标范围／上限前需用户确认；progress/nextStep 不受此限制'));
+    if (automaticRound && !userAuthority && !explicit && params.action === 'update' && (params.title !== undefined || params.description !== undefined || params.maxTurns !== undefined)) throw new Error(msg('自动续跑修改目标范围／上限前需用户确认；progress/nextStep 不受此限制'));
     if (activates(params.action) && !explicit && !userAuthority && (state.run.paused || params.id !== undefined && params.id !== current?.id)) throw new Error(msg('自动续跑不能自行重置预算／切换目标；请等待用户明确恢复'));
     const result = applyGoal(state, params, config.goalMaxTurns, msg);
     const changedFocus = result.state.focusId !== state.focusId;
@@ -186,7 +186,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       const [action, ...parts] = args.trim().split(/\s+/);
       if (action === 'help') { ctx.ui.notify(msg('/goal list/status · new 标题 · enable/focus/switch #编号 · resume/off（当前焦点） · edit #编号 标题 · complete/delete #编号 · config · reset；创建不启动，查看不重置预算，暂停后需明确恢复。'), 'info'); return; }
       const id = (value?: string) => { if (value === undefined && state.focusId !== undefined) return state.focusId; if (!value || !/^#?[1-9]\d*$/.test(value)) throw new Error(msg('请给出目标编号')); return Number(value.replace(/^#/, '')); };
-      if (!args.trim() || action === 'list' || action === 'status') { ctx.ui.notify(`${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? state.run.reason || msg('未启用') : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
+      if (!args.trim() || action === 'list' || action === 'status') { ctx.ui.notify(`${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? (state.run.reason ? localizeSavedMessage(state.run.reason, msg) : msg('未启用')) : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
       if (action === 'config') { ctx.ui.notify(JSON.stringify({ path: configPaths().config, ...config }), 'info'); return; }
       if (action === 'reset') {
         if (!ctx.hasUI || !await ctx.ui.confirm(msg('清除 Goal 状态？'), msg('保留历史、Todos、Job 和项目文件；自动续跑停止。'))) return;

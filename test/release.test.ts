@@ -58,6 +58,7 @@ test('content scan flags machine traces without keeping the traced values in the
   const token = ['sk-', 'A'.repeat(24)].join('');
   const patToken = ['gh', 'p_', 'B'.repeat(24)].join('');
   const appToken = ['github', '_pat_', 'C'.repeat(24)].join('');
+  const npmToken = ['npm', '_', 'D'.repeat(24)].join('');
   const privateKey = ['-----BEGIN ', 'RSA ', 'PRIVATE KEY-----'].join('');
   const urlWithCredentials = ['https://user', ':pass', '@example.invalid/file'].join('');
   const personalEmail = ['person@mail', '.test'].join('');
@@ -67,6 +68,7 @@ test('content scan flags machine traces without keeping the traced values in the
   assert.ok(scanText(token).some((finding: Finding) => finding.rule === 'secret-token'));
   assert.ok(scanText(patToken).some((finding: Finding) => finding.rule === 'secret-token'));
   assert.ok(scanText(appToken).some((finding: Finding) => finding.rule === 'secret-token'));
+  assert.ok(scanText(npmToken).some((finding: Finding) => finding.rule === 'secret-token'));
   assert.ok(scanText(privateKey).some((finding: Finding) => finding.rule === 'private-key-block'));
   assert.ok(scanText(urlWithCredentials).some((finding: Finding) => finding.rule === 'url-embedded-credentials'));
   assert.ok(scanText(`contact ${personalEmail}`).some((finding: Finding) => finding.rule === 'personal-email'));

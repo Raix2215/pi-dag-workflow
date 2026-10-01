@@ -16,7 +16,7 @@ A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with 
 ## Requirements
 
 - Pi `>= 0.99.2`
-- Node.js `>= 22.19.0`
+- Node.js `>= 22.19.0`. The subagent module requires Pi to run under Node; standalone binary hosts are outside its supported scope.
 - A Nerd Font is recommended for the intended panel glyphs (icons, not emoji)
 
 ## Install
@@ -143,7 +143,7 @@ The command form is `/agents profile name provider/model [thinking] [comma-tools
 
 ## Acknowledgements
 
-pi-dag-workflow is an independent implementation. Its approach to visible task graphs, read-only planning, subagents, and bilingual interface text was inspired by ideas explored in the wider Pi community, including [pi-workflow](https://github.com/AgwaB/pi-workflow), [pi-subagents](https://github.com/nicobailon/pi-subagents), [pi-plan-mode](https://github.com/narumitw/pi-plan-mode), [rpiv-todo](https://github.com/juicesharp/rpiv-todo), and [pi-i18n](https://github.com/jerryfan/pi-i18n). These are references, not runtime dependencies.
+pi-dag-workflow is an independent implementation. Its approach to visible task graphs, read-only planning, subagents, and bilingual interface text was inspired by ideas explored in the wider Pi community, including [pi-workflow](https://github.com/AgwaB/pi-workflow), [pi-subagents](https://github.com/nicobailon/pi-subagents), [pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode), [Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents), [pi-goal-x](https://github.com/tmonk/pi-goal-x), [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo), and [pi-i18n](https://github.com/jerryfan/pi-i18n). These are references, not runtime dependencies.
 
 ## License
 

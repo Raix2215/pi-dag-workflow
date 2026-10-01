@@ -23,5 +23,14 @@ export function createTranslator(locale: Locale): Translator {
   };
 }
 
+const savedMessageKeys = new Map(Object.entries(englishMessages)
+  .filter(([key]) => !/\{\d+\}/.test(key))
+  .map(([key, value]) => [value, key]));
+
+/** Only for plugin-owned saved labels/reasons, never user-authored fields. */
+export function localizeSavedMessage(value: string, msg: Translator): string {
+  return msg(savedMessageKeys.get(value) ?? value);
+}
+
 /** Compatibility default for pure helpers; the runtime supplies its resolved locale. */
 export const chinese = createTranslator('zh-CN');

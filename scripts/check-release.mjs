@@ -87,7 +87,7 @@ export const CONTENT_RULES = [
   {
     name: 'secret-token',
     find(text) {
-      return matchLines(text, /(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/);
+      return matchLines(text, /(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|npm_[A-Za-z0-9]{20,})/);
     },
   },
   {
@@ -266,6 +266,7 @@ async function main() {
   if (tracked.includes('AGENTS.md')) errors.push('AGENTS.md must not be tracked');
 
   const scanTargets = [...new Set([...tracked, ...packed])];
+  if (tracked.includes('.npmrc')) errors.push('repository must not include private npm configuration');
   if (tracked.some((path) => /(^|\/)AGENTS\.md$/i.test(path))) errors.push('AGENTS.md must not be included in the public repository');
   const findings = await scanRepo(scanTargets);
   if (history) findings.push(...checkHistory(), ...checkHistoricalContent());

@@ -13,6 +13,7 @@ artifacts/
 !.env.example
 
 # Local auth/model/settings configs (root only; never ignore src/shared/config.ts)
+/.npmrc
 /auth.json
 /models.json
 /settings.json

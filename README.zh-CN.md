@@ -16,7 +16,7 @@
 ## 环境要求
 
 - Pi `>= 0.99.2`
-- Node.js `>= 22.19.0`
+- Node.js `>= 22.19.0`。子 Agent 模块要求 Pi 运行于 Node，独立二进制宿主不在支持范围内。
 - 建议使用 Nerd Font，以正常显示面板图标（是图标，不是 emoji）
 
 ## 安装
@@ -143,7 +143,7 @@ pi install https://github.com/<owner>/pi-dag-workflow
 
 ## 致谢
 
-pi-dag-workflow 是独立实现。它在可见任务图、只读规划、子 Agent 和界面双语方面的思路，受到 Pi 社区相关探索的启发，包括 [pi-workflow](https://github.com/AgwaB/pi-workflow)、[pi-subagents](https://github.com/nicobailon/pi-subagents)、[pi-plan-mode](https://github.com/narumitw/pi-plan-mode)、[rpiv-todo](https://github.com/juicesharp/rpiv-todo) 和 [pi-i18n](https://github.com/jerryfan/pi-i18n)。这些项目是参考来源，不是运行时依赖。
+pi-dag-workflow 是独立实现。它在可见任务图、只读规划、子 Agent 和界面双语方面的思路，受到 Pi 社区相关探索的启发，包括 [pi-workflow](https://github.com/AgwaB/pi-workflow)、[pi-subagents](https://github.com/nicobailon/pi-subagents)、[pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode)、[Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents)、[pi-goal-x](https://github.com/tmonk/pi-goal-x)、[rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo) 和 [pi-i18n](https://github.com/jerryfan/pi-i18n)。这些项目是参考来源，不是运行时依赖。
 
 ## 许可证
 
