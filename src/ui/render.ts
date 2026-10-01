@@ -156,6 +156,25 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
 }
 
 export interface TaskViewOptions { maxRows?: number; theme?: Theme; goalTitle?: string | undefined; jobs?: readonly AgentView[] }
+/**
+ * Bounded preview projection. Recent unfinished work wins the row budget, then the
+ * most recent completed history fills the rest. Linear scans only, so a per-second redraw
+ * never sorts thousands of Todos. The full view keeps the canonical list order.
+ */
+function previewTasks(tasks: readonly Todo[], limit: number): Todo[] {
+  if (limit >= tasks.length) return [...tasks];
+  const chosen = new Set<Todo>();
+  for (let index = tasks.length - 1; index >= 0 && chosen.size < limit; index--) {
+    const task = tasks[index]!;
+    if (task.status !== "completed") chosen.add(task);
+  }
+  // Walk backwards: recent completed tasks are the useful context, not the oldest #1.
+  for (let index = tasks.length - 1; index >= 0 && chosen.size < limit; index--) {
+    const task = tasks[index]!;
+    if (task.status === "completed") chosen.add(task);
+  }
+  return [...tasks.filter((task) => task.status !== "completed" && chosen.has(task)), ...tasks.filter((task) => task.status === "completed" && chosen.has(task))];
+}
 /** Default: main dependency paths. Flat mode retains all predecessor references. */
 export function renderTasks(state: WorkflowState, width: number, options?: TaskViewOptions): string[] {
   width = columns(width);
@@ -164,10 +183,7 @@ export function renderTasks(state: WorkflowState, width: number, options?: TaskV
   const lines = header(state, tasks, width, options?.theme, options?.goalTitle);
   const requested = options?.maxRows ?? 8;
   const limit = requested === Infinity ? tasks.length : Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 8;
-  const unfinished = tasks.filter((task) => task.status !== "completed");
-  const completed = tasks.filter((task) => task.status === "completed");
-  const chosen = new Set([...unfinished, ...completed].slice(0, limit));
-  const selected = tasks.filter((task) => chosen.has(task));
+  const selected = previewTasks(tasks, limit);
   const more = tasks.length > selected.length;
   const rows = state.treeStyle === "flat" ? flatRows(selected, more) : pathRows(state.tasks, selected, width, more);
   lines.push(...drawRows(rows, width, options?.theme, options?.jobs));

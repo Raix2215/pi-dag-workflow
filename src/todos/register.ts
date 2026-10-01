@@ -1,8 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
-import { TodoParamsSchema, type TodoParams, type WorkflowState } from './state.ts';
+import { statusLabel, TodoParamsSchema, type TodoParams, type WorkflowState } from './state.ts';
 import { clean } from '../ui/render.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
+import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 
 interface Hooks { state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext): { state: WorkflowState; text: string }; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag'): Promise<void> }
 const asId = (text?: string): number => {
@@ -12,6 +13,39 @@ const asId = (text?: string): number => {
 /** Register this resource's tools/commands using the runtime-shared state. */
 export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
   const { mutate, commit, show } = hooks;
+  const completion: CompletionSpec = {
+    actions: [
+      { action: 'add', description: '新建任务：add 标题 [--after 1,2]' },
+      { action: 'start', description: '开始任务：start #编号' },
+      { action: 'done', description: '完成任务：done #编号' },
+      { action: 'pending', description: '回到待执行：pending #编号' },
+      { action: 'delete', description: '删除任务：delete #编号' },
+      { action: 'edit', description: '修改标题：edit #编号 新标题' },
+      { action: 'list', description: '查看任务列表' },
+      { action: 'view', description: '切换视图：view list/dag' },
+      { action: 'paths', description: '按路径树展示' },
+      { action: 'flat', description: '按平铺展示' },
+      { action: 'show', description: '显示任务面板' },
+      { action: 'hide', description: '隐藏任务面板' },
+      { action: 'clear', description: '清空任务（编号不复用）' },
+      { action: 'help', description: '查看命令帮助' },
+    ],
+    subActions: {
+      view: [
+        { action: 'list', description: '列表视图' },
+        { action: 'dag', description: '依赖图视图' },
+      ],
+    },
+    freeText: ['add'],
+    tokens: (action) => {
+      if (!['start', 'done', 'pending', 'delete', 'edit'].includes(action)) return null;
+      const tasks = hooks.state().tasks;
+      const keepCompleted = action === 'delete' || action === 'edit';
+      return tasks
+        .filter((task) => task.status !== 'deleted' && (keepCompleted || task.status !== 'completed'))
+        .map((task) => ({ token: `#${task.id}`, label: `#${task.id} ${task.subject}`, description: statusLabel[task.status] }));
+    },
+  };
   pi.registerTool({
     name: "todo", label: "Todos", namespace: workflowNamespace, annotations: sessionMutation,
     description: "Manage the current task list: create/update/list/get/delete/clear. Use blockedBy for prerequisites; set status via update. Check work before completing it; Plan only edits the list.",
@@ -36,6 +70,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
 
   pi.registerCommand("todos", {
     description: "当前 Todos：查看、编辑与视图切换；也可直接描述需求",
+    getArgumentCompletions: (prefix) => completeArguments(prefix, completion),
     handler: async (args, ctx) => {
       try {
         const trimmed = args.trim();

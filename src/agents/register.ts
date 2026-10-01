@@ -8,6 +8,7 @@ import { AgentNotices, type Notice } from "./notices.ts";
 import { clean } from "../ui/render.ts";
 import { applyTodo, type TodoParams, type WorkflowState } from "../todos/state.ts";
 import { workflowNamespace, readOnly } from '../shared/tool-info.ts';
+import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 
 export const AGENTS_TYPE = "pi-dag-workflow.agents";
 interface Hooks { ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean }
@@ -34,6 +35,33 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const notices = new AgentNotices();
   const original = new Map<string, string>();
   const adjusted = new Set<string>();
+  const jobStatusLabel: Record<JobSummary['status'], string> = { starting: '启动中', running: '运行中', waiting: '等待回复', completed: '已返回', failed: '失败', cancelled: '已取消', interrupted: '已中断' };
+  const activeStatuses = new Set<JobSummary['status']>(['starting', 'running', 'waiting']);
+  const completion: CompletionSpec = {
+    actions: [
+      { action: 'list', description: '查看 Job 与暂停状态' },
+      { action: 'wait', description: '等待 Job 结果：wait jobId' },
+      { action: 'send', description: '给 Job 发消息：send jobId 消息' },
+      { action: 'reply', description: '回答子 Agent 请求：reply requestId 回答' },
+      { action: 'cancel', description: '停止 Job：cancel jobId' },
+      { action: 'remove', description: '停止并移除记录：remove jobId' },
+      { action: 'pause', description: '暂停结果自动唤醒' },
+      { action: 'resume', description: '恢复结果自动唤醒' },
+      { action: 'profiles', description: '查看已保存 Profile' },
+      { action: 'profile', description: '保存 Profile：profile 名称 provider/model [thinking] [工具]' },
+      { action: 'unprofile', description: '删除 Profile：unprofile 名称' },
+      { action: 'reset', description: '清除 Agent 运行记录' },
+      { action: 'help', description: '查看命令帮助' },
+    ],
+    freeText: ['profile', 'reply'],
+    tokens: (action) => {
+      if (action === 'unprofile') return (profiles?.list() ?? []).map((profile) => ({ token: profile.name, label: profile.name, description: profile.model ? `${profile.model.provider}/${profile.model.id}` : '继承主会话' }));
+      if (!['wait', 'send', 'cancel', 'remove'].includes(action)) return null;
+      return (runtime?.viewSummaries() ?? [])
+        .filter((job) => action !== 'send' || activeStatuses.has(job.status))
+        .map((job) => ({ token: job.id, label: `${job.id}${job.todoId ? ` / #${job.todoId}` : ''} · ${job.profile}`, description: jobStatusLabel[job.status] }));
+    },
+  };
   pi.registerFlag("dag-workflow-test-child-provider", { type: "string", description: "Test-only: explicit trusted offline child provider extension" });
 
   const clearDelivery = () => { if (timer) clearTimeout(timer); timer = undefined; notices.clear(); };
@@ -210,7 +238,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); notices.drop(params.jobId); await agent.cancel(params.jobId, { ...(params.remove !== undefined ? { remove: params.remove } : {}) }); original.delete(params.jobId); adjusted.delete(params.jobId); return reply({ jobId: params.jobId, stopped: true, removed: params.remove ?? false }); } catch (cause) { return fail(cause); } },
   });
 
-  pi.registerCommand("agents", { description: "子 Agent 状态／消息／取消与 Profile；也可直接描述需求", handler: async (args, ctx) => {
+  pi.registerCommand("agents", { description: "子 Agent 状态／消息／取消与 Profile；也可直接描述需求", getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
       if (action === 'help') { ctx.ui.notify('/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset', 'info'); return; }

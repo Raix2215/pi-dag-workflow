@@ -43,9 +43,9 @@ test("parent choice is deterministic: deepest predecessor, then list order", () 
 test("hidden parents never silently remove predecessor references or imply false ancestry", () => {
   const current = sample();
   const lines = renderTasks(current, 120, { maxRows: 2 });
-  assert.deepEqual(ids(lines), [2, 3]);
-  assert.match(lines.join("\n"), /#2<-#1/);
-  assert.match(lines.join("\n"), /#3<-#1/);
+  // Recent unfinished work wins the bounded preview: #6 and #7, with #6's cropped parents still named.
+  assert.deepEqual(ids(lines), [6, 7]);
+  assert.match(lines.join("\n"), /#6<-#4,#5/);
   assert.match(lines.join("\n"), /隐藏 5 项/);
   assert.match(lines[0]!, /1\/7/);
 });

@@ -1,15 +1,26 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { WorkflowState } from '../todos/state.ts';
 import { planViolation } from './policy.ts';
+import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 
 interface Hooks { state(): WorkflowState; protected(): boolean; commit(next: WorkflowState, ctx: ExtensionContext): void; assertCanEnter(): void; onEnter(ctx: ExtensionContext): void }
 /** Plan's policy is shared with the coordinator, not a second execution runtime. */
 export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
   const { commit } = hooks;
+  const completion: CompletionSpec = {
+    actions: [
+      { action: 'start', description: '进入只读规划' },
+      { action: 'off', description: '退出规划，恢复实施' },
+      { action: 'status', description: '查看当前模式' },
+      { action: 'tools', description: '配置额外只读工具：tools 名称1,名称2 或 none' },
+      { action: 'help', description: '查看命令帮助' },
+    ],
+  };
   pi.on('tool_call', (event) => { const reason = planViolation(hooks.state(), event.toolName, event.input); if (reason) return { block: true, reason }; });
   pi.on('user_bash', () => { if (hooks.state().plan) return { result: { output: 'Plan 中不执行 shell；请用读取／搜索工具或先 /plan off。', exitCode: 1, cancelled: false, truncated: false } }; });
   pi.registerCommand("plan", {
     description: "切换只读规划；start/off/status/tools，或直接描述规划需求",
+    getArgumentCompletions: (prefix) => completeArguments(prefix, completion),
     handler: async (args, ctx) => {
       try {
         const trimmed = args.trim();

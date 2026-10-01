@@ -6,6 +6,7 @@ import { clean, type AgentView } from '../ui/render.ts';
 import { deriveDag } from '../dag/graph.ts';
 import type { WorkflowState } from '../todos/state.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
+import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 
 interface Hooks { state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void }
 /** One shared budget for plugin continuations and child-report wakes. No goal dispatcher. */
@@ -21,6 +22,35 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   let lastProgress = '';
   const workStamp = () => JSON.stringify([revision, hooks.state().tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, task.status])]);
   const paint = (ctx: ExtensionContext) => hooks.paint(ctx);
+  const goalStatusLabel: Record<GoalState['goals'][number]['status'], string> = { active: '活动', paused: '暂停', completed: '已完成', deleted: '已删除' };
+  const activatable = new Set(['enable', 'on', 'focus', 'switch', 'resume']);
+  const completion: CompletionSpec = {
+    actions: [
+      { action: 'new', description: '创建目标（不启动）：new 标题' },
+      { action: 'list', description: '查看目标与预算' },
+      { action: 'status', description: '查看目标与预算' },
+      { action: 'enable', description: '启用并推进目标：enable #编号' },
+      { action: 'resume', description: '恢复自动续跑：resume [ #编号]' },
+      { action: 'focus', description: '聚焦目标：focus #编号' },
+      { action: 'switch', description: '切换焦点目标：switch #编号' },
+      { action: 'edit', description: '修改标题：edit #编号 新标题' },
+      { action: 'pause', description: '暂停目标续跑：pause [ #编号]' },
+      { action: 'disable', description: '停用目标：disable #编号' },
+      { action: 'off', description: '停用当前目标' },
+      { action: 'on', description: '启用目标：on #编号' },
+      { action: 'complete', description: '标记完成：complete #编号' },
+      { action: 'done', description: '标记完成：done #编号' },
+      { action: 'delete', description: '删除目标：delete #编号' },
+      { action: 'get', description: '查看目标详情：get #编号' },
+      { action: 'config', description: '查看配置路径与值' },
+      { action: 'reset', description: '清除 Goal 状态' },
+      { action: 'help', description: '查看命令帮助' },
+    ],
+    freeText: ['new', 'create'],
+    tokens: (action) => ['enable', 'on', 'resume', 'focus', 'switch', 'edit', 'pause', 'disable', 'off', 'complete', 'done', 'delete', 'get'].includes(action) ? state.goals
+      .filter((goal) => goal.status !== 'deleted' && (!activatable.has(action) || goal.status !== 'completed'))
+      .map((goal) => ({ token: `#${goal.id}`, label: `#${goal.id} ${goal.title}`, description: goalStatusLabel[goal.status] })) : null,
+  };
   function commit(next: GoalState, ctx: ExtensionContext) {
     if (next === state) return;
     pi.appendEntry(GOAL_TYPE, next);
@@ -148,7 +178,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     renderCall(args, theme) { return new Text(theme.fg('toolTitle', `󰓾 goal ${clean(args.action ?? '')}${args.id ? ` #${args.id}` : ''}`), 0, 0); },
     renderResult(result, _options, theme) { return new Text(theme.fg(result.isError ? 'error' : 'text', result.content.filter((item) => item.type === 'text').map((item) => item.text.split('\n').map(clean).join('\n')).join('\n')), 0, 0); },
   });
-  pi.registerCommand('goal', { description: '目标 list/new/enable/resume/off/switch/edit/complete/delete/reset/config，或自然语言', handler: async (args, ctx) => {
+  pi.registerCommand('goal', { description: '目标 list/new/enable/resume/off/switch/edit/complete/delete/reset/config，或自然语言', getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
       if (action === 'help') { ctx.ui.notify('/goal list/status · new 标题 · enable/focus/switch #编号 · resume/off（当前焦点） · edit #编号 标题 · complete/delete #编号 · config · reset；创建不启动，查看不重置预算，暂停后需明确恢复。', 'info'); return; }
