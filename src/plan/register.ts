@@ -19,15 +19,15 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
     ],
   };
   pi.on('tool_call', (event) => { const reason = planViolation(hooks.state(), event.toolName, event.input, msg); if (reason) return { block: true, reason }; });
-  pi.on('user_bash', () => { if (hooks.state().plan) return { result: { output: msg('Plan 中不执行 shell；请用读取／搜索工具或先 /plan off。'), exitCode: 1, cancelled: false, truncated: false } }; });
+  pi.on('user_bash', () => { if (hooks.state().plan) return { result: { output: msg('Plan 只读：请用读取／搜索工具；执行 shell 需先 /plan off。'), exitCode: 1, cancelled: false, truncated: false } }; });
   pi.registerCommand("plan", {
     description: msg("切换只读规划；start/off/status/tools，或直接描述规划需求"),
     getArgumentCompletions: (prefix) => completeArguments(prefix, completion),
     handler: async (args, ctx) => {
       try {
         const trimmed = args.trim();
-        if (trimmed === 'help') { ctx.ui.notify(msg('/plan start/off/status · tools 名称1,名称2（只读可信工具）；进入前需主会话空闲且子 Agent 已结束／取消。退出不自动恢复 Goal。'), 'info'); return; }
-        if (trimmed === "status") { ctx.ui.notify(hooks.state().plan ? msg("Plan（只读）：只探索和编辑 Todos，不实施／完成／委派") : msg("Normal：可实施任务"), "info"); return; }
+        if (trimmed === 'help') { ctx.ui.notify(msg('/plan start/off/status · tools 名称1,名称2（只读可信工具）；进入前需主会话空闲且子 Agent 已结束／取消。Plan 期间 Goal 保持暂停，恢复需明确 /goal enable。'), 'info'); return; }
+        if (trimmed === "status") { ctx.ui.notify(hooks.state().plan ? msg("Plan（只读）：探索和编辑 Todos；实施／完成／委派在退出 Plan 后进行") : msg("Normal：可实施任务"), "info"); return; }
         if (hooks.protected()) throw new Error(msg("工作流状态损坏；先检查或明确 /todos clear 重置"));
         if (trimmed === "tools" || trimmed.startsWith("tools ")) {
           if (hooks.state().plan) throw new Error(msg("先 /plan off，再配置额外只读工具"));
@@ -36,7 +36,7 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
           const known = new Set(pi.getAllTools().map((tool) => tool.name));
           if (names.some((name) => !known.has(name) || ["todo", "bash", "powershell", "write", "edit"].includes(name) || name.startsWith("subagent_") || name === "goal")) throw new Error(msg("只能明确允许已注册的额外只读工具；不能放行写入／委派工具"));
           commit({ ...hooks.state(), planTools: [...new Set(names)] }, ctx);
-          ctx.ui.notify(msg("已保存额外只读工具；这不是操作系统沙箱，请只选择可信读取／搜索工具"), "info");
+          ctx.ui.notify(msg("已保存额外只读工具；Plan 只拦截已注册的写入／Shell 工具，请只选择可信读取／搜索工具"), "info");
           return;
         }
         const off = trimmed === "off" || !trimmed && hooks.state().plan;
@@ -44,7 +44,7 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
         if (!off) hooks.assertCanEnter();
         commit({ ...hooks.state(), plan: !off }, ctx);
         if (!off) hooks.onEnter(ctx);
-        ctx.ui.notify(off ? msg("已退出 Plan；使用同一份 Todos 继续") : msg("已进入 Plan（只读）；可探索与编辑 Todos，不实施／完成／委派"), "info");
+        ctx.ui.notify(off ? msg("已退出 Plan；使用同一份 Todos 继续") : msg("已进入 Plan（只读）；可探索与编辑 Todos，实施／完成／委派待退出后继续"), "info");
         if (!off && trimmed && trimmed !== "start") pi.sendUserMessage(trimmed);
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     },

@@ -75,7 +75,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const consumed = { ...state, run: { ...state.run } };
     delete consumed.run.nextStep;
     commit(consumed, ctx); // Never replay a stale action indefinitely.
-    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
+    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑；授权以用户为准。`, display: true };
   }
   async function restore(ctx: ExtensionContext) {
     userAuthority = false; automaticRound = false; revision = 0; error = undefined;
@@ -95,7 +95,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('before_agent_start', (event) => {
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);
-    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
+    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; resuming takes an explicit user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
   });
   pi.on('input', (event) => { if (event.source !== 'extension') { userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
   pi.on('tool_execution_end', (event) => {
@@ -142,7 +142,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   });
   function mutate(params: GoalParams, ctx: ExtensionContext, explicit = false) {
     if ((error || hooks.protected()) && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(error ?? msg('工作流状态受保护'));
-    if (hooks.state().plan && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(msg('Plan 只查看／停用 Goal；先 /plan off'));
+    if (hooks.state().plan && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(msg('Plan 只读：Goal 可查看或停用；改动请先 /plan off'));
     const current = focusedGoal(state);
     if (automaticRound && !userAuthority && !explicit && params.action === 'update' && (params.title !== undefined || params.description !== undefined || params.maxTurns !== undefined)) throw new Error(msg('自动续跑修改目标范围／上限前需用户确认；progress/nextStep 不受此限制'));
     if (activates(params.action) && !explicit && !userAuthority && (state.run.paused || params.id !== undefined && params.id !== current?.id)) throw new Error(msg('自动续跑不能自行重置预算／切换目标；请等待用户明确恢复'));
@@ -190,7 +190,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       else if (['enable', 'disable', 'complete', 'delete', 'get'].includes(action ?? '')) {
         if (parts.length > 1) throw new Error(msg('此命令只接受一个编号'));
         params = { action: action as GoalParams['action'], id: id(parts[0]) };
-      } else if (['focus', 'switch', 'resume', 'pause', 'on', 'off', 'done', 'del', 'create', 'status'].includes(action ?? '')) throw new Error(msg('该写法已移除；可用 new/list/enable/disable/complete/delete/edit/get/config/reset'));
+      }
       if (params) { ctx.ui.notify(mutate(params, ctx, true).text, 'info'); return; }
       pi.sendUserMessage(msg`请管理当前 Goal：${args}`, ctx.isIdle() ? undefined : { deliverAs: 'followUp' });
     } catch (cause) { ctx.ui.notify(String(cause), 'error'); }

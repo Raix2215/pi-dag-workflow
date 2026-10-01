@@ -118,7 +118,7 @@ export function createWorkflow(pi: ExtensionAPI) {
       if (modules.ui) ctx.ui.setWidget(WIDGET, undefined);
     });
     owner.on('before_agent_start', (event) => {
-      if (modules.todos || modules.plan) event.systemPromptOptions.sections['dag_workflow_mode'] = state.plan ? (modules.todos ? PLAN_GUIDANCE : 'Plan mode: only read, search and ask; no implementation or dispatch. Only the user can exit /plan off.') : (modules.todos ? NORMAL_GUIDANCE : 'Normal mode.');
+      if (modules.todos || modules.plan) event.systemPromptOptions.sections['dag_workflow_mode'] = state.plan ? (modules.todos ? PLAN_GUIDANCE : 'Plan mode: read, search and ask; implementation and dispatch resume after the user runs /plan off.') : (modules.todos ? NORMAL_GUIDANCE : 'Normal mode.');
     });
   }
   async function show(ctx: ExtensionContext, view: "list" | "dag"): Promise<void> {

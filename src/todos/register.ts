@@ -111,5 +111,5 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     },
   });
-  pi.registerCommand("dag", { description: msg('查看当前 Todos 的依赖图（不创建另一份图）'), handler: async (_args, ctx) => show(ctx, "dag") });
+  pi.registerCommand("dag", { description: msg('查看当前 Todos 的依赖图'), handler: async (_args, ctx) => show(ctx, "dag") });
 }

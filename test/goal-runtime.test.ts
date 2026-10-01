@@ -96,7 +96,7 @@ test('mock host: explicit idle enable reserves and starts once; unknown extra ar
   await h.commands.get('goal').handler('enable', h.ctx);
   assert.equal(h.wakes.length, 1);
   assert.equal(h.controller.snapshot().run.used, 1);
-  assert.match(h.wakes[0].message, /Goal #1.*不是用户新授权/);
+  assert.match(h.wakes[0].message, /Goal #1.*授权以用户为准/);
 });
 
 test('mock host: explicit goal edit is user-authorized after an automatic round, without refilling budget', async () => {

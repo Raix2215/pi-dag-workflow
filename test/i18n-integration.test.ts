@@ -38,12 +38,6 @@ test("actual Pi English session advertises English commands, help and goal-reset
     assert.ok(notice.length > 0, command);
     assert.ok(notice.every((message) => !hasHan(message)), `${command}: ${notice.join(" | ")}`);
   }
-  // Retired synonyms are answered locally in English instead of starting a model turn.
-  const turns = client.records.filter((record) => record.type === "agent_start").length;
-  const retired = notifications(await client.prompt("/goal off"));
-  assert.ok(retired.some((message) => message.includes("That spelling was removed")), retired.join(" | "));
-  assert.equal(client.records.filter((record) => record.type === "agent_start").length, turns, "/goal off must not start a model turn");
-
   // Local usage errors are localized too.
   const usage = notifications(await client.prompt("/todos view now"));
   assert.ok(usage.some((message) => message.includes("Usage: /todos view list|dag")), usage.join(" | "));
@@ -79,7 +73,7 @@ test("actual Pi English Todo dependency rejection and Plan write block stay loca
   await client.prompt("/plan start");
   const blocked = results(await client.prompt('TEST CALL write {"path":"forbidden.txt","content":"no"}'), "write");
   assert.equal(blocked[0]!.isError, true);
-  assert.match(blocked[0]!.text, /not allowed in Plan; run \/plan off first/);
+  assert.match(blocked[0]!.text, /Plan is read-only: run \/plan off before write/);
   await assert.rejects(access(join(client.root, "forbidden.txt")));
 });
 
@@ -104,7 +98,7 @@ test("actual Pi English independent Goal: continuation, untranslated description
   assert.equal(continuations.length, 1);
   assert.match(continuations[0]!, /^Goal #1 1\/2: Advance goal: 预算目标\./);
   assert.match(continuations[0]!, /Requirements: 完整描述不要翻译; full requirements via goal get\./);
-  assert.match(continuations[0]!, /This is a workflow continuation, not new user authorization\./);
+  assert.match(continuations[0]!, /This is a workflow continuation; authorization comes from the user\./);
   assert.ok(!hasHan(continuations[0]!.replace("预算目标", "").replace("完整描述不要翻译", "")), continuations[0]!);
 
   const state = goalState(entries)!;

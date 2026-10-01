@@ -17,30 +17,25 @@ function host() {
   return { controller, call, command, notifications, wakes, entries };
 }
 
-const RETIRED = ['focus', 'switch', 'resume', 'pause', 'on', 'off', 'done', 'del', 'create', 'status'];
+const NON_ACTIONS = ['focus', 'switch', 'resume', 'pause', 'on', 'off', 'done', 'del', 'create', 'status'];
 
-test('retired Goal synonyms are answered locally and never reach the model', async () => {
+test('Goal commands keep no alias layer: unlisted words go to the model as natural language', async () => {
   const h = host();
-  for (const word of RETIRED) {
+  for (const word of NON_ACTIONS) {
     h.notifications.length = 0; h.wakes.length = 0;
     await h.command(`${word} #1`);
-    assert.equal(h.wakes.length, 0, `${word} must not trigger a model turn`);
-    const notice = h.notifications.at(-1) ?? '';
-    assert.ok(notice.startsWith('error:') && notice.includes('该写法已移除'), `${word}: ${notice}`);
-    assert.ok(notice.includes('new/list/enable/disable/complete/delete/edit/get/config/reset'), `${word}: ${notice}`);
+    assert.equal(h.wakes.length, 1, `${word} is not a command action, so it is forwarded`);
+    assert.match(String(h.wakes[0]!.message), /^请管理当前 Goal：/);
+    assert.equal(h.notifications.length, 0, `${word} must not print a compatibility hint`);
   }
-  // Unknown words are still natural language: they are forwarded instead of rejected.
-  h.wakes.length = 0;
-  await h.command('帮我把目标收尾');
-  assert.equal(h.wakes.length, 1);
 });
 
 test('the Goal tool schema exposes one literal per operation', () => {
   for (const action of ['create', 'update', 'list', 'get', 'delete', 'enable', 'disable', 'complete']) {
     assert.equal(Value.Check(GoalParamsSchema, { action, title: 'x' }), true, action);
   }
-  // `create` is the tool's own action name; the retired spelling only referred to the command word for `new`.
-  for (const action of RETIRED.filter((word) => word !== 'create')) assert.equal(Value.Check(GoalParamsSchema, { action }), false, action);
+  // `create` is the tool's own action name; the command word for it is `new`.
+  for (const action of NON_ACTIONS.filter((word) => word !== 'create')) assert.equal(Value.Check(GoalParamsSchema, { action }), false, action);
 });
 
 test('canonical Goal commands act without aliases', async () => {

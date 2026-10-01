@@ -73,7 +73,7 @@ Each command family supports `help`; help does not call a model or change modes.
 
 `new` only records a Goal and leaves it paused. `enable` is the only activation: it focuses a Goal, or re-enables the current one when the id is omitted, and a completed or deleted Goal cannot be restarted — create a new one for rework. `disable` is the only stop and keeps the focus so you can enable it later. Enabling after a stop starts a fresh allowance, not the remainder of the previous one. Enabling another Goal does not clear the shared Todo list, and disabling a Goal does not kill running children; stop those with `/agents cancel`.
 
-Every operation has exactly one spelling. Synonyms accepted by earlier versions (`focus`, `switch`, `resume`, `pause`, `on`, `off`, `done`, `del`, `create`, `status`, `/plan exit`) now answer with the valid actions instead of being forwarded to the model.
+Every operation has exactly one spelling; the retired synonyms from earlier versions (`focus`, `switch`, `resume`, `pause`, `on`, `off`, `done`, `del`, `create`, `status`, `/plan exit`) no longer exist. An unrecognized first word is treated as natural language and forwarded to the model, the same as any other free-form request.
 
 ## Modules
 
