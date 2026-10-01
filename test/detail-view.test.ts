@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { detailView } from '../src/detail-view.ts';
+import { detailView } from '../src/ui/detail.ts';
 
 test('detail panel scrolls with pinned header/footer, clamps resize and handles return', () => {
   let rows = 12; let draws = 0; let closed = false;

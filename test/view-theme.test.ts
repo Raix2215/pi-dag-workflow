@@ -3,8 +3,8 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { Theme, type ThemeColor, type ThemeBg } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
-import { emptyState } from "../src/todos.ts";
-import { renderTasks, renderDag } from "../src/view.ts";
+import { emptyState } from "../src/todos/state.ts";
+import { renderTasks, renderDag } from "../src/ui/render.ts";
 
 test("semantic theme colors do not change terminal width or corrupt user content", () => {
   const builtin = JSON.parse(readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json", import.meta.url), "utf8"));

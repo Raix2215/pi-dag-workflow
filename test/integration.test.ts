@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { test } from "node:test";
 import { IsolatedClient } from "./fixtures/isolated-client.ts";
-import { STATE_TYPE, type WorkflowState } from "../src/todos.ts";
+import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
 
 function latestState(entries: unknown[]): WorkflowState | undefined {
   return entries.map((entry) => entry as { type?: string; customType?: string; data?: WorkflowState }).findLast((entry) => entry.type === "custom" && entry.customType === STATE_TYPE)?.data;

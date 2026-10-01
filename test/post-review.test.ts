@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ProfileStore } from '../src/profiles.ts';
-import { AgentNotices } from '../src/agent-notices.ts';
+import { ProfileStore } from '../src/agents/profiles.ts';
+import { AgentNotices } from '../src/agents/notices.ts';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
 
 test('known non-reasoning Profile is rejected before spawning, but off is accepted', () => {

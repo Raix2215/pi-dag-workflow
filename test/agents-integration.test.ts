@@ -3,8 +3,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { IsolatedClient } from "./fixtures/isolated-client.ts";
-import { AGENTS_TYPE } from "../src/agent-tools.ts";
-import { STATE_TYPE, type WorkflowState } from "../src/todos.ts";
+import { AGENTS_TYPE } from "../src/agents/index.ts";
+import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
 
 const offline = fileURLToPath(new URL("./fixtures/offline-model.ts", import.meta.url));
 const controls = fileURLToPath(new URL("./fixtures/session-controls.ts", import.meta.url));

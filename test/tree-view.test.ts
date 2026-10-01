@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { emptyState, restoreState, STATE_TYPE, type Todo, type WorkflowState } from "../src/todos.ts";
-import { renderTasks } from "../src/view.ts";
+import { emptyState, restoreState, STATE_TYPE, type Todo, type WorkflowState } from "../src/todos/state.ts";
+import { renderTasks } from "../src/ui/render.ts";
 
 function sample(): WorkflowState {
   const dependencies = [[], [1], [1], [2, 3], [2], [4, 5], []];

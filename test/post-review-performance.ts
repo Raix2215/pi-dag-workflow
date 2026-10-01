@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { AgentRuntime } from '../src/agents.ts';
-import { ProfileStore } from '../src/profiles.ts';
-import { detailView } from '../src/detail-view.ts';
+import { AgentRuntime } from '../src/agents/runtime.ts';
+import { ProfileStore } from '../src/agents/profiles.ts';
+import { detailView } from '../src/ui/detail.ts';
 
 function measure(fn: () => void, samples = 1000) {
   for (let i = 0; i < 20; i++) fn();

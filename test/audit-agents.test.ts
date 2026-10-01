@@ -4,8 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { AgentRuntime } from '../src/agents.ts';
-import { ProfileStore } from '../src/profiles.ts';
+import { AgentRuntime } from '../src/agents/runtime.ts';
+import { ProfileStore } from '../src/agents/profiles.ts';
 
 test('protocol activity tracks parallel tools and clears on terminal/restore without persisting deltas', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dag-audit-'));

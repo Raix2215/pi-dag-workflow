@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { registerGoal } from '../src/goal-tools.ts';
-import { emptyState } from '../src/todos.ts';
-import { GOAL_TYPE, type GoalParams } from '../src/goals.ts';
+import { registerGoal } from '../src/goal/index.ts';
+import { emptyState } from '../src/todos/state.ts';
+import { GOAL_TYPE, type GoalParams } from '../src/goal/state.ts';
 
 function host() {
   const events = new Map<string, Function[]>();

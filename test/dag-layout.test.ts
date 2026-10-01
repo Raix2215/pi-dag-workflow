@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { visibleWidth, stripTerminalSequences } from '@earendil-works/pi-tui';
-import { dagLayout, type DagLayout } from '../src/dag-layout.ts';
-import { dagStructure } from '../src/graph-cache.ts';
-import { renderDag } from '../src/view.ts';
-import { emptyState, type Todo } from '../src/todos.ts';
+import { dagLayout, type DagLayout } from '../src/dag/layout.ts';
+import { dagStructure } from '../src/dag/cache.ts';
+import { renderDag } from '../src/ui/render.ts';
+import { emptyState, type Todo } from '../src/todos/state.ts';
 const task = (id: number, blockedBy: number[] = []): Todo => ({ id, blockedBy, subject: `任务${id}`, status: 'pending' });
 const layout = (tasks: Todo[], width = 120) => { const value = dagLayout(dagStructure(tasks), width); assert.ok(value.layout, value.reason ?? 'expected graph layout'); return value.layout; };
 function trace(value: DagLayout) {

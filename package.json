@@ -5,7 +5,7 @@
   "description": "A lightweight, session-local Todo DAG workflow for Pi",
   "type": "module",
   "keywords": ["pi-package"],
-  "files": ["src", "README.md"],
+  "files": ["src", "README.md", "README.zh-CN.md"],
   "pi": {
     "extensions": ["./src/index.ts"]
   },

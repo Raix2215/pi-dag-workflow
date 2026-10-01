@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { AgentRuntime } from '../src/agents.ts';
-import { ProfileStore } from '../src/profiles.ts';
+import { AgentRuntime } from '../src/agents/runtime.ts';
+import { ProfileStore } from '../src/agents/profiles.ts';
 
 test('lightweight UI job projection excludes model/tools/private output and cannot mutate runtime', async () => {
   const model = { provider: 'test', id: 'model' };

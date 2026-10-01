@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { registerGoal } from '../src/goal-tools.ts';
-import { emptyState } from '../src/todos.ts';
+import { registerGoal } from '../src/goal/index.ts';
+import { emptyState } from '../src/todos/state.ts';
 
 test('initial Goal attention step is consumed while waiting; later child messages do not restart a polling loop', async () => {
   const events = new Map<string, Function>(); let tool: any;

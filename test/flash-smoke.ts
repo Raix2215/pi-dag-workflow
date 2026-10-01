@@ -3,7 +3,7 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IsolatedClient } from "./fixtures/isolated-client.ts";
-import { STATE_TYPE, type WorkflowState } from "../src/todos.ts";
+import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
 
 // Explicit opt-in only: this script uses the real provider and may consume credits.
 const evidence = fileURLToPath(new URL("../../docs/evidence/m1/", import.meta.url));

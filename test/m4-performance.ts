@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
-import { renderTasks, renderDag } from '../src/view.ts';
-import { emptyState, applyTodo, type Todo } from '../src/todos.ts';
-import { dagStructure } from '../src/graph-cache.ts';
-import { dagLayout } from '../src/dag-layout.ts';
+import { renderTasks, renderDag } from '../src/ui/render.ts';
+import { emptyState, applyTodo, type Todo } from '../src/todos/state.ts';
+import { dagStructure } from '../src/dag/cache.ts';
+import { dagLayout } from '../src/dag/layout.ts';
 const report: Record<string, unknown> = { note: 'Local Node microbenchmark, not a terminal or provider latency promise', node: process.version };
 function measure(fn: () => void, samples = 50) {
   for (let i = 0; i < 5; i++) fn();

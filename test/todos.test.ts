@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyTodo, emptyState, restoreState, STATE_TYPE, todoRef, validateState, type TodoParams, type WorkflowState } from "../src/todos.ts";
-import { planViolation } from "../src/plan.ts";
+import { applyTodo, emptyState, restoreState, STATE_TYPE, todoRef, validateState, type TodoParams, type WorkflowState } from "../src/todos/state.ts";
+import { planViolation } from "../src/plan/policy.ts";
 
 const apply = (state: WorkflowState, params: TodoParams) => applyTodo(state, params).state;
 const create = (state: WorkflowState, subject: string, blockedBy: number[] = []) => apply(state, { action: "create", subject, blockedBy });

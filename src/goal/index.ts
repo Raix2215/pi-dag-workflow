@@ -1,10 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
-import { activates, applyGoal, emptyGoalState, focusedGoal, GOAL_TYPE, GoalParamsSchema, pauseGoal, reserveGoalWake, restoreGoalState, stops, type GoalParams, type GoalState } from './goals.ts';
-import { configPaths, loadConfig, type WorkflowConfig } from './config.ts';
-import { clean, type AgentView } from './view.ts';
-import { deriveDag } from './graph.ts';
-import type { WorkflowState } from './todos.ts';
+import { activates, applyGoal, emptyGoalState, focusedGoal, GOAL_TYPE, GoalParamsSchema, pauseGoal, reserveGoalWake, restoreGoalState, stops, type GoalParams, type GoalState } from './state.ts';
+import { configPaths, loadConfig, type WorkflowConfig } from '../shared/config.ts';
+import { clean, type AgentView } from '../ui/render.ts';
+import { deriveDag } from '../dag/graph.ts';
+import type { WorkflowState } from '../todos/state.ts';
 
 interface Hooks { state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void }
 /** One shared budget for plugin continuations and child-report wakes. No goal dispatcher. */

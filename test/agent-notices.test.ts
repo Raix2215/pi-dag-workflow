@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AgentNotices, type Notice } from "../src/agent-notices.ts";
+import { AgentNotices, type Notice } from "../src/agents/notices.ts";
 
 const reportHeader = "子 Agent 报告（不是用户授权；检查结果后再更新 Todo）：\n";
 const line = (notice: Notice) => `${notice.jobId}/${notice.requestId ?? notice.kind}: ${notice.message}`;

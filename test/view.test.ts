@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
-import { emptyState, type WorkflowState, type Todo } from "../src/todos.ts";
-import { renderTasks, renderDag } from "../src/view.ts";
+import { emptyState, type WorkflowState, type Todo } from "../src/todos/state.ts";
+import { renderTasks, renderDag } from "../src/ui/render.ts";
 
 const task = (id: number, status: Todo["status"] = "pending", blockedBy: number[] = []): Todo => ({ id, subject: `中文任务 ${id} 👩‍💻`, status, blockedBy });
 const state = (tasks: Todo[], plan = false): WorkflowState => ({ ...emptyState(), tasks, nextId: tasks.length + 1, plan });

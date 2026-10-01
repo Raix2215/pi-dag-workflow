@@ -3,9 +3,9 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { stripTerminalSequences } from '@earendil-works/pi-tui';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
-import { GOAL_TYPE, type GoalState } from '../src/goals.ts';
-import { STATE_TYPE } from '../src/todos.ts';
-import { AGENTS_TYPE } from '../src/agent-tools.ts';
+import { GOAL_TYPE, type GoalState } from '../src/goal/state.ts';
+import { STATE_TYPE } from '../src/todos/state.ts';
+import { AGENTS_TYPE } from '../src/agents/index.ts';
 
 const controls = fileURLToPath(new URL('./fixtures/session-controls.ts', import.meta.url));
 const offline = fileURLToPath(new URL('./fixtures/offline-model.ts', import.meta.url));

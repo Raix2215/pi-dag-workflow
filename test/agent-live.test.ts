@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { emptyState, type Todo } from "../src/todos.ts";
-import { renderTasks, type AgentView } from "../src/view.ts";
+import { emptyState, type Todo } from "../src/todos/state.ts";
+import { renderTasks, type AgentView } from "../src/ui/render.ts";
 
 const task = (id: number, subject = "实现解析器"): Todo => ({ id, subject, status: "in_progress", blockedBy: [] });
 const base = { ...emptyState(), tasks: [task(1)], nextId: 2 };

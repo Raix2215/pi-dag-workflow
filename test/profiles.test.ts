@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_TOOLS, ProfileStore } from "../src/profiles.ts";
+import { CORE_TOOLS, ProfileStore } from "../src/agents/profiles.ts";
 
 const model = { provider: "local", id: "exact-model" };
 const registry = { find: (provider: string, id: string) => provider === model.provider && id === model.id ? { reasoning: true } : undefined };

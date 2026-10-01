@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyGoal, emptyGoalState, focusedGoal, pauseGoal, reserveGoalWake, restoreGoalState, validateGoalState, GOAL_TYPE, type GoalState } from '../src/goals.ts';
+import { applyGoal, emptyGoalState, focusedGoal, pauseGoal, reserveGoalWake, restoreGoalState, validateGoalState, GOAL_TYPE, type GoalState } from '../src/goal/state.ts';
 
 const create = (state: GoalState, title = '目标') => applyGoal(state, { action: 'create', title }).state;
 test('goals are independent records; only enable/focus selects one active target', () => {

@@ -1,15 +1,15 @@
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { configPaths } from "./config.ts";
+import { configPaths } from "../shared/config.ts";
 import { Text } from "@earendil-works/pi-tui";
-import { AgentRuntime, type JobSummary, type JobResult } from "./agents.ts";
+import { AgentRuntime, type JobSummary, type JobResult } from "./runtime.ts";
 import { ProfileStore, type Profile } from "./profiles.ts";
-import { AgentNotices, type Notice } from "./agent-notices.ts";
-import { clean } from "./view.ts";
-import { applyTodo, type TodoParams, type WorkflowState } from "./todos.ts";
+import { AgentNotices, type Notice } from "./notices.ts";
+import { clean } from "../ui/render.ts";
+import { applyTodo, type TodoParams, type WorkflowState } from "../todos/state.ts";
 
 export const AGENTS_TYPE = "pi-dag-workflow.agents";
-interface Hooks { state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean }
+interface Hooks { ui?: boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean }
 const active = (job: JobSummary) => ["starting", "running", "waiting"].includes(job.status);
 const fingerprint = (state: WorkflowState, id?: number) => {
   const task = state.tasks.find((item) => item.id === id);
@@ -68,7 +68,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   let lastActivityStamp = 0;
   const clearActivity = () => { if (activityTimer) clearTimeout(activityTimer); activityTimer = undefined; };
   const onActivity = () => {
-    if (restoring || !context?.hasUI || activityTimer) return;
+    if (hooks.ui === false || restoring || !context?.hasUI || activityTimer) return;
     const ownGeneration = generation;
     const refresh = () => {
       activityTimer = undefined;

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProfileStore } from '../src/profiles.ts';
+import { ProfileStore } from '../src/agents/profiles.ts';
 
 test('removed user Profile file invalidates cached named profiles instead of retaining ghosts', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dag-profile-'));

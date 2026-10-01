@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import { dagStructure, reuseDagStructure } from "./graph-cache.ts";
+import { dagStructure, reuseDagStructure } from "../dag/cache.ts";
 
 const Status = Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("deleted")]);
 export const TodoParamsSchema = Type.Object({

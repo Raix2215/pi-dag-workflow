@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { dagStructure } from '../src/graph-cache.ts';
-import { deriveDag } from '../src/graph.ts';
-import { applyTodo, emptyState } from '../src/todos.ts';
+import { dagStructure } from '../src/dag/cache.ts';
+import { deriveDag } from '../src/dag/graph.ts';
+import { applyTodo, emptyState } from '../src/todos/state.ts';
 
 test('status/title/owner/progress mutations reuse topology while ready state remains fresh', () => {
   let state = applyTodo(emptyState(), { action: 'create', subject: 'A' }).state;

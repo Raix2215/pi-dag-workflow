@@ -1,4 +1,4 @@
-import type { DagStructure } from './graph-cache.ts';
+import type { DagStructure } from './cache.ts';
 
 export interface DagBox { id: number; left: number; top: number; width: number }
 export interface DagRoute { from: number; to: number; points: readonly [number, number][] }

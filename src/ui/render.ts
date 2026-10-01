@@ -1,8 +1,8 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { dagStructure, type DagStructure } from "./graph-cache.ts";
-import { dagLayout } from "./dag-layout.ts";
-import { statusLabel, type Todo, type WorkflowState } from "./todos.ts";
+import { dagStructure, type DagStructure } from "../dag/cache.ts";
+import { dagLayout } from "../dag/layout.ts";
+import { statusLabel, type Todo, type WorkflowState } from "../todos/state.ts";
 
 const icons = { pending: "○", in_progress: "◐", completed: "✓", deleted: "×" } as const;
 const colors: Record<Todo["status"], ThemeColor> = { pending: "muted", in_progress: "accent", completed: "success", deleted: "dim" };

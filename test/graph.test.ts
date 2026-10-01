@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveDag, type DependencyTask } from "../src/graph.ts";
+import { deriveDag, type DependencyTask } from "../src/dag/graph.ts";
 
 const task = (
   id: number,

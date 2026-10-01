@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { AgentRuntime, resolvePiCli, type AgentNotice, type JobSummary } from "../src/agents.ts";
-import { ProfileStore } from "../src/profiles.ts";
+import { AgentRuntime, resolvePiCli, type AgentNotice, type JobSummary } from "../src/agents/runtime.ts";
+import { ProfileStore } from "../src/agents/profiles.ts";
 
 const model = { provider: "dag-test", id: "scripted" };
 const offline = fileURLToPath(new URL("./fixtures/offline-model.ts", import.meta.url));

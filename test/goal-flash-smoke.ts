@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
-import { GOAL_TYPE, type GoalState } from '../src/goals.ts';
+import { GOAL_TYPE, type GoalState } from '../src/goal/state.ts';
 
 // Explicit opt-in live acceptance. No child agents, at most 14 provider turns / 90 seconds.
 const client = await IsolatedClient.startFlash(['goal']);

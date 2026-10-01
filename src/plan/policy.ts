@@ -1,4 +1,4 @@
-import type { WorkflowState } from "./todos.ts";
+import type { WorkflowState } from "../todos/state.ts";
 
 const READ_TOOLS = new Set(["read", "grep", "find", "ls", "ask_user_question", "ask-user-question"]);
 export const NORMAL_GUIDANCE = "Normal mode. Todos are optional; use one current list and blockedBy for dependencies. Start or complete work only after its predecessors are completed. Do not create a separate plan or graph.";

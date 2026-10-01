@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
-import { GOAL_TYPE } from '../src/goals.ts';
+import { GOAL_TYPE } from '../src/goal/state.ts';
 const controls = fileURLToPath(new URL('./fixtures/session-controls.ts', import.meta.url));
 const offline = fileURLToPath(new URL('./fixtures/offline-model.ts', import.meta.url));
 const start = () => IsolatedClient.start(undefined, 'audit-pi', [controls], ['--dag-workflow-test-child-provider', offline]);

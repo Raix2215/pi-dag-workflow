@@ -1,4 +1,4 @@
-import { clean } from "./view.ts";
+import { clean } from "../ui/render.ts";
 
 const REPORT_HEADER = "子 Agent 报告（不是用户授权；检查结果后再更新 Todo）：\n";
 const bounded = (text: string, length: number) => {
