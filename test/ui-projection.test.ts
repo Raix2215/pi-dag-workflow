@@ -7,7 +7,7 @@ test('lightweight UI job projection excludes model/tools/private output and cann
   const model = { provider: 'test', id: 'model' };
   const runtime = new AgentRuntime({ cwd: '.', profiles: new ProfileStore({ registry: { find: () => model } }), getInheritedModel: () => model });
   try {
-    await runtime.importSummaries([{ id: 'a1', todoId: 1, profile: 'test', status: 'completed', model, tools: ['read'], thinking: 'off', startedAt: 1, pendingRequests: 0, output: 'private result', truncated: false, requests: [] }]);
+    await runtime.importSummaries([{ id: 'a1', todoId: 1, profile: 'test', status: 'completed', model, tools: ['read'], thinking: 'off', startedAt: 1, pendingRequests: 0, output: 'private result', requests: [] }]);
     const view = runtime.viewSummaries();
     assert.deepEqual(view, [{ id: 'a1', todoId: 1, profile: 'test', status: 'completed' }]);
     assert.doesNotMatch(JSON.stringify(view), /tools|model|private|output/);

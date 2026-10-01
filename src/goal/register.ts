@@ -181,7 +181,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       if (!args.trim() || action === 'list') { ctx.ui.notify(`${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? (state.run.reason ? localizeSavedMessage(state.run.reason, msg) : msg('未启用')) : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
       if (action === 'config') { ctx.ui.notify(JSON.stringify({ path: configPaths().config, ...config }), 'info'); return; }
       if (action === 'reset') {
-        if (!ctx.hasUI || !await ctx.ui.confirm(msg('清除 Goal 状态？'), msg('保留历史、Todos、Job 和项目文件；自动续跑停止。'))) return;
+        if (!ctx.hasUI || !await ctx.ui.confirm(msg('清除 Goal 状态？'), msg('保留记录、Todos、Job 和项目文件；自动续跑停止。'))) return;
         hooks.pauseAgents(); commit(emptyGoalState(), ctx); config = await loadConfig(msg); error = undefined; return;
       }
       let params: GoalParams | undefined;

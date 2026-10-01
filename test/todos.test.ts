@@ -99,13 +99,6 @@ test("active branch replay restores a single latest native snapshot and does not
   assert.equal(second.tasks[0]!.subject, "A");
 });
 
-test("legacy rpiv-style task snapshots are readable only when there is no native state", () => {
-  const legacy = { type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 7, subject: "旧任务", status: "pending" }], nextId: 8 } } };
-  assert.equal(restoreState([legacy]).tasks[0]!.id, 7);
-  const native = { type: "custom", customType: STATE_TYPE, data: emptyState() };
-  assert.deepEqual(restoreState([native, legacy]), emptyState());
-});
-
 test("invalid or future snapshots are not silently replaced by empty work", () => {
   assert.throws(() => restoreState([{ type: "custom", customType: STATE_TYPE, data: { version: 99 } }]));
   assert.throws(() => validateState({ ...create(emptyState(), "A"), nextId: 1 }), /计数器/);

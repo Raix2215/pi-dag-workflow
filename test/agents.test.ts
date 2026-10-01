@@ -159,7 +159,6 @@ test("startup failure and execution timeout cleanly fail while keeping full outp
     const huge = await ctx.runtime.spawn({ task: "HUGE" });
     const result = await ctx.runtime.wait(huge.id, { timeout: 2 });
     assert.equal(result.status, "completed");
-    assert.equal(result.truncated, false);
     assert.equal(result.output, "🦊\u2028\u2029" + "bounded output ".repeat(12000) + "\n");
   } finally { await ctx.close(); }
 });
@@ -170,14 +169,12 @@ test("long child reports and >1 MiB output are delivered and stored whole", asyn
     const report = await ctx.runtime.spawn({ task: "BIGREPORT" });
     const reportResult = await ctx.runtime.wait(report.id, { timeout: 15 });
     assert.equal(reportResult.status, "completed");
-    assert.equal(reportResult.truncated, false);
     assert.ok(reportResult.output.includes("r".repeat(1100000)));
     assert.equal(ctx.notices.find((item) => item.kind === "message")?.message, "r".repeat(1100000));
 
     const output = await ctx.runtime.spawn({ task: "BIGOUTPUT" });
     const outputResult = await ctx.runtime.wait(output.id, { timeout: 15 });
     assert.equal(outputResult.status, "completed");
-    assert.equal(outputResult.truncated, false);
     assert.equal(outputResult.output, "o".repeat(1100000) + "\n");
   } finally { await ctx.close(); }
 });
@@ -190,13 +187,11 @@ test("export/import and full completion keep long child output and reports intac
     assert.equal(completed.output.length, 1100001);
     const records = ctx.runtime.exportRecords();
     assert.equal(records[0]!.output, "o".repeat(1100000) + "\n");
-    assert.equal(records[0]!.truncated, false);
     const restored = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-cannot-spawn.mjs") });
     try {
       await restored.importSummaries(records);
       const restoredResult = await restored.wait(job.id);
       assert.equal(restoredResult.output, "o".repeat(1100000) + "\n");
-      assert.equal(restoredResult.truncated, false);
     } finally { await restored.shutdown(); }
   } finally { await ctx.close(); }
 });
@@ -267,12 +262,12 @@ test("restore preserves pending delivery without auto replay; manual wait acknow
       assert.equal(restored.markReportDelivered(job.id), true);
       assert.equal((await restored.wait(job.id, { timeout: 0 })).reportDelivery, "delivered");
     } finally { await restored.shutdown(); }
-    // Legacy records without the field remain compatible and never acknowledge.
-    const legacy = { ...records[0]! } as Record<string, unknown>;
-    delete legacy.reportDelivery;
+    // A terminal record without a delivery state never claims a pending report.
+    const withoutDelivery = { ...records[0]! } as Record<string, unknown>;
+    delete withoutDelivery.reportDelivery;
     const old = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-cannot-spawn.mjs") });
     try {
-      await old.importSummaries([legacy as never]);
+      await old.importSummaries([withoutDelivery as never]);
       assert.equal(old.inspect(job.id)[0]!.reportDelivery, undefined);
       assert.equal(old.markReportDelivered(job.id), false);
       assert.doesNotMatch(JSON.stringify(old.viewSummaries()), /reportDelivery/);

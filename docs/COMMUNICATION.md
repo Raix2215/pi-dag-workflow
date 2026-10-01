@@ -32,7 +32,7 @@ Jobs retain their execution status, such as `running`, `waiting`, `completed`, o
 - `pending`: execution has finished, but the terminal report has not been handed to the main session. The Todo panel shows **Pending delivery / 待交付** for a completed child.
 - `delivered`: the automatic report was handed off, or a real `subagent_wait` tool result carried it back. The panel shows **Returned / 已返回**.
 
-Delivered means handed to the conversation, not read, accepted, or verified by the model. The Todo still requires explicit acceptance. Older job records without this field retain their previous display. A report intentionally suppressed by a paused workflow or a missing/deleted linked Todo remains pending until retrieved with the real `subagent_wait` tool.
+Delivered means handed to the conversation, not read, accepted, or verified by the model. The Todo still requires explicit acceptance. A report intentionally suppressed by a paused workflow or a missing/deleted linked Todo remains pending until retrieved with the real `subagent_wait` tool.
 
 A successful `subagent_wait` consumes notices for the same job so its returned content is not immediately repeated as an automatic completion report. `/agents wait` and `subagent_inspect` do not acknowledge report delivery, because neither returns the full report to the model.
 
@@ -55,7 +55,5 @@ Notices are coalesced by job and notice kind or question ID. At most 32 notices 
 Reports, retained output, questions, and answers have no plugin-imposed character cap. RPC record parsing, completion reports, and output restoration preserve the full text. Terminal controls and bidi controls are still sanitized before automatic display/delivery.
 
 Children are prompted to give task-appropriate conclusions, changes, verification, and risks, avoiding routine play-by-play and duplicate final reports. Removing caps does not create unlimited model context: long results still grow memory, session storage, and the next request's context. Model context windows and Pi's own result handling still apply.
-
-The `truncated` result field remains for compatibility. New output is not clipped and reports `false`; historical records preserve their original flag. Text lost under an older cap cannot be recovered.
 
 Agent-state `appendEntry` snapshots are session data, not model messages. Live thinking/tool/output activity is UI-only and never enters model context.

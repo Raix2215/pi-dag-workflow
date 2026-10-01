@@ -32,5 +32,5 @@ export function localizeSavedMessage(value: string, msg: Translator): string {
   return msg(savedMessageKeys.get(value) ?? value);
 }
 
-/** Compatibility default for pure helpers; the runtime supplies its resolved locale. */
+/** Default for pure helpers that receive no translator; the runtime supplies its resolved locale. */
 export const chinese = createTranslator('zh-CN');

@@ -261,7 +261,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       const [action, ...parts] = args.trim().split(/\s+/);
       if (action === 'help') { ctx.ui.notify(msg('/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset'), 'info'); return; }
       if (action === "reset") {
-        if (!ctx.hasUI || !await ctx.ui.confirm(msg("清除 Agent 运行记录？"), msg("先停止所有子 Agent，不撤销文件修改；历史记录保留。"))) return;
+        if (!ctx.hasUI || !await ctx.ui.confirm(msg("清除 Agent 运行记录？"), msg("先停止所有子 Agent，不撤销文件修改；运行记录保留。"))) return;
         restoring = true; clearDelivery(); clearActivity(); await runtime?.shutdown();
         pi.appendEntry(AGENTS_TYPE, { version: 1, jobs: [] });
         await restore(ctx); return;

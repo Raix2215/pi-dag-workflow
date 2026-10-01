@@ -111,7 +111,7 @@ pi install https://github.com/<owner>/pi-dag-workflow
 
 `new` 只记录 Goal，创建后保持暂停。`enable` 是唯一的激活方式：聚焦某个 Goal；省略编号时重新启用当前目标。已完成或已删除的 Goal 都不能重启——返工请新建一个。`disable` 是唯一的停止方式，并保留焦点，便于之后重新启用。停用后再 `enable` 开启的是新一轮完整额度，而不是上一轮的剩余额度。启用另一个 Goal 不会清空共用的 Todo 清单；停用 Goal 也不会杀死正在运行的子 Agent，停止它们请用 `/agents cancel`。
 
-每个操作只有一个写法；旧版本接受过的同义词（`focus`、`switch`、`resume`、`pause`、`on`、`off`、`done`、`del`、`create`、`status`、`/plan exit`）已经移除。首个词不属于命令动作时按自然语言处理，与其他自由描述走同一条路径。
+每个操作只有一个写法；首个词不属于命令动作时按自然语言处理，与其他自由描述走同一条路径。
 
 ## 模块选择
 
@@ -149,7 +149,7 @@ pi install https://github.com/<owner>/pi-dag-workflow
 - `goalMaxTurns` —— 新建 Goal 的默认额度，取值 1–200（默认 `32`），由自动续跑和子报告唤醒共享。
 - `goalNoProgressLimit` —— Goal 在连续多少轮没有新进展后暂停，取值 1–10（默认 `3`）。
 
-未知键和越界取值都会作为配置错误处理。旧版的 `modules` 字段必须删除；模块选择现在只在 `pi config` 里。
+未知键和越界取值都会作为配置错误处理；模块选择只在 `pi config` 里，不写在此文件。
 
 ### `pi-dag-workflow-profile.json`
 

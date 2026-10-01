@@ -136,8 +136,7 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
 }
 
 /** Only walk the active branch; never replay abandoned branches or model summaries. */
-export function restoreState(branch: readonly { type: string; customType?: string; data?: unknown; message?: unknown }[], msg: Translator = chinese): WorkflowState {
-  let legacy: unknown;
+export function restoreState(branch: readonly { type: string; customType?: string; data?: unknown }[], msg: Translator = chinese): WorkflowState {
   for (let index = branch.length - 1; index >= 0; index--) {
     const entry = branch[index]!;
     if (entry.type === "custom" && entry.customType === STATE_TYPE) {
@@ -145,16 +144,6 @@ export function restoreState(branch: readonly { type: string; customType?: strin
       validateState(state, msg);
       return state;
     }
-    if (legacy === undefined && entry.type === "message" && entry.message && typeof entry.message === "object") {
-      const message = entry.message as { role?: string; toolName?: string; details?: { tasks?: unknown; nextId?: unknown } };
-      if (message.role === "toolResult" && message.toolName === "todo" && Array.isArray(message.details?.tasks) && Number.isSafeInteger(message.details?.nextId)) legacy = message.details;
-    }
-  }
-  if (legacy) {
-    const data = structuredClone(legacy) as { tasks: Todo[]; nextId: number };
-    const state = { ...emptyState(), tasks: data.tasks.map((task) => ({ ...task, blockedBy: task.blockedBy ?? [] })), nextId: data.nextId };
-    validateState(state, msg);
-    return state;
   }
   return emptyState();
 }

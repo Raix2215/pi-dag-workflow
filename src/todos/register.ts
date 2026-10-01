@@ -91,7 +91,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
         }
         if (action === "show" || action === "hide") { commit({ ...hooks.state(), visible: action === "show" }, ctx); return; }
         if (action === "clear") {
-          if (!ctx.hasUI || !await ctx.ui.confirm(msg('清空 Todos？'), msg('这会清空当前清单，不修改项目文件；历史编号不复用。'))) return;
+          if (!ctx.hasUI || !await ctx.ui.confirm(msg('清空 Todos？'), msg('这会清空当前清单，不修改项目文件；编号不复用。'))) return;
           if (hooks.protected()) hooks.reset(ctx);
           else mutate({ action: "clear" }, ctx);
           ctx.ui.notify(msg('已清空 Todos'), 'info');

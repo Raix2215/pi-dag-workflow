@@ -114,7 +114,7 @@ Each command family supports `help`; help does not call a model or change modes.
 
 `new` only records a Goal and leaves it paused. `enable` is the only activation: it focuses a Goal, or re-enables the current one when the id is omitted, and a completed or deleted Goal cannot be restarted — create a new one for rework. `disable` is the only stop and keeps the focus so you can enable it later. Enabling after a stop starts a fresh allowance, not the remainder of the previous one. Enabling another Goal does not clear the shared Todo list, and disabling a Goal does not kill running children; stop those with `/agents cancel`.
 
-Every operation has exactly one spelling; the retired synonyms from earlier versions (`focus`, `switch`, `resume`, `pause`, `on`, `off`, `done`, `del`, `create`, `status`, `/plan exit`) no longer exist. An unrecognized first word is treated as natural language and forwarded to the model, the same as any other free-form request.
+Every operation has exactly one spelling. An unrecognized first word is treated as natural language and forwarded to the model, the same as any other free-form request.
 
 ## Modules
 
@@ -153,8 +153,8 @@ modules with `pi config`, not in this file, and apply changes with `/reload`.
 - `goalMaxTurns` — default allowance for newly created Goals, 1–200 (default `32`), shared by automatic continuation and child-report wakes.
 - `goalNoProgressLimit` — consecutive rounds without new progress before a Goal pauses, 1–10 (default `3`).
 
-Unknown keys and out-of-range values are configuration errors. A legacy `modules` field in particular must be
-removed; module selection now lives in `pi config`.
+Unknown keys and out-of-range values are configuration errors. Module selection lives in `pi config`, not in this
+file.
 
 ### `pi-dag-workflow-profile.json`
 

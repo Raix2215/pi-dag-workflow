@@ -19,7 +19,7 @@ function parseConfig(source: string, msg: Translator): WorkflowConfig {
       if (!['auto', 'en', 'zh-CN'].includes(item as string)) throw new Error(msg('language 需为 auto、en 或 zh-CN'));
       continue;
     }
-    if (key === 'modules') throw new Error(msg('modules 配置已移除；请从此文件删除该字段，并用 pi config 勾选扩展入口'));
+    if (key === 'modules') throw new Error(msg('modules 不是配置项；模块选择用 pi config 勾选扩展入口'));
     const max = key === 'goalMaxTurns' ? 200 : key === 'goalNoProgressLimit' ? 10 : 0;
     if (!max || typeof item !== 'number' || !Number.isSafeInteger(item) || item < 1 || item > max) throw new Error(msg`未知或无效配置：${key}`);
   }
