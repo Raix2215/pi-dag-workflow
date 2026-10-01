@@ -100,11 +100,22 @@ test("active branch replay restores a single latest native snapshot and does not
 });
 
 test("a rpiv-todo task snapshot is read only when this plugin has no state on the branch", () => {
-  const rpiv = { type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 7, subject: "外部任务", status: "pending" }], nextId: 8 } } };
+  // The full rpiv-todo envelope: extra task fields, a tombstone, and a dependency all survive.
+  const rpiv = { type: "message", message: { role: "toolResult", toolName: "todo", details: {
+    action: "update", params: { action: "update", id: 2, status: "in_progress" },
+    tasks: [
+      { id: 7, subject: "外部任务", status: "completed", blockedBy: [], activeForm: "调查中", owner: "main", metadata: { tag: "x" } },
+      { id: 8, subject: "下游任务", description: "说明", status: "in_progress", blockedBy: [7] },
+      { id: 9, subject: "已删除任务", status: "deleted", blockedBy: [] },
+    ], nextId: 10 } } };
   const restored = restoreState([rpiv]);
-  assert.equal(restored.tasks[0]!.id, 7);
+  assert.equal(restored.nextId, 10);
   assert.equal(restored.tasks[0]!.subject, "外部任务");
-  assert.deepEqual(restored.tasks[0]!.blockedBy, [], "a missing dependency list becomes empty");
+  assert.equal(restored.tasks[0]!.owner, "main");
+  assert.deepEqual(restored.tasks[1]!.blockedBy, [7], "dependencies come across");
+  assert.equal(restored.tasks[2]!.status, "deleted");
+  assert.deepEqual(restoreState([{ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 3, subject: "缺依赖列表", status: "pending" }], nextId: 4 } } }]).tasks[0]!.blockedBy, [], "a missing dependency list becomes empty");
+  assert.deepEqual(restoreState([{ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 3, status: "pending" }], nextId: 4 } } }]), emptyState(), "a foreign snapshot that fails validation is ignored instead of breaking restore");
   const native = { type: "custom", customType: STATE_TYPE, data: emptyState() };
   assert.deepEqual(restoreState([native, rpiv]), emptyState(), "this plugin's own snapshot wins");
 });

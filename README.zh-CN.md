@@ -31,7 +31,7 @@ pi install https://github.com/<owner>/pi-dag-workflow
 
 把 `<owner>` 替换为仓库拥有者。Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 Pi 或执行 `/reload`，再用 `pi config` 选择要加载的模块（见下文）。
 
-若其他插件已提供 Todo、Plan、Goal 或子 Agent 工具，启用本插件时请先停用它们。工具名相似，但参数与持久化状态并不通用。
+若其他插件已提供 Todo、Plan、Goal 或子 Agent 工具，请只启用其中一个，详见[与其他插件的兼容性](#与其他插件的兼容性)。
 
 ## 快速上手
 
@@ -128,6 +128,30 @@ pi install https://github.com/<owner>/pi-dag-workflow
 组合 Todo＋Plan＋UI 可规划并执行；Goal＋UI 可做独立研究；只选 Agents 可派发独立子进程。DAG 绘制与 `todoId` 关联需要 Todo。不选 UI 时命令输出仍可用，也不启动活动刷新计时器；只选 UI 时没有工作流数据可展示。
 
 每个入口都是真正的 Pi 扩展，拥有各自的默认工厂。已加载入口通过 Pi 事件总线共享一份运行时协调状态，因此没有必选的 core 复选框，也不会重复创建预算。重载会释放旧订阅和子进程资源，未勾选的入口不注册任何工具或指导语。插件**没有自己的 `modules` 配置**。
+
+## 与其他插件的兼容性
+
+本插件是它参照的 Todo、Plan、Goal、子 Agent 插件的超集，因此注册了相近的工具名与命令。这些名字无法共享：
+
+- **工具** —— Pi 每个工具名只保留一个定义，后注册的会替换先注册的。
+- **命令** —— Pi 会给重名命令加后缀，例如两个 `/plan` 会变成 `/plan:1` 和 `/plan:2`，原来的 `/plan` 也就不再可用。
+
+| 插件 | 重名内容 | 建议 |
+|---|---|---|
+| [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo) | `todo` 工具 | 只启用一个；任务数据双向可读（见下文）。 |
+| [pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode) | `/plan` 命令 | 只启用一个；两者实现只读规划的方式不同。 |
+| [Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents) | `subagent_spawn`、`subagent_send`、`subagent_wait`、`subagent_inspect`、`subagent_cancel` | 只启用一个。 |
+| [pi-goal-x](https://github.com/tmonk/pi-goal-x) | `/goal` 命令 | 只启用一个；两个续跑引擎会同时唤醒模型。 |
+
+命名相近，但参数与持久化状态并不通用。一个插件创建的 Job 或 Goal，另一个插件不认识；两者的设置文件与 Profile 文件各自独立。
+
+### 接手使用过 rpiv-todo 的会话
+
+rpiv-todo 把任务清单保存在 `todo` 工具结果的 `details` 里，本插件写入相同结构：`tasks`、`nextId`，以及相同的任务字段与状态名。因此两边都能读对方的清单。
+
+本插件在当前活动分支上找不到自己的快照时，会回放分支上最近一次 `todo` 结果，沿用相同的编号、标题、状态、属主与 `blockedBy` 依赖，而不是从空清单开始。分支上一旦存在本插件的快照，就以它为准；本插件写回的结果结构相同，所以切回 rpiv-todo 时那份清单仍然可用。
+
+Plan 模式、Goal 与子 Agent Job 并不共享：它们各自保存在本插件的会话条目里，格式互不相同。
 
 ## 配置
 

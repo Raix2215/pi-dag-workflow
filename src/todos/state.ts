@@ -157,8 +157,8 @@ export function restoreState(branch: readonly { type: string; customType?: strin
   if (rpiv) {
     const data = structuredClone(rpiv) as { tasks: Todo[]; nextId: number };
     const state = { ...emptyState(), tasks: data.tasks.map((task) => ({ ...task, blockedBy: task.blockedBy ?? [] })), nextId: data.nextId };
-    validateState(state, msg);
-    return state;
+    // Another plugin's data must never break session restore: keep it only when it validates.
+    try { validateState(state, msg); return state; } catch { return emptyState(); }
   }
   return emptyState();
 }

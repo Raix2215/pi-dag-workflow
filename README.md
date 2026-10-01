@@ -31,7 +31,7 @@ pi install https://github.com/<owner>/pi-dag-workflow
 
 Replace `<owner>` with the repository owner. Pi installs the extension from that GitHub repository; there is currently no npm package. Restart Pi or run `/reload` afterwards, then choose which modules to load with `pi config` (see below).
 
-If another extension already provides Todo, Plan, Goal, or subagent tools, disable it while this one is enabled. Common tool names are similar, but options and stored state are not portable between plugins.
+If another extension already provides Todo, Plan, Goal, or subagent tools, enable one of them — see [Compatibility with other plugins](#compatibility-with-other-plugins).
 
 ## Quick start
 
@@ -131,6 +131,38 @@ Run `pi config`, find the `pi-dag-workflow` package, and toggle its independent 
 Combine Todos + Plan + UI for planning and execution, Goal + UI for independent research, or Agents alone for standalone children. DAG rendering and `todoId` links need Todos. Without UI, command output still works and activity-refresh timers do not run; UI alone has no workflow data to display.
 
 Each entry is a real Pi extension with its own default factory. Loaded entries share one runtime-scoped coordinator through Pi's event bus, so there is no required core checkbox and no duplicate budgets. Reloading releases old subscriptions and child resources, and disabled entries register no tools or guidance. There is **no plugin `modules` setting**.
+
+## Compatibility with other plugins
+
+This extension is a superset of the Todo, Plan, Goal and subagent plugins it was modelled on, so it registers
+similarly named tools and commands. Those names cannot be shared:
+
+- **Tools** — Pi keeps one definition per tool name, so a later registration replaces the earlier one.
+- **Commands** — Pi renames duplicates, for example two `/plan` registrations become `/plan:1` and `/plan:2`,
+  and the plain `/plan` stops working.
+
+| Plugin | Shared names | Guidance |
+|---|---|---|
+| [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo) | `todo` tool | Enable one. Task data stays readable in either direction (below). |
+| [pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode) | `/plan` command | Enable one; the two plugins enforce read-only planning differently. |
+| [Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents) | `subagent_spawn`, `subagent_send`, `subagent_wait`, `subagent_inspect`, `subagent_cancel` | Enable one. |
+| [pi-goal-x](https://github.com/tmonk/pi-goal-x) | `/goal` command | Enable one; two continuation engines would both wake the model. |
+
+Names are similar, but arguments and stored state are not portable. A child job or Goal created by one plugin
+is not understood by the other, and each plugin keeps its own settings and profile files.
+
+### Continuing a session that used rpiv-todo
+
+rpiv-todo stores its list in the `details` of its `todo` tool results, and this plugin writes the same shape:
+`tasks`, `nextId`, and the same task fields and status names. Each side therefore reads the other's list.
+
+When this plugin finds no snapshot of its own on the active branch, it replays the last `todo` result from the
+branch and continues with the same ids, subjects, statuses, owners and `blockedBy` dependencies instead of
+starting with an empty list. This plugin's own snapshot always wins once one exists on the branch, and the same
+result shape is written back, so rpiv-todo can pick the list up again if you switch back.
+
+Plan mode, Goals, and child jobs are not shared: those live in per-plugin session entries with their own
+formats.
 
 ## Configuration
 
