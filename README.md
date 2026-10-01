@@ -102,7 +102,7 @@ Optional. Choose modules with `pi config`, not in this file. Apply changes with 
 ```json
 {
   "language": "auto",
-  "goalMaxTurns": 20,
+  "goalMaxTurns": 32,
   "goalNoProgressLimit": 3
 }
 ```

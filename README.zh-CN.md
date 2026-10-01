@@ -102,7 +102,7 @@ pi install https://github.com/<owner>/pi-dag-workflow
 ```json
 {
   "language": "auto",
-  "goalMaxTurns": 20,
+  "goalMaxTurns": 32,
   "goalNoProgressLimit": 3
 }
 ```
