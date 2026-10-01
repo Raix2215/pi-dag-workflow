@@ -73,10 +73,10 @@ try {
   assert.equal((await snapshot()).tasks[0].status, "pending");
   await save("05-plan-completion-denied");
   send("请写入测试文件");
-  await poll(() => capture().includes("Plan 只读：write 需先 /plan off"), "Plan 禁止写入");
+  await poll(() => capture().includes("不允许执行 write"), "Plan 禁止写入");
   assert.ok(!(await readdir(root)).includes("should-not-exist.txt"));
   send("!touch forbidden-shell.txt");
-  await poll(() => capture().includes("Plan 只读：请用读取／搜索工具；执行 shell 需先 /plan off"), "Plan 禁止用户 shell");
+  await poll(() => capture().includes("Plan 中不执行 shell"), "Plan 禁止用户 shell");
   assert.ok(!(await readdir(root)).includes("forbidden-shell.txt"));
   await save("06-write-and-shell-denied");
   send("/todos edit #2 规划后的汇总");

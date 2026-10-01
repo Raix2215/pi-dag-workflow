@@ -177,7 +177,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   pi.on("session_shutdown", async () => { restoring = true; generation++; clearDelivery(); clearActivity(); await runtime?.shutdown(); runtime = undefined; context = undefined; });
   pi.on("before_agent_start", (event, ctx) => {
     context = ctx;
-    event.systemPromptOptions.sections["dag_workflow_agents"] = "Use subagent_spawn for useful independent work (optional todoId/profile); children work at a single tier. Inspect profiles as needed, send direction or reply by requestId, wait or cancel. Check returned work yourself before completing Todos.";
+    event.systemPromptOptions.sections["dag_workflow_agents"] = "Use subagent_spawn for useful independent work (optional todoId/profile); no grandchildren. Inspect profiles as needed, send direction or reply by requestId, wait or cancel. Check returned work yourself before completing Todos.";
   });
   pi.on("input", (event, ctx) => { context = ctx; if (event.source !== "extension" && !hooks.state().plan && !event.text.trim().startsWith("/")) paused = false; });
   const reportBoundary = (outcome: string, ctx: ExtensionContext) => {
@@ -203,7 +203,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const reply = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data });
   const fail = (cause: unknown) => ({ isError: true, content: [{ type: "text" as const, text: String(cause) }], details: { error: String(cause) } });
 
-  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Optional todoId must be unblocked; profile selects a named model/tools config. Returns jobId. Children work at a single tier; at most eight jobs run at once.",
+  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Optional todoId must be unblocked; profile selects a named model/tools config. Returns jobId. No grandchildren; maximum eight active jobs.",
     parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) {
       try {
@@ -230,7 +230,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       } catch (cause) { return fail(cause); }
     },
   });
-  pi.registerTool({ name: "subagent_inspect", label: "Agents", namespace: workflowNamespace, annotations: readOnly, description: "List job summaries with their profile and status. Full child results come from subagent_wait.", parameters: Type.Object({ jobId: Type.Optional(idSchema) }, { additionalProperties: false }), renderResult,
+  pi.registerTool({ name: "subagent_inspect", label: "Agents", namespace: workflowNamespace, annotations: readOnly, description: "List private-safe job summaries and named profiles; no full child conversations.", parameters: Type.Object({ jobId: Type.Optional(idSchema) }, { additionalProperties: false }), renderResult,
     async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); await profiles!.load(); return reply({ jobs: agent.inspect(params.jobId), profiles: profiles!.list(), profilePath: configPaths().profile, paused }); } catch (cause) { return fail(cause); } },
   });
   pi.registerTool({ name: "subagent_send", label: "Agent message", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Send direction to recipient jobId, or answer a pending requestId; provide exactly one target. Keep messages focused and include the detail needed for the task.", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text }, { additionalProperties: false }), executionMode: "sequential", renderResult,
@@ -242,7 +242,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       return reply({ delivered: true });
     } catch (cause) { return fail(cause); } },
   });
-  pi.registerTool({ name: "subagent_wait", label: "Wait for Agent", namespace: workflowNamespace, annotations: readOnly, description: "Wait for a result or question. A timeout or abort ends this wait while the child keeps running. Verify the returned work yourself and update the Todo explicitly.", parameters: Type.Object({ jobId: idSchema, timeout: Type.Optional(Type.Number({ minimum: 0, maximum: 300 })) }, { additionalProperties: false }), executionMode: "parallel", renderResult,
+  pi.registerTool({ name: "subagent_wait", label: "Wait for Agent", namespace: workflowNamespace, annotations: readOnly, description: "Wait for a result or question. Timeout/abort stops only this wait, not the child. Returned work is not automatic Todo completion.", parameters: Type.Object({ jobId: idSchema, timeout: Type.Optional(Type.Number({ minimum: 0, maximum: 300 })) }, { additionalProperties: false }), executionMode: "parallel", renderResult,
     async execute(_id, params, signal, _update, ctx) { try {
       const agent = ready(ctx, false);
       const result = await agent.wait(params.jobId, { ...(params.timeout !== undefined ? { timeout: params.timeout } : {}), ...(signal ? { signal } : {}) });

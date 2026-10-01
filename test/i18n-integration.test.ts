@@ -73,7 +73,7 @@ test("actual Pi English Todo dependency rejection and Plan write block stay loca
   await client.prompt("/plan start");
   const blocked = results(await client.prompt('TEST CALL write {"path":"forbidden.txt","content":"no"}'), "write");
   assert.equal(blocked[0]!.isError, true);
-  assert.match(blocked[0]!.text, /Plan is read-only: run \/plan off before write/);
+  assert.match(blocked[0]!.text, /not allowed in Plan; run \/plan off first/);
   await assert.rejects(access(join(client.root, "forbidden.txt")));
 });
 

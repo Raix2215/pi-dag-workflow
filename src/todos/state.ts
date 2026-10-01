@@ -94,7 +94,7 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
   const current = params.id === undefined ? undefined : state.tasks.find((task) => task.id === params.id);
   if (["get", "update", "delete"].includes(params.action) && !current) throw new Error(msg`找不到任务 #${params.id ?? "?"}`);
   if (params.action === "get") return { state, text: JSON.stringify(current, null, 2) };
-  if (state.plan && params.status && ["in_progress", "completed"].includes(params.status)) throw new Error(msg("Plan 只整理任务；开始或完成请先 /plan off"));
+  if (state.plan && params.status && ["in_progress", "completed"].includes(params.status)) throw new Error(msg("Plan 只允许整理任务，不允许开始或完成；先 /plan off"));
   if (params.action === "clear") {
     if (!state.tasks.length) return { state, text: msg("暂无任务") };
     return { state: { ...state, tasks: [] }, text: msg`已清空 ${state.tasks.length} 项，编号不复用` };

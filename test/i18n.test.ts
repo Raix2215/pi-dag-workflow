@@ -125,7 +125,7 @@ test("applyTodo dependency and Plan rejections are localized without translating
     { id: 2, subject: "下游", status: "pending", blockedBy: [1] },
   ], nextId: 3 };
   assert.throws(() => applyTodo(state, { action: "update", id: 2, status: "completed" }, en), /Prerequisites incomplete: #1; cannot start or complete #2/);
-  assert.throws(() => applyTodo({ ...state, plan: true }, { action: "update", id: 1, status: "in_progress" }, en), /Plan organizes tasks only/);
+  assert.throws(() => applyTodo({ ...state, plan: true }, { action: "update", id: 1, status: "in_progress" }, en), /Plan only allows organizing tasks/);
   assert.throws(() => applyTodo(emptyState(), { action: "create", subject: "X", blockedBy: [0] }, en), /Dependencies must be valid task ids/);
   assert.throws(() => applyTodo(state, { action: "delete", id: 1 }, en), /depends on deleted #1/);
   assert.throws(() => applyTodo(state, { action: "update", id: 2, blockedBy: [1] } as never, en), /does not accept field blockedBy/);

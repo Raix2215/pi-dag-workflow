@@ -36,7 +36,7 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '{0} 不接受字段 {1}': '{0} does not accept field {1}',
   '暂无任务': 'No tasks',
   '找不到任务 #{0}': 'Task #{0} not found',
-  'Plan 只整理任务；开始或完成请先 /plan off': 'Plan organizes tasks only; run /plan off before starting or completing work',
+  'Plan 只允许整理任务，不允许开始或完成；先 /plan off': 'Plan only allows organizing tasks, not starting or completing them; run /plan off first',
   '已清空 {0} 项，编号不复用': 'Cleared {0} item(s); ids are not reused',
   'create 需要 subject': 'create requires subject',
   '任务 #{0} 已删除': 'Task #{0} was deleted',
@@ -170,9 +170,9 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '已进入 Plan（只读）；可探索与编辑 Todos，实施／完成／委派待退出后继续': 'Entered Plan (read-only); explore and edit Todos, and implementation/completion/dispatch continue after leaving',
 
   // ----- plan/policy.ts -----
-  'Plan 只读：{0} 需先 /plan off': 'Plan is read-only: run /plan off before {0}',
-  'Plan 只整理 Todos；开始或完成请先 /plan off': 'Plan organizes Todos only; run /plan off before starting or completing work',
-  'Plan 只读：请用读取／搜索工具；{0} 等实施操作需先 /plan off。额外只读工具可由用户通过 /plan tools 配置。': 'Plan is read-only: use read/search tools; run /plan off before implementation tools such as {0}. The user can trust extra read-only tools with /plan tools.',
+  'Plan 中不允许执行 {0}；先 /plan off': 'Running {0} is not allowed in Plan; run /plan off first',
+  'Plan 只允许整理 Todos，不允许开始或完成；先 /plan off': 'Plan only allows organizing Todos, not starting or completing them; run /plan off first',
+  'Plan 中不能执行 {0}。请用读取／搜索工具，或退出 Plan 后实施。额外只读工具需由用户通过 /plan tools 明确配置。': 'Cannot run {0} in Plan. Use read/search tools, or exit Plan before implementing. Extra read-only tools must be explicitly configured by the user via /plan tools.',
 
   // ----- agents/register.ts -----
   '启动中': 'Starting',
