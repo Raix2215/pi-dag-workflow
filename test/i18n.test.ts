@@ -243,7 +243,7 @@ test("loadConfig defaults to language auto and loadLocale follows config before 
   process.env.PI_CODING_AGENT_DIR = directory;
   delete process.env.LC_ALL; delete process.env.LC_MESSAGES; delete process.env.LANGUAGE; delete process.env.LANG;
   try {
-    assert.deepEqual(await loadConfig(), { language: "auto", goalMaxTurns: 32, goalNoProgressLimit: 3 });
+    assert.deepEqual(await loadConfig(), { language: "auto", goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5 });
     process.env.LANG = "zh_CN.UTF-8";
     assert.equal(loadLocale(), "zh-CN");
     process.env.LC_ALL = "en_US.UTF-8";
@@ -254,7 +254,7 @@ test("loadConfig defaults to language auto and loadLocale follows config before 
     const write = (value: unknown) => writeFile(config, JSON.stringify(value));
     await write({ language: "en" });
     assert.equal(loadLocale(), "en");
-    assert.deepEqual(await loadConfig(), { language: "en", goalMaxTurns: 32, goalNoProgressLimit: 3 });
+    assert.deepEqual(await loadConfig(), { language: "en", goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5 });
     await write({ language: "zh-CN" });
     assert.equal(loadLocale(), "zh-CN");
     await write({ language: "auto" });

@@ -32,6 +32,56 @@ test('mock host: shared Agent/Goal wakes consume one allowance, never reset on s
   await h.call({ action: 'enable', id: 1 }); // User explicitly enables after the input, so this is a resume.
   assert.equal(state.run.used, 2);
 });
+test('mock host: a model error retries automatically and keeps the goal active', async () => {
+  const h = host(); await h.enable();
+  assert.equal(h.controller.snapshot().run.errorRetries, undefined);
+  // The same failure surfaces at turn_end and agent_before_settle; it must retry only once.
+  await h.fire('turn_end', { outcome: 'error' });
+  await h.fire('agent_before_settle', { outcome: 'error', continue: false });
+  const state = h.controller.snapshot();
+  assert.equal(state.run.paused, false, 'a recoverable error must not pause the goal');
+  assert.equal(state.run.errorRetries, 1);
+  assert.equal(h.wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-retry').length, 1, 'the same failure must not queue two retries');
+  assert.equal(h.notifications.filter((line) => line.includes('自动重试')).length, 1);
+});
+
+test('mock host: retries stop at the configured limit and a successful turn clears the counter', async () => {
+  const h = host(); await h.enable();
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await h.fire('before_agent_start', { systemPromptOptions: { sections: {} } });
+    await h.fire('turn_end', { outcome: 'error' });
+    assert.equal(h.controller.snapshot().run.paused, false, `attempt ${attempt} stays active`);
+    assert.equal(h.controller.snapshot().run.errorRetries, attempt);
+  }
+  await h.fire('before_agent_start', { systemPromptOptions: { sections: {} } });
+  await h.fire('turn_end', { outcome: 'error' });
+  const exhausted = h.controller.snapshot();
+  assert.equal(exhausted.run.paused, true, 'the sixth failure pauses');
+  assert.match(exhausted.run.reason!, /已重试 5 次/);
+  assert.equal(h.wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-retry').length, 5);
+
+  // A completed turn resets the budget for the next failure.
+  const fresh = host(); await fresh.enable();
+  await fresh.fire('before_agent_start', { systemPromptOptions: { sections: {} } });
+  await fresh.fire('turn_end', { outcome: 'error' });
+  assert.equal(fresh.controller.snapshot().run.errorRetries, 1);
+  await fresh.fire('turn_end', { outcome: 'completed' });
+  assert.equal(fresh.controller.snapshot().run.errorRetries, 0);
+  await fresh.fire('before_agent_start', { systemPromptOptions: { sections: {} } });
+  await fresh.fire('turn_end', { outcome: 'error' });
+  assert.equal(fresh.controller.snapshot().run.errorRetries, 1, 'a successful turn restores the full budget');
+});
+
+test('mock host: a user abort never retries', async () => {
+  const h = host(); await h.enable();
+  await h.fire('turn_end', { outcome: 'aborted' });
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.match(h.controller.snapshot().run.reason!, /用户中断/);
+  await h.fire('before_agent_start', { systemPromptOptions: { sections: {} } });
+  await h.fire('agent_end', { messages: [{ role: 'assistant', stopReason: 'aborted' }], signal: undefined });
+  assert.equal(h.wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-retry').length, 0);
+});
+
 test('mock host: Plan, restore and abort pause persistently; only explicit enable can rearm', async () => {
   const h = host(); await h.enable();
   h.controller.pause('进入 Plan', h.ctx); h.setPlan(true);

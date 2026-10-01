@@ -8,8 +8,10 @@ export const configPaths = () => {
   const directory = join(getAgentDir(), 'pi-dag-workflow');
   return { directory, config: join(directory, 'pi-dag-workflow-config.json'), profile: join(directory, 'pi-dag-workflow-profile.json') };
 };
-export interface WorkflowConfig { language: Language; goalMaxTurns: number; goalNoProgressLimit: number }
-const defaults: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3 };
+export interface WorkflowConfig { language: Language; goalMaxTurns: number; goalNoProgressLimit: number; goalErrorRetries: number }
+const defaults: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5 };
+/** Accepted range per key; an absent key is a default, an out-of-range value is an error. */
+const limits: Record<string, { min: number; max: number }> = { goalMaxTurns: { min: 1, max: 200 }, goalNoProgressLimit: { min: 1, max: 10 }, goalErrorRetries: { min: 0, max: 20 } };
 function parseConfig(source: string, msg: Translator): WorkflowConfig {
   if (Buffer.byteLength(source) > 16384) throw new Error(msg('配置超过 16 KiB'));
   const value = JSON.parse(source) as Record<string, unknown>;
@@ -20,8 +22,8 @@ function parseConfig(source: string, msg: Translator): WorkflowConfig {
       continue;
     }
     if (key === 'modules') throw new Error(msg('modules 不是配置项；模块选择用 pi config 勾选扩展入口'));
-    const max = key === 'goalMaxTurns' ? 200 : key === 'goalNoProgressLimit' ? 10 : 0;
-    if (!max || typeof item !== 'number' || !Number.isSafeInteger(item) || item < 1 || item > max) throw new Error(msg`未知或无效配置：${key}`);
+    const range = limits[key];
+    if (!range || typeof item !== 'number' || !Number.isSafeInteger(item) || item < range.min || item > range.max) throw new Error(msg`未知或无效配置：${key}`);
   }
   return { ...defaults, ...value } as WorkflowConfig;
 }

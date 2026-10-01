@@ -14,12 +14,13 @@ interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly Age
 export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const msg = hooks.msg ?? chinese;
   let state = emptyGoalState();
-  let config: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3 };
+  let config: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5 };
   let error: string | undefined;
   let userAuthority = false;
   let automaticRound = false;
   let standaloneReports = true;
   let revision = 0;
+  let retryIssued = false;
   let baseline = '';
   let lastProgress = '';
   const workStamp = () => JSON.stringify([revision, hooks.state().tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, task.status])]);
@@ -69,6 +70,32 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     userAuthority = false; automaticRound = true;
     return true;
   }
+  /**
+   * Automatic recovery for a failed model request: the goal stays active and one bounded retry
+   * turn is queued instead of pausing on the first error. Only one retry is issued per failure.
+   */
+  function recoverFromModelError(ctx: ExtensionContext): boolean {
+    const goal = focusedGoal(state);
+    const limit = config.goalErrorRetries;
+    const attempts = state.run.errorRetries ?? 0;
+    if (!goal || state.run.paused || limit <= 0 || attempts >= limit) return false;
+    if (error || hooks.protected() || hooks.state().plan) return false;
+    const next = { ...state, run: { ...state.run, errorRetries: attempts + 1 } };
+    commit(next, ctx);
+    automaticRound = true;
+    ctx.ui.notify(msg`模型出错，自动重试 ${next.run.errorRetries}/${limit}`, 'warning');
+    try {
+      pi.sendMessage({ customType: 'pi-dag-workflow.goal-retry', content: msg`上一次请求失败（模型出错）。这是 Goal #${goal.id} 的第 ${next.run.errorRetries}/${limit} 次自动重试：继续推进「${clean(goal.title)}」，并按需 goal update progress／nextStep；需要用户时 disable，达成时 complete。`, display: true }, { triggerTurn: true, deliverAs: 'followUp' });
+    } catch (cause) { pause(msg`重试失败：${String(cause)}`, ctx); return false; }
+    return true;
+  }
+  const modelErrorPause = () => config.goalErrorRetries > 0 ? msg`模型出错（已重试 ${config.goalErrorRetries} 次）` : msg('模型出错');
+  /** One failure can surface at several boundaries; never issue two retries for the same one. */
+  function failRun(ctx: ExtensionContext) {
+    if (retryIssued) return;
+    retryIssued = recoverFromModelError(ctx);
+    if (!retryIssued) pause(modelErrorPause(), ctx);
+  }
   function continuation(ctx: ExtensionContext, nextStep: string) {
     if (!reserveWake(ctx)) return;
     const goal = focusedGoal(state)!;
@@ -78,7 +105,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
   }
   async function restore(ctx: ExtensionContext) {
-    userAuthority = false; automaticRound = false; revision = 0; error = undefined;
+    userAuthority = false; automaticRound = false; revision = 0; error = undefined; retryIssued = false;
     try {
       state = restoreGoalState(ctx.sessionManager.getBranch(), msg);
       state = pauseGoal(state, focusedGoal(state) ? msg('会话恢复') : state.run.reason ?? '');
@@ -93,6 +120,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('session_tree', (_event, ctx) => restore(ctx));
   pi.on('session_shutdown', () => { state = emptyGoalState(); userAuthority = false; });
   pi.on('before_agent_start', (event) => {
+    retryIssued = false;
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);
     if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
@@ -104,14 +132,18 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   });
   pi.on('ui_prompt_start', (event, ctx) => { if (event.kind !== 'custom') pause(msg('等待用户答复'), ctx); });
   // Pi skips before_settle when an operation is aborted; observe the run/turn too.
-  pi.on('turn_end', (event, ctx) => { if (event.outcome !== 'completed') pause(msg(event.outcome === 'aborted' ? '用户中断' : '模型出错'), ctx); });
+  pi.on('turn_end', (event, ctx) => {
+    if (event.outcome === 'completed') { if (state.run.errorRetries) commit({ ...state, run: { ...state.run, errorRetries: 0 } }, ctx); return; }
+    if (event.outcome === 'aborted') pause(msg('用户中断'), ctx);
+    else failRun(ctx);
+  });
   pi.on('agent_end', (event, ctx) => {
     const last = event.messages.findLast((message) => message.role === 'assistant');
     if (ctx.signal?.aborted || last?.role === 'assistant' && last.stopReason === 'aborted') pause(msg('用户中断'), ctx);
-    else if (last?.role === 'assistant' && last.stopReason === 'error') pause(msg('模型出错'), ctx);
+    else if (last?.role === 'assistant' && last.stopReason === 'error') failRun(ctx);
   });
   pi.on('agent_before_settle', (event, ctx) => {
-    if (event.outcome !== 'completed') { pause(msg(event.outcome === 'aborted' ? '用户中断' : '模型出错'), ctx); return; }
+    if (event.outcome !== 'completed') { if (event.outcome === 'aborted') pause(msg('用户中断'), ctx); else failRun(ctx); return; }
     if (!focusedGoal(state) || state.run.paused || error || hooks.protected() || hooks.state().plan) return;
     if (event.continue) return; // An Agent report already requested and paid for this next request.
     const goal = focusedGoal(state)!;

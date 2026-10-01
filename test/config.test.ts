@@ -12,12 +12,12 @@ test('config and Profile share the requested Pi user directory; missing config h
     const paths = configPaths();
     assert.equal(paths.config, join(dir, 'pi-dag-workflow', 'pi-dag-workflow-config.json'));
     assert.equal(paths.profile, join(dir, 'pi-dag-workflow', 'pi-dag-workflow-profile.json'));
-    assert.deepEqual(await loadConfig(), { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3 });
+    assert.deepEqual(await loadConfig(), { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5 });
     assert.deepEqual(await readdir(dir), []);
     await mkdir(paths.directory);
-    await writeFile(paths.config, JSON.stringify({ goalMaxTurns: 2, goalNoProgressLimit: 1 }));
-    assert.deepEqual(await loadConfig(), { language: 'auto', goalMaxTurns: 2, goalNoProgressLimit: 1 });
-    for (const value of [{ language: 'fr' }, { language: null }, { goalMaxTurns: 0 }, { goalMaxTurns: 201 }, { goalNoProgressLimit: 1.5 }, { unknown: true }, { modules: ['unknown'] }, { modules: null }, [], null]) {
+    await writeFile(paths.config, JSON.stringify({ goalMaxTurns: 2, goalNoProgressLimit: 1, goalErrorRetries: 0 }));
+    assert.deepEqual(await loadConfig(), { language: 'auto', goalMaxTurns: 2, goalNoProgressLimit: 1, goalErrorRetries: 0 });
+    for (const value of [{ language: 'fr' }, { language: null }, { goalMaxTurns: 0 }, { goalMaxTurns: 201 }, { goalNoProgressLimit: 1.5 }, { goalErrorRetries: -1 }, { goalErrorRetries: 21 }, { goalErrorRetries: 1.5 }, { unknown: true }, { modules: ['unknown'] }, { modules: null }, [], null]) {
       await writeFile(paths.config, JSON.stringify(value)); await assert.rejects(loadConfig());
     }
   } finally { previous === undefined ? delete process.env.PI_CODING_AGENT_DIR : process.env.PI_CODING_AGENT_DIR = previous; await rm(dir, { recursive: true, force: true }); }

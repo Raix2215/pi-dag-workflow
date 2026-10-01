@@ -12,7 +12,7 @@ export const GoalParamsSchema = Type.Object({
 }, { additionalProperties: false });
 export type GoalParams = Static<typeof GoalParamsSchema>;
 export interface Goal { id: number; title: string; description?: string; status: 'active' | 'paused' | 'completed' | 'deleted'; maxTurns: number; createdAt: number; completedAt?: number }
-export interface GoalRun { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string }
+export interface GoalRun { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string; errorRetries?: number }
 export interface GoalState { version: 1; goals: Goal[]; nextId: number; focusId?: number; run: GoalRun }
 export const GOAL_TYPE = 'pi-dag-workflow.goal';
 export const GOAL_DEFAULT_TURNS = 32;
@@ -42,6 +42,7 @@ export function validateGoalState(state: GoalState, msg: Translator = chinese): 
   if (run.reason !== undefined) text(run.reason, 'reason', 2048, false, msg);
   if (run.progress !== undefined) text(run.progress, 'progress', 2048, false, msg);
   if (run.nextStep !== undefined) text(run.nextStep, 'nextStep', 2048, false, msg);
+  if (run.errorRetries !== undefined && (!Number.isSafeInteger(run.errorRetries) || run.errorRetries < 0 || run.errorRetries > 20)) throw new Error(msg('损坏的自动重试计数'));
 }
 const fields: Record<GoalParams['action'], string[]> = {
   create: ['title', 'description', 'maxTurns'], update: ['id', 'title', 'description', 'maxTurns', 'progress', 'nextStep'], list: [], get: ['id'], delete: ['id'], enable: ['id'], disable: ['id'], complete: ['id'],

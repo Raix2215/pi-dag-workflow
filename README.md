@@ -13,7 +13,7 @@ A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with 
 - **One task list, one derived DAG.** Todos carry prerequisites through `blockedBy`. Unfinished prerequisites block starting and completing downstream work, and `/dag` draws the real graph from that same list. There is no second queue or database.
 - **Plan before you build.** Plan is a read-only mode for reading, searching, asking, and rearranging Todos. Implementation, shell commands, and dispatch are blocked until you leave it.
 - **Real child jobs.** Run up to eight Pi subprocesses. Give each one a task, an optional Todo link, and an optional named profile; send direction, answer questions, wait, cancel, or remove records. A finished child stays **Pending delivery** until its report reaches the main conversation. Returned work never completes a Todo by itself.
-- **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance; a Goal also pauses after three consecutive rounds without new progress. Pause happens on interruption, restore, Plan, an exhausted allowance, or a stalled run.
+- **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance; a Goal also pauses after three consecutive rounds without new progress. A failed model request retries automatically (5 attempts by default) before the Goal pauses. Pause happens on interruption, restore, Plan, an exhausted allowance or retry budget, or a stalled run.
 - **Readable progress.** A Nerd Font panel shows the task tree, a solid-line DAG, and live thinking/tool/output activity. Interface activity is not written into model context or persistent workflow state.
 - **Session-scoped persistence.** Todo, Goal, budget, and job snapshots follow the active Pi branch. Restoring a session never resurrects child processes and never resumes autonomous work on its own.
 
@@ -177,13 +177,15 @@ modules with `pi config`, not in this file, and apply changes with `/reload`.
 {
   "language": "auto",
   "goalMaxTurns": 32,
-  "goalNoProgressLimit": 3
+  "goalNoProgressLimit": 3,
+  "goalErrorRetries": 5
 }
 ```
 
 - `language` — `"auto"` (default), `"en"`, or `"zh-CN"`. `auto` selects `zh-CN` when the terminal locale is Chinese and `en` otherwise. Plugin labels, help, notifications, and workflow messages are localized. User-authored content, command names, and structured tool fields stay unchanged.
 - `goalMaxTurns` — default allowance for newly created Goals, 1–200 (default `32`), shared by automatic continuation and child-report wakes.
 - `goalNoProgressLimit` — consecutive rounds without new progress before a Goal pauses, 1–10 (default `3`).
+- `goalErrorRetries` — automatic retries after a failed model request while a Goal is running, 0–20 (default `5`). Each failure retries once; the counter resets after a successful turn, and `0` pauses on the first error. A single retry does not consume the continuation allowance.
 
 Unknown keys and out-of-range values are configuration errors. Module selection lives in `pi config`, not in this
 file.
