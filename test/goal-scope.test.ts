@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { registerGoal } from '../src/goal/index.ts';
+import { registerGoal } from '../src/goal/register.ts';
 import { emptyState } from '../src/todos/state.ts';
 
 test('automatic model cannot enlarge its allowance or silently switch objectives', async () => {

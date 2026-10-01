@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
 import { STATE_TYPE } from '../src/todos/state.ts';
 import { GOAL_TYPE } from '../src/goal/state.ts';
-import { AGENTS_TYPE } from '../src/agents/index.ts';
+import { AGENTS_TYPE } from '../src/agents/register.ts';
 
 // Explicit low-cost integration: parent + two short children, bounded wall time/parent turns.
 const client = await IsolatedClient.startFlash(['goal', 'subagent_spawn', 'subagent_wait', 'subagent_inspect', 'subagent_send', 'subagent_cancel']);

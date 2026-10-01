@@ -51,32 +51,38 @@
 
 这些入口都有本地 `help`，不调用模型、不切模式。自然语言也能驱动已注册工具。
 
-## 配置与可选模块
+## 用 `pi config` 选择模块
+
+运行 `pi config`，找到本地 `pi-dag-workflow` 包，分别勾选其资源。选择由 Pi 原生资源过滤保存；保存后在会话中 `/reload`，或重新启动 Pi。
+
+| 入口 | 提供的功能 |
+|---|---|
+| `src/todos/index.ts` | Todo 工具、任务命令和派生 DAG |
+| `src/plan/index.ts` | Plan 命令与执行限制 |
+| `src/agents/index.ts` | 子进程、消息和 Profile |
+| `src/goal/index.ts` | Goal 工具与有界续跑 |
+| `src/ui/index.ts` | 实时面板和可滚动详情 |
+
+勾选 Todo＋Plan＋UI 可只规划／管理任务；Goal＋UI 可独立研究；只选 Agents 可独立派发子进程。DAG、todoId 关联需要 Todo。不选 UI 仍可看本地命令输出，不启动活动刷新计时器。只选 UI 时没有工作流数据可展示。
+
+各入口都是真正的 Pi 扩展默认工厂。已加载入口通过 Pi 事件总线共享一份运行时协调状态；没有必选的 core 复选框，也不创建多份预算。重载释放旧订阅和子进程资源。未勾选的入口不注册工具／指导。**没有插件自己的 `modules` 开关**。
+
+## 配置
 
 配置目录为 `~/.pi/agent/pi-dag-workflow/`，遵循 Pi 的 `PI_CODING_AGENT_DIR` 和 `~` 展开。配置不是另一份任务状态库。
 
 ### `pi-dag-workflow-config.json`
 
-可选。省略 `modules` 时全部启用；提供数组则只启用列出的功能。修改后 `/reload`。
+可选，只设置续跑限制；模块开关用 `pi config`，不在此文件控制。修改后 `/reload`。
 
 ```json
 {
-  "modules": ["todos", "plan", "agents", "goal", "ui"],
   "goalMaxTurns": 20,
   "goalNoProgressLimit": 3
 }
 ```
 
-| 选择 | 行为 |
-|---|---|
-| `["todos", "plan", "ui"]` | 任务、DAG 和规划，无 Goal／子 Agent 工具 |
-| `["goal", "ui"]` | 独立目标，无 Todo／子 Agent 工具 |
-| `["agents"]` | 独立子进程，无 Todo 关联和实时面板 |
-| `[]` | 本插件不注册工具、命令或会话资源 |
-
-`ui` 控制实时面板和可滚动详情；不启用它仍可查看本地命令输出。DAG 属于 `todos`，关联 `todoId` 也需要 `todos`。未启用模块不会注册工具／指导，关闭 UI 不启动活动刷新定时器。
-
-**只有一个公开扩展入口** `src/index.ts`。功能目录中的 `index.ts` 是内部注册入口，不应单独传给 `-e`：Plan 限制、唯一 Todo 身份、Goal／Agent 预算需要同一个协调器。用配置选择模块，而非同时启动多个工作流实例。
+曾使用旧版 `modules` 字段时请删除它；Goal 会报配置错误，不悄悄保留第二套开关。
 
 ### `pi-dag-workflow-profile.json`
 
@@ -116,12 +122,11 @@ npm run test:goal-flash       # 显式真实模型 Goal 验收，会消耗额度
 npm run test:joint-flash      # 有界主会话＋两子 Agent 联合验收
 ```
 
-测试使用隔离 Pi 会话和明确的启用列表。真实验收需要已配置 `example-model`，会消耗额度。tmux 测试按当前要求暂停，不属于默认检查。
+测试使用隔离 Pi 0.99.2 会话和原生包资源过滤。工具提供命名空间／按需指导与操作提示，支持原生 codemode；嵌套调用仍经过 Plan 限制。工具默认直接可用，不替你启用 codemode 或选择模型。真实验收需要已配置 `example-model`，会消耗额度。tmux 测试按当前要求暂停，不属于默认检查。
 
 ```text
 src/
-  index.ts       公开入口与模块选择
-  workflow/      共享会话状态、协调与绘制生命周期
+  workflow/      共享会话状态、运行时协调与绘制生命周期
   todos/         Todo 状态、工具与命令
   plan/          规划命令与只读限制
   agents/        子进程、消息、Profile 与用量

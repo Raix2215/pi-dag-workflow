@@ -4,15 +4,21 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { applyTodo, emptyState, restoreState, STATE_TYPE, type TodoParams, type WorkflowState } from "../todos/state.ts";
 import { NORMAL_GUIDANCE, PLAN_GUIDANCE } from "../plan/policy.ts";
 import { renderDag, renderTasks } from "../ui/render.ts";
-import { registerAgents } from "../agents/index.ts";
-import { registerGoal } from "../goal/index.ts";
+import { registerAgents } from "../agents/register.ts";
+import { registerGoal } from "../goal/register.ts";
 import { detailView } from "../ui/detail.ts";
-import type { Modules } from '../shared/config.ts';
-import { registerTodos } from '../todos/index.ts';
-import { registerPlan } from '../plan/index.ts';
+import { noFeatures, type Feature } from './features.ts';
+import { registerTodos } from '../todos/register.ts';
+import { registerPlan } from '../plan/register.ts';
 
 const WIDGET = "pi-dag-workflow.todos";
-export function registerWorkflow(pi: ExtensionAPI, modules: Modules): void {
+export function createWorkflow(pi: ExtensionAPI) {
+  const modules = noFeatures();
+  const attached = new Set<Feature>();
+  const started = new WeakSet<object>();
+  const restored = new WeakSet<object>();
+  const stopped = new WeakSet<object>();
+  let dispose = () => {};
   let state = emptyState();
   let restoreError: string | undefined;
   let warnedEphemeral = false;
@@ -92,16 +98,26 @@ export function registerWorkflow(pi: ExtensionAPI, modules: Modules): void {
     return result;
   }
 
-  pi.on("session_start", (_event, ctx) => restore(ctx));
-  pi.on("session_tree", (_event, ctx) => restore(ctx));
-  pi.on("session_shutdown", (_event, ctx) => {
-    state = emptyState();
-    restoreError = undefined;
-    if (modules.ui) ctx.ui.setWidget(WIDGET, undefined);
-  });
-  pi.on("before_agent_start", (event) => {
-    if (modules.todos || modules.plan) event.systemPromptOptions.sections["dag_workflow_mode"] = state.plan ? (modules.todos ? PLAN_GUIDANCE : 'Plan mode: only read, search and ask; no implementation or dispatch. Only the user can exit /plan off.') : (modules.todos ? NORMAL_GUIDANCE : 'Normal mode.');
-  });
+  // Personal extensions may load before project trust, then be filtered out.
+  // Every included resource contributes lifecycle hooks; activate only entries
+  // whose session_start actually runs, not every factory from the pre-trust pass.
+  function registerLifecycle(owner: ExtensionAPI, feature: Feature): void {
+    owner.on('session_start', (event, ctx) => {
+      if (!started.has(event)) { started.add(event); Object.assign(modules, noFeatures()); }
+      modules[feature] = true;
+      restore(ctx);
+    });
+    owner.on('session_tree', (event, ctx) => { if (!restored.has(event)) { restored.add(event); restore(ctx); } });
+    owner.on('session_shutdown', (event, ctx) => {
+      if (stopped.has(event)) return;
+      stopped.add(event); dispose();
+      state = emptyState(); restoreError = undefined;
+      if (modules.ui) ctx.ui.setWidget(WIDGET, undefined);
+    });
+    owner.on('before_agent_start', (event) => {
+      if (modules.todos || modules.plan) event.systemPromptOptions.sections['dag_workflow_mode'] = state.plan ? (modules.todos ? PLAN_GUIDANCE : 'Plan mode: only read, search and ask; no implementation or dispatch. Only the user can exit /plan off.') : (modules.todos ? NORMAL_GUIDANCE : 'Normal mode.');
+    });
+  }
   async function show(ctx: ExtensionContext, view: "list" | "dag"): Promise<void> {
     if (!modules.ui || ctx.mode !== "tui") {
       ctx.ui.notify((view === "dag" ? renderDag(state, 80, undefined, goals?.title(), jobs()) : renderTasks(state, 80, { maxRows: Infinity, jobs: jobs(), ...(goals?.title() ? { goalTitle: goals.title() } : {}) })).join("\n") || "暂无任务", "info");
@@ -118,19 +134,27 @@ export function registerWorkflow(pi: ExtensionAPI, modules: Modules): void {
     } finally { detailOpen = false; refreshDetail = undefined; paint(ctx); }
   }
 
-  if (modules.todos) registerTodos(pi, { state: () => state, mutate, commit, show, protected: () => !!restoreError,
-    reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
-  });
-  if (modules.plan) registerPlan(pi, { state: () => state, commit, protected: () => !!restoreError,
-    assertCanEnter: () => agents?.assertPlanEntry(), onEnter: (ctx) => goals?.pause('进入 Plan', ctx),
-  });
-  if (modules.agents) agents = registerAgents(pi, { state: activeState, mutate, paint, protected: () => !!restoreError, ui: modules.ui,
-    canWake: () => goals?.canWake() ?? !modules.goal,
-    reserveWake: (ctx) => goals?.reserveWake(ctx) ?? !modules.goal,
-    pauseAuto: (ctx) => goals?.pause("用户暂停自动工作", ctx),
-    resumeAuto: () => goals?.resumeAgentReports() ?? !modules.goal,
-  });
-  if (modules.goal) goals = registerGoal(pi, { state: activeState, jobs, paint, protected: () => !!restoreError,
-    pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: warnEphemeral,
-  });
+  return {
+    onDispose(off: () => void) { dispose = off; },
+    attach(feature: Feature, owner: ExtensionAPI): void {
+      if (attached.has(feature)) throw new Error(`重复加载工作流模块：${feature}`);
+      attached.add(feature);
+      registerLifecycle(owner, feature);
+      if (feature === 'todos') registerTodos(owner, { state: () => state, mutate, commit, show, protected: () => !!restoreError,
+        reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
+      });
+      if (feature === 'plan') registerPlan(owner, { state: () => state, commit, protected: () => !!restoreError,
+        assertCanEnter: () => agents?.assertPlanEntry(), onEnter: (ctx) => goals?.pause('进入 Plan', ctx),
+      });
+      if (feature === 'agents') agents = registerAgents(owner, { state: activeState, mutate, paint, protected: () => !!restoreError, ui: () => modules.ui,
+        canWake: () => !modules.goal || (goals?.canWake() ?? false),
+        reserveWake: (ctx) => !modules.goal || (goals?.reserveWake(ctx) ?? false),
+        pauseAuto: (ctx) => { if (modules.goal) goals?.pause('用户暂停自动工作', ctx); },
+        resumeAuto: () => !modules.goal || (goals?.resumeAgentReports() ?? false),
+      });
+      if (feature === 'goal') goals = registerGoal(owner, { state: activeState, jobs, paint, protected: () => !!restoreError,
+        pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: warnEphemeral,
+      });
+    },
+  };
 }

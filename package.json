@@ -7,7 +7,7 @@
   "keywords": ["pi-package"],
   "files": ["src", "README.md", "README.zh-CN.md"],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./src/todos/index.ts", "./src/plan/index.ts", "./src/agents/index.ts", "./src/goal/index.ts", "./src/ui/index.ts"]
   },
   "engines": {
     "node": ">=22.19.0"
@@ -29,9 +29,9 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.99.1",
-    "@earendil-works/pi-tui": "0.99.1",
-    "@earendil-works/pi-ai": "0.99.1",
+    "@earendil-works/pi-coding-agent": "0.99.2",
+    "@earendil-works/pi-tui": "0.99.2",
+    "@earendil-works/pi-ai": "0.99.2",
     "typebox": "1.3.27",
     "@types/node": "26.6.3",
     "typescript": "7.0.2"

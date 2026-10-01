@@ -6,7 +6,7 @@ import { stripTerminalSequences } from '@earendil-works/pi-tui';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
 import { STATE_TYPE } from '../src/todos/state.ts';
 import { GOAL_TYPE } from '../src/goal/state.ts';
-import { AGENTS_TYPE } from '../src/agents/index.ts';
+import { AGENTS_TYPE } from '../src/agents/register.ts';
 const controls = fileURLToPath(new URL('./fixtures/session-controls.ts', import.meta.url));
 const offline = fileURLToPath(new URL('./fixtures/offline-model.ts', import.meta.url));
 const start = (root?: string) => IsolatedClient.start(root, 'm4-joint', [controls], ['--dag-workflow-test-child-provider', offline]);

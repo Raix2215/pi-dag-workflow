@@ -1,36 +1,29 @@
-import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { test } from "node:test";
-import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { test } from 'node:test';
+import { DefaultResourceLoader, SettingsManager } from '@earendil-works/pi-coding-agent';
+import { FEATURE_NAMES } from '../src/workflow/features.ts';
 
-test("Pi's actual resource loader loads only this package without model calls or user settings", async () => {
-  const temporary = await mkdtemp(join(tmpdir(), "pi-dag-workflow-load-"));
+test('Pi actual resource loader loads all five public entries without user settings or model calls', async () => {
+  const temporary = await mkdtemp(join(tmpdir(), 'pi-dag-workflow-load-'));
   try {
-    const entry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
-    const loader = new DefaultResourceLoader({
-      cwd: temporary,
-      agentDir: join(temporary, "agent"),
-      settingsManager: SettingsManager.inMemory({}),
-      additionalExtensionPaths: [entry],
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-    });
+    const root = fileURLToPath(new URL('../', import.meta.url));
+    const loader = new DefaultResourceLoader({ cwd: temporary, agentDir: join(temporary, 'agent'), settingsManager: SettingsManager.inMemory({}), additionalExtensionPaths: [root], noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
     await loader.reload();
     const loaded = loader.getExtensions();
     assert.deepEqual(loaded.errors, []);
-    assert.equal(loaded.extensions.length, 1);
-    const extension = loaded.extensions[0]!;
-    assert.equal(extension.resolvedPath, entry);
-    assert.deepEqual([...extension.tools.keys()], ["todo", "subagent_spawn", "subagent_inspect", "subagent_send", "subagent_wait", "subagent_cancel", "goal"]);
-    assert.deepEqual([...extension.commands.keys()], ["todos", "dag", "plan", "agents", "goal"]);
-    assert.deepEqual([...extension.handlers.keys()].sort(), ["agent_before_settle", "agent_end", "agent_settled", "before_agent_start", "input", "session_before_fork", "session_before_switch", "session_before_tree", "session_shutdown", "session_start", "session_tree", "tool_call", "tool_execution_end", "turn_end", "ui_prompt_start", "user_bash"]);
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+    assert.equal(loaded.extensions.length, 5);
+    assert.deepEqual(loaded.extensions.map((item) => item.resolvedPath).sort(), FEATURE_NAMES.map((name) => join(root, `src/${name}/index.ts`)).sort());
+    assert.deepEqual(loaded.extensions.flatMap((item) => [...item.tools.keys()]).sort(), ['todo', 'goal', 'subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_wait', 'subagent_cancel'].sort());
+    assert.deepEqual(loaded.extensions.flatMap((item) => [...item.commands.keys()]).sort(), ['todos', 'dag', 'plan', 'agents', 'goal'].sort());
+    for (const resource of loaded.extensions) for (const tool of resource.tools.values()) {
+      assert.equal(tool.definition.namespace?.name, 'pi_dag_workflow');
+      assert.ok(tool.definition.namespace?.instructions);
+      assert.ok(tool.definition.annotations);
+    }
+    loaded.runtime.invalidate();
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 });

@@ -50,7 +50,7 @@ const save = async (label) => {
   checks.push({ label, window: details });
 };
 const quoted = (text) => `'${text.replaceAll("'", "'\\''")}'`;
-const args = [process.execPath, join(project, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-id", "m1-tui", "--provider", "dag-test", "--model", "scripted", "-e", join(project, "src/index.ts"), "-e", join(project, "test/fixtures/offline-model.ts")];
+const args = [process.execPath, join(project, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-id", "m1-tui", "--provider", "dag-test", "--model", "scripted", "-e", project, "-e", join(project, "test/fixtures/offline-model.ts")];
 const launch = `cd ${quoted(root)} && env -i HOME=${quoted(root)} PATH=${quoted(process.env.PATH ?? "")} TERM=xterm-256color LANG=C.UTF-8 PI_OFFLINE=1 PI_CODING_AGENT_DIR=${quoted(join(root, "agent"))} PI_CODING_AGENT_SESSION_DIR=${quoted(join(root, "sessions"))} ${args.map(quoted).join(" ")}`;
 
 try {
@@ -118,7 +118,7 @@ try {
   assert.deepEqual(await snapshot(), before);
   assert.equal((await ledger()).filter((entry) => entry.type === "message" && entry.message?.role === "assistant").length, assistantCount);
   await save("12-restart-restored-no-model-turn");
-  const summary = { passed: true, provider: "offline scripted fixture; not a real LLM", enabledExtensions: [join(project, "src/index.ts"), join(project, "test/fixtures/offline-model.ts")], root, pane, window, tmuxSession: "Test", checks };
+  const summary = { passed: true, provider: "offline scripted fixture; not a real LLM", enabledExtensions: [project, join(project, "test/fixtures/offline-model.ts")], root, pane, window, tmuxSession: "Test", checks };
   await writeFile(join(evidence, "summary.json"), JSON.stringify(summary, null, 2) + "\n");
   run("select-window", "-t", window);
   console.log(`PASS: ${checks.length} real TUI captures; ${info()}\nEvidence: ${evidence}\nTest data: ${root}\nPane left open for manual inspection; no other tmux window was modified.`);

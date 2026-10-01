@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { registerGoal } from '../src/goal/index.ts';
+import { registerGoal } from '../src/goal/register.ts';
 import { emptyState } from '../src/todos/state.ts';
 
 test('initial Goal attention step is consumed while waiting; later child messages do not restart a polling loop', async () => {

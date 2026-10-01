@@ -51,32 +51,38 @@ Research without Todos is supported: the model can use `goal update` with a new 
 
 Each command has local `help`; it does not call a model or change modes. Natural-language requests can also drive the registered tools.
 
-## Configuration and optional modules
+## Choose modules with `pi config`
+
+Run `pi config`, find the local `pi-dag-workflow` package, and toggle its independent resources. Pi stores the selection in its own resource filters. After saving, run `/reload` in a session or start a new Pi process.
+
+| Entry | Provides |
+|---|---|
+| `src/todos/index.ts` | Todo tool, task commands and derived DAG |
+| `src/plan/index.ts` | Plan command and execution guard |
+| `src/agents/index.ts` | child processes, messaging and profiles |
+| `src/goal/index.ts` | Goal tool and bounded continuation |
+| `src/ui/index.ts` | live panel and scrollable detail views |
+
+Choose Todo + Plan + UI for planning without Goal/Subagents; Goal + UI for independent research; Agents alone for standalone children. DAG and `todoId` links require Todo. Without UI, local command output still works and activity-refresh timers do not run. UI alone has no workflow data to display.
+
+Each entry is a real Pi extension with its own default factory. The loaded entries share one runtime-scoped coordinator using Pi's event bus; no required core checkbox and no multiple budgets. Reload releases old subscriptions and child resources. Disabled entries register no tools or guidance. There is **no plugin `modules` setting**.
+
+## Configuration
 
 Files live under `~/.pi/agent/pi-dag-workflow/`, respecting Pi's `PI_CODING_AGENT_DIR` and tilde expansion. Configuration is separate from session state.
 
 ### `pi-dag-workflow-config.json`
 
-Optional. Missing `modules` enables everything; an explicit array enables only those features. Run `/reload` after changes.
+Optional; only continuation limits belong here. Choose enabled modules through `pi config`, not this file. Run `/reload` after changes.
 
 ```json
 {
-  "modules": ["todos", "plan", "agents", "goal", "ui"],
   "goalMaxTurns": 20,
   "goalNoProgressLimit": 3
 }
 ```
 
-| Selection | Behavior |
-|---|---|
-| `["todos", "plan", "ui"]` | tasks, DAG and planning; no Goal/Subagent tools |
-| `["goal", "ui"]` | independent goals; no Todo/Subagent tools |
-| `["agents"]` | standalone children; no task links or live panel |
-| `[]` | no tools, commands, or session resources from this package |
-
-`ui` controls the live panel and scrollable detail views; local command output remains available without it. DAG belongs to `todos`. `todoId` links require `todos`. Disabled modules do not register their tools or guidance, and disabled UI does not start activity-refresh timers.
-
-There is **one public extension entry** (`src/index.ts`). The per-feature `index.ts` files are internal registrations, not separate `-e` targets: shared Plan guards, Todo identity and Goal/Agent budgeting need one coordinator. Select modules through configuration rather than loading multiple runtimes.
+If you used the earlier `modules` field, remove it; Goal reports a configuration error rather than silently honoring a second set of switches.
 
 ### `pi-dag-workflow-profile.json`
 
@@ -116,12 +122,11 @@ npm run test:goal-flash       # opt-in paid real-model Goal acceptance
 npm run test:joint-flash      # opt-in bounded parent + two real children
 ```
 
-Tests use isolated Pi sessions and explicit resource lists. Live acceptance requires an already configured `example-model`; it consumes quota. Tmux tests remain paused and are not part of default checks.
+Tests use isolated Pi 0.99.2 sessions and native package-resource filters. Tool namespaces/instructions and operation hints support native codemode; nested calls still pass Plan guards. Tools stay directly available, and the extension does not enable codemode or select models on your behalf. Live acceptance requires an already configured `example-model`; it consumes quota. Tmux tests remain paused and are not part of default checks.
 
 ```text
 src/
-  index.ts       public entry and module selection
-  workflow/      shared session state, coordination and rendering lifecycle
+  workflow/      shared session state, runtime coordination and rendering lifecycle
   todos/         Todo state, tool and commands
   plan/          mode command and read-only guard
   agents/        child runtime, messaging, profiles and usage

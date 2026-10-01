@@ -34,12 +34,12 @@ export class IsolatedClient {
     child.on("error", () => { for (const listener of this.listeners) listener(); });
     child.on("close", () => { for (const listener of this.listeners) listener(); });
   }
-  static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = []): Promise<IsolatedClient> {
+  static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = [], configuredPackage = false, entries?: string[]): Promise<IsolatedClient> {
     const home = root ?? await mkdtemp(join(tmpdir(), "pi-dag-m1-"));
     const cli = resolve(fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url)));
-    const entry = fileURLToPath(new URL("../../src/index.ts", import.meta.url));
+    const entry = fileURLToPath(new URL("../../", import.meta.url));
     const model = fileURLToPath(new URL("./offline-model.ts", import.meta.url));
-    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-id", session, "--provider", "dag-test", "--model", "scripted", "-e", entry, "-e", model, ...extraExtensions.flatMap((path) => ["-e", path]), ...extraArgs], {
+    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", ...configuredPackage ? [] : ['--no-extensions', ...(entries ?? [entry]).flatMap((path) => ['-e', path])], "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", ...extraArgs.includes('--approve') ? [] : ['--no-approve'], "--session-id", session, "--provider", "dag-test", "--model", "scripted", "-e", model, ...extraExtensions.flatMap((path) => ["-e", path]), ...extraArgs], {
       cwd: home,
       env: { PATH: process.env.PATH ?? "", HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_CODING_AGENT_SESSION_DIR: join(home, "sessions"), PI_OFFLINE: "1", TERM: "xterm-256color" },
       stdio: "pipe",
@@ -51,7 +51,7 @@ export class IsolatedClient {
   static async startFlash(extraTools: string[] = []): Promise<IsolatedClient> {
     const root = await mkdtemp(join(tmpdir(), "pi-dag-flash-"));
     const cli = fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url));
-    const entry = fileURLToPath(new URL("../../src/index.ts", import.meta.url));
+    const entry = fileURLToPath(new URL("../../", import.meta.url));
     const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-dir", join(root, "sessions"), "--provider", "example-provider", "--model", "example-model", "--thinking", "low", "--tools", ["todo", "read", "grep", "find", "ls", "write", ...extraTools].join(","), "-e", entry], {
       cwd: root,
       env: { ...process.env, PI_OFFLINE: "1", PI_CODING_AGENT_SESSION_DIR: join(root, "sessions") },

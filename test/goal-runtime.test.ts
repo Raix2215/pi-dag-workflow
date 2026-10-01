@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { registerGoal } from '../src/goal/index.ts';
+import { registerGoal } from '../src/goal/register.ts';
 import { emptyState } from '../src/todos/state.ts';
 import { GOAL_TYPE, type GoalParams } from '../src/goal/state.ts';
 
