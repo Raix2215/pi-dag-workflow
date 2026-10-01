@@ -49,7 +49,7 @@ test("actual Pi English session advertises English commands, help and goal-reset
   await client.until(() => client.records.slice(offset).some((event) => event.method === "confirm"));
   const confirm = client.records.slice(offset).find((event) => event.method === "confirm")!;
   assert.equal(confirm.title, "Clear Goal state?");
-  assert.equal(confirm.message, "Records, Todos, Jobs and project files are kept; auto-continuation stops.");
+  assert.equal(confirm.message, "History, Todos, Jobs and project files are kept; auto-continuation stops.");
   client.child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: confirm.id, confirmed: true })}\n`);
   await resetting;
   assert.deepEqual(goalState(await client.entries())!.goals, []);

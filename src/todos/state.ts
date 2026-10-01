@@ -135,8 +135,13 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
   return { state: next, text: msg`${params.action === "create" ? msg("已创建") : msg("已更新")} #${task.id}：${task.subject} [${msg(statusLabel[task.status])}]` };
 }
 
-/** Only walk the active branch; never replay abandoned branches or model summaries. */
-export function restoreState(branch: readonly { type: string; customType?: string; data?: unknown }[], msg: Translator = chinese): WorkflowState {
+/**
+ * Only walk the active branch; never replay abandoned branches or model summaries.
+ * A list left by rpiv-todo (same tool name, same result shape) is read only when this
+ * plugin has no snapshot of its own on the branch, so an existing session keeps its tasks.
+ */
+export function restoreState(branch: readonly { type: string; customType?: string; data?: unknown; message?: unknown }[], msg: Translator = chinese): WorkflowState {
+  let rpiv: unknown;
   for (let index = branch.length - 1; index >= 0; index--) {
     const entry = branch[index]!;
     if (entry.type === "custom" && entry.customType === STATE_TYPE) {
@@ -144,6 +149,16 @@ export function restoreState(branch: readonly { type: string; customType?: strin
       validateState(state, msg);
       return state;
     }
+    if (rpiv === undefined && entry.type === "message" && entry.message && typeof entry.message === "object") {
+      const message = entry.message as { role?: string; toolName?: string; details?: { tasks?: unknown; nextId?: unknown } };
+      if (message.role === "toolResult" && message.toolName === "todo" && Array.isArray(message.details?.tasks) && Number.isSafeInteger(message.details?.nextId)) rpiv = message.details;
+    }
+  }
+  if (rpiv) {
+    const data = structuredClone(rpiv) as { tasks: Todo[]; nextId: number };
+    const state = { ...emptyState(), tasks: data.tasks.map((task) => ({ ...task, blockedBy: task.blockedBy ?? [] })), nextId: data.nextId };
+    validateState(state, msg);
+    return state;
   }
   return emptyState();
 }

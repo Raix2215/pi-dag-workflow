@@ -99,6 +99,16 @@ test("active branch replay restores a single latest native snapshot and does not
   assert.equal(second.tasks[0]!.subject, "A");
 });
 
+test("a rpiv-todo task snapshot is read only when this plugin has no state on the branch", () => {
+  const rpiv = { type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 7, subject: "外部任务", status: "pending" }], nextId: 8 } } };
+  const restored = restoreState([rpiv]);
+  assert.equal(restored.tasks[0]!.id, 7);
+  assert.equal(restored.tasks[0]!.subject, "外部任务");
+  assert.deepEqual(restored.tasks[0]!.blockedBy, [], "a missing dependency list becomes empty");
+  const native = { type: "custom", customType: STATE_TYPE, data: emptyState() };
+  assert.deepEqual(restoreState([native, rpiv]), emptyState(), "this plugin's own snapshot wins");
+});
+
 test("invalid or future snapshots are not silently replaced by empty work", () => {
   assert.throws(() => restoreState([{ type: "custom", customType: STATE_TYPE, data: { version: 99 } }]));
   assert.throws(() => validateState({ ...create(emptyState(), "A"), nextId: 1 }), /计数器/);
