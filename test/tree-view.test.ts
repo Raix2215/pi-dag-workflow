@@ -57,7 +57,8 @@ test("40 columns retain the main path but remove fixed reference and right-side 
   assert.ok(lines.some((line) => line.startsWith("│  │  ├─ #4<-#3 ○")));
   for (const line of lines) assert.ok(visibleWidth(line) <= 40);
   const wide = renderTasks(sample(), 120, { maxRows: Infinity });
-  assert.ok(wide.find((line) => line.startsWith("├─ #1"))!.includes("#1     ✓"));
+  // Block 2 (icon+title) starts at one unified column across all depths.
+  assert.ok(wide.find((line) => line.includes("├─ #1"))!.includes("#1              ✓"));
 });
 
 test("extremely narrow paths flatten truthfully rather than inventing or hiding edges", () => {

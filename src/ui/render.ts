@@ -124,11 +124,14 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
   const align = prefixWidth + refWidth + 4 + 6 + visibleWidth("[主会话] [进行中]") <= width;
   return rows.map(({ task, prefix, dependencies }) => {
     const icon = icons[task.status];
-    const refBudget = Math.max(0, width - visibleWidth(prefix) - visibleWidth(icon) - 2);
+    // Three blocks: (1) tree+id+refs rendered exactly as-is, byte-identical to the compact form;
+    // (2) status icon+title merged as one unit starting at a unified column (fill sits after
+    // the reference, never inside block 1); (3) right-aligned [owner][status] suffix.
+    const refBudget = Math.max(0, width - (align ? prefixWidth : visibleWidth(prefix)) - visibleWidth(icon) - 2);
     const budget = Math.min(refBudget, align ? refWidth : Math.max(visibleWidth(`#${task.id}`), Math.floor(width * 0.38)));
     const ref = clip(reference(task, dependencies), budget);
-    const pad = align ? " ".repeat(Math.max(0, budget - visibleWidth(ref))) : "";
-    const left = tint(prefix + ref + pad, "dim", theme) + " " + tint(icon, colors[task.status], theme);
+    const lead = align ? " ".repeat(prefixWidth - visibleWidth(prefix) + Math.max(0, budget - visibleWidth(ref))) : "";
+    const left = tint(prefix + ref + lead, "dim", theme) + " " + tint(icon, colors[task.status], theme);
     const available = width - visibleWidth(left) - 1;
     if (available <= 0) return bounded(left, width, theme);
     const title = clean(task.subject) || "(无标题)";
