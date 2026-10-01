@@ -161,12 +161,13 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '配置额外只读工具：tools 名称1,名称2 或 none': 'Configure extra read-only tools: tools name1,name2 or none',
   'Plan 只读：请用读取／搜索工具；执行 shell 需先 /plan off。': 'Plan is read-only: use read/search tools; run /plan off before running shell.',
   '切换只读规划；start/off/status/tools，或直接描述规划需求': 'Toggle read-only planning; start/off/status/tools, or just describe what you want to plan',
-  '/plan start/off/status · tools 名称1,名称2（只读可信工具）；进入前需主会话空闲且子 Agent 已结束／取消。Plan 期间 Goal 保持暂停，恢复需明确 /goal enable。': '/plan start/off/status · tools name1,name2 (trusted read-only tools); the main session must be idle and child agents finished/cancelled before entering. The Goal stays paused while Plan is active; run /goal enable to resume.',
+  '/plan start/off/status · tools 名称1,名称2（本会话追加只读工具，机器级默认见配置文件 planTools）；进入前需主会话空闲且子 Agent 已结束／取消。Plan 期间 Goal 保持暂停，恢复需明确 /goal enable。': '/plan start/off/status · tools name1,name2 (trusted read-only tools); the main session must be idle and child agents finished/cancelled before entering. The Goal stays paused while Plan is active; run /goal enable to resume.',
   'Plan（只读）：探索和编辑 Todos；实施／完成／委派在退出 Plan 后进行': 'Plan (read-only): explore and edit Todos; implementation/completion/dispatch continue after leaving Plan',
   'Normal：可实施任务': 'Normal: work can be implemented',
   '工作流状态损坏；先检查或明确 /todos clear 重置': 'Workflow state is corrupt; inspect it or explicitly reset with /todos clear',
   '先 /plan off，再配置额外只读工具': 'Run /plan off before configuring extra read-only tools',
-  '额外只读工具：{0}。/plan tools 名称1,名称2；none 清空。': 'Extra read-only tools: {0}. /plan tools name1,name2; none clears.',
+  '额外只读工具 · 配置文件：{0} · 本会话：{1}。/plan tools 名称1,名称2 追加到本会话；none 清空本会话；机器级默认写在配置文件的 planTools。': 'Extra read-only tools · config file: {0} · this session: {1}. /plan tools name1,name2 adds to this session; none clears this session; the machine-wide default lives in the config file planTools.',
+  'planTools 需为最多 {0} 个不重复的工具名': 'planTools must be up to {0} unique tool names',
   '只能明确允许已注册的额外只读工具；不能放行写入／委派工具': 'Only registered extra read-only tools can be explicitly allowed; write/dispatch tools cannot be enabled',
   '已保存额外只读工具；Plan 只拦截已注册的写入／Shell 工具，请只选择可信读取／搜索工具': 'Saved extra read-only tools; Plan blocks registered write/shell tools, so choose only trusted read/search tools',
   '主会话仍在运行；请先停止或等待，再切换 Plan': 'The main session is still running; stop or wait before switching Plan',
@@ -176,7 +177,7 @@ export const englishMessages: Readonly<Record<string, string>> = {
   // ----- plan/policy.ts -----
   'Plan 中不允许执行 {0}；先 /plan off': 'Running {0} is not allowed in Plan; run /plan off first',
   'Plan 只允许整理 Todos，不允许开始或完成；先 /plan off': 'Plan only allows organizing Todos, not starting or completing them; run /plan off first',
-  'Plan 中不能执行 {0}。请用读取／搜索工具，或退出 Plan 后实施。额外只读工具需由用户通过 /plan tools 明确配置。': 'Cannot run {0} in Plan. Use read/search tools, or exit Plan before implementing. Extra read-only tools must be explicitly configured by the user via /plan tools.',
+  'Plan 中不能执行 {0}。请用读取／搜索工具，或退出 Plan 后实施。额外只读工具需由用户通过 /plan tools 或配置文件的 planTools 明确配置。': 'Cannot run {0} in Plan. Use read/search tools, or exit Plan before implementing. Extra read-only tools must be explicitly configured by the user via /plan tools.',
 
   // ----- agents/register.ts -----
   '启动中': 'Starting',

@@ -8,8 +8,10 @@ export const configPaths = () => {
   const directory = join(getAgentDir(), 'pi-dag-workflow');
   return { directory, config: join(directory, 'pi-dag-workflow-config.json'), profile: join(directory, 'pi-dag-workflow-profile.json') };
 };
-export interface WorkflowConfig { language: Language; goalMaxTurns: number; goalNoProgressLimit: number; goalErrorRetries: number }
-const defaults: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5 };
+export interface WorkflowConfig { language: Language; goalMaxTurns: number; goalNoProgressLimit: number; goalErrorRetries: number; planTools: string[] }
+const defaults: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5, planTools: [] };
+/** Machine-wide extra read-only tools for Plan mode; hard guards (write/shell/dispatch) still win. */
+export const MAX_PLAN_TOOLS = 16;
 /** Accepted range per key; an absent key is a default, an out-of-range value is an error. */
 const limits: Record<string, { min: number; max: number }> = { goalMaxTurns: { min: 1, max: 200 }, goalNoProgressLimit: { min: 1, max: 10 }, goalErrorRetries: { min: 0, max: 20 } };
 function parseConfig(source: string, msg: Translator): WorkflowConfig {
@@ -22,6 +24,12 @@ function parseConfig(source: string, msg: Translator): WorkflowConfig {
       continue;
     }
     if (key === 'modules') throw new Error(msg('modules 不是配置项；模块选择用 pi config 勾选扩展入口'));
+    if (key === 'planTools') {
+      const names = Array.isArray(item) ? (item as unknown[]).map((entry) => typeof entry === 'string' ? entry.trim() : '') : [];
+      const valid = Array.isArray(item) && names.length <= MAX_PLAN_TOOLS && names.every((name) => /^[\w-]+$/.test(name)) && new Set(names).size === names.length;
+      if (!valid) throw new Error(msg`planTools 需为最多 ${MAX_PLAN_TOOLS} 个不重复的工具名`);
+      continue;
+    }
     const range = limits[key];
     if (!range || typeof item !== 'number' || !Number.isSafeInteger(item) || item < range.min || item > range.max) throw new Error(msg`未知或无效配置：${key}`);
   }

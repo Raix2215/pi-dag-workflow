@@ -3,12 +3,21 @@ import type { WorkflowState } from '../todos/state.ts';
 import { planViolation } from './policy.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
+import { loadConfig } from '../shared/config.ts';
 
 interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; commit(next: WorkflowState, ctx: ExtensionContext): void; assertCanEnter(): void; onEnter(ctx: ExtensionContext): void }
 /** Plan's policy is shared with the coordinator, not a second execution runtime. */
 export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
   const msg = hooks.msg ?? chinese;
   const { commit } = hooks;
+  /** Machine-wide extra read-only tools from the config file; session tools are added on top. */
+  let configTools: string[] = [];
+  const loadPlanConfig = async () => {
+    try { configTools = (await loadConfig(msg)).planTools; }
+    catch { configTools = []; } // A broken config is reported by the other modules; Plan falls back to built-ins.
+  };
+  pi.on('session_start', () => loadPlanConfig());
+  pi.on('session_tree', () => loadPlanConfig());
   const completion: CompletionSpec = {
     actions: [
       { action: 'start', description: msg('进入只读规划') },
@@ -18,7 +27,7 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
       { action: 'help', description: msg('查看命令帮助') },
     ],
   };
-  pi.on('tool_call', (event) => { const reason = planViolation(hooks.state(), event.toolName, event.input, msg); if (reason) return { block: true, reason }; });
+  pi.on('tool_call', (event) => { const reason = planViolation(hooks.state(), event.toolName, event.input, msg, configTools); if (reason) return { block: true, reason }; });
   pi.on('user_bash', () => { if (hooks.state().plan) return { result: { output: msg('Plan 只读：请用读取／搜索工具；执行 shell 需先 /plan off。'), exitCode: 1, cancelled: false, truncated: false } }; });
   pi.registerCommand("plan", {
     description: msg("切换只读规划；start/off/status/tools，或直接描述规划需求"),
@@ -26,12 +35,12 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
     handler: async (args, ctx) => {
       try {
         const trimmed = args.trim();
-        if (trimmed === 'help') { ctx.ui.notify(msg('/plan start/off/status · tools 名称1,名称2（只读可信工具）；进入前需主会话空闲且子 Agent 已结束／取消。Plan 期间 Goal 保持暂停，恢复需明确 /goal enable。'), 'info'); return; }
+        if (trimmed === 'help') { ctx.ui.notify(msg('/plan start/off/status · tools 名称1,名称2（本会话追加只读工具，机器级默认见配置文件 planTools）；进入前需主会话空闲且子 Agent 已结束／取消。Plan 期间 Goal 保持暂停，恢复需明确 /goal enable。'), 'info'); return; }
         if (trimmed === "status") { ctx.ui.notify(hooks.state().plan ? msg("Plan（只读）：探索和编辑 Todos；实施／完成／委派在退出 Plan 后进行") : msg("Normal：可实施任务"), "info"); return; }
         if (hooks.protected()) throw new Error(msg("工作流状态损坏；先检查或明确 /todos clear 重置"));
         if (trimmed === "tools" || trimmed.startsWith("tools ")) {
           if (hooks.state().plan) throw new Error(msg("先 /plan off，再配置额外只读工具"));
-          if (trimmed === "tools") { ctx.ui.notify(msg`额外只读工具：${hooks.state().planTools.join(",") || "无"}。/plan tools 名称1,名称2；none 清空。`, "info"); return; }
+          if (trimmed === "tools") { ctx.ui.notify(msg`额外只读工具 · 配置文件：${configTools.join(",") || "无"} · 本会话：${hooks.state().planTools.join(",") || "无"}。/plan tools 名称1,名称2 追加到本会话；none 清空本会话；机器级默认写在配置文件的 planTools。`, "info"); return; }
           const names = trimmed.slice(6).trim() === "none" ? [] : trimmed.slice(6).split(",").map((name) => name.trim());
           const known = new Set(pi.getAllTools().map((tool) => tool.name));
           if (names.some((name) => !known.has(name) || ["todo", "bash", "powershell", "write", "edit"].includes(name) || name.startsWith("subagent_") || name === "goal")) throw new Error(msg("只能明确允许已注册的额外只读工具；不能放行写入／委派工具"));

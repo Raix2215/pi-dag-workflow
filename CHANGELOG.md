@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **`planTools` configuration** — machine-wide extra read-only tools for Plan mode, up to 16 unique names. Plan can search the web when the configured names match installed tools (for example `web_search`, `fetch_content`); writes, shell commands, and dispatch stay blocked regardless of the list, and `/plan tools` still adds session-scoped tools on top.
+
 - **Automatic recovery from model errors** — a failed model request during Goal execution retries once per failure instead of pausing immediately. The budget is configurable with `goalErrorRetries` (0–20, default `5`), resets after a successful turn, and a single retry does not consume the continuation allowance. User aborts still pause immediately.
 
 ### Changed

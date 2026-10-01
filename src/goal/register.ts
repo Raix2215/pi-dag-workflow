@@ -14,7 +14,7 @@ interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly Age
 export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const msg = hooks.msg ?? chinese;
   let state = emptyGoalState();
-  let config: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5 };
+  let config: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5, planTools: [] };
   let error: string | undefined;
   let userAuthority = false;
   let automaticRound = false;

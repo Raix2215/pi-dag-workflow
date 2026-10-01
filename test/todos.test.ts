@@ -134,6 +134,15 @@ test("Plan guard allows explicit read/search/questions and task edits, not imple
   assert.equal(planViolation(emptyState(), "write", {}), undefined);
   assert.ok(planViolation({ ...state, planTools: ["write", "subagent_spawn"] }, "write", {}));
   assert.ok(planViolation({ ...state, planTools: ["write", "subagent_spawn"] }, "subagent_spawn", {}));
+  // Machine-wide config tools are allowed, and the hard guards still win over any configured name.
+  const configured = ["web_search", "fetch_content"];
+  assert.equal(planViolation(state, "web_search", {}, undefined, configured), undefined);
+  assert.equal(planViolation(state, "fetch_content", {}, undefined, configured), undefined);
+  assert.ok(planViolation(state, "other_tool", {}, undefined, configured));
+  assert.ok(planViolation(state, "write", {}, undefined, [...configured, "write"]));
+  assert.ok(planViolation(state, "subagent_spawn", {}, undefined, [...configured, "subagent_spawn"]));
+  assert.ok(planViolation(state, "bash", {}, undefined, [...configured, "bash"]));
+  assert.equal(planViolation(emptyState(), "web_search", {}, undefined, configured), undefined, "outside Plan nothing is blocked");
 });
 
 test("Todo reference carries every dependency at the left, with no duplicated edge text", () => {
