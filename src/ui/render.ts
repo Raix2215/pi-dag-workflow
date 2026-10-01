@@ -121,17 +121,14 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
   const refWidth = rows.reduce((max, row) => Math.max(max, visibleWidth(reference(row.task, row.dependencies))), 0);
   const prefixWidth = rows.reduce((max, row) => Math.max(max, visibleWidth(row.prefix)), 0);
   // Alignment is optional presentation, never worth sacrificing the path or readable text.
-  // Tree prefixes stay anchored at column 0; the padding sits between prefix and id so
-  // the icon and status columns share one offset across depths.
   const align = prefixWidth + refWidth + 4 + 6 + visibleWidth("[主会话] [进行中]") <= width;
   return rows.map(({ task, prefix, dependencies }) => {
     const icon = icons[task.status];
-    const refBudget = Math.max(0, width - prefixWidth - visibleWidth(icon) - 2);
+    const refBudget = Math.max(0, width - visibleWidth(prefix) - visibleWidth(icon) - 2);
     const budget = Math.min(refBudget, align ? refWidth : Math.max(visibleWidth(`#${task.id}`), Math.floor(width * 0.38)));
     const ref = clip(reference(task, dependencies), budget);
-    const lead = " ".repeat(Math.max(0, prefixWidth - visibleWidth(prefix)));
-    const pad = " ".repeat(Math.max(0, budget - visibleWidth(ref)));
-    const left = tint(prefix + lead + ref + (align ? pad : ""), "dim", theme) + " " + tint(icon, colors[task.status], theme);
+    const pad = align ? " ".repeat(Math.max(0, budget - visibleWidth(ref))) : "";
+    const left = tint(prefix + ref + pad, "dim", theme) + " " + tint(icon, colors[task.status], theme);
     const available = width - visibleWidth(left) - 1;
     if (available <= 0) return bounded(left, width, theme);
     const title = clean(task.subject) || "(无标题)";

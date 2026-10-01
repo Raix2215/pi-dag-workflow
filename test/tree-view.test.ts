@@ -8,16 +8,16 @@ function sample(): WorkflowState {
   const dependencies = [[], [1], [1], [2, 3], [2], [4, 5], []];
   return { ...emptyState(), nextId: 8, tasks: dependencies.map((blockedBy, index) => ({ id: index + 1, subject: `节点${index + 1}`, status: index === 0 ? "completed" : "pending", blockedBy })) };
 }
-const ids = (lines: string[]) => lines.flatMap((line) => { const match = /[├└]─\s*#([0-9]+)/.exec(line); return match ? [Number(match[1])] : []; });
+const ids = (lines: string[]) => lines.flatMap((line) => { const match = /[├└]─ #([0-9]+)/.exec(line); return match ? [Number(match[1])] : []; });
 
 test("default main paths show every node once and only label the additional incoming edges", () => {
   const lines = renderTasks(sample(), 120, { maxRows: Infinity });
   assert.deepEqual(ids(lines), [1, 2, 4, 6, 5, 3, 7]);
   assert.ok(lines[0]!.startsWith("●  Todo (1/7)"));
-  assert.ok(lines.some((line) => /[├└]─\s*#2(?!<-)/.test(line)));
-  assert.ok(lines.some((line) => /[├└]─\s*#4<-#3/.test(line)));
-  assert.ok(lines.some((line) => /[├└]─\s*#6<-#5/.test(line)));
-  assert.ok(/[├└]─\s*#7(?!<-)/.test(lines.at(-1)!));
+  assert.ok(lines.some((line) => line.startsWith("│  ├─ #2")));
+  assert.ok(lines.some((line) => line.startsWith("│  │  ├─ #4<-#3")));
+  assert.ok(lines.some((line) => line.startsWith("│  │  │  └─ #6<-#5")));
+  assert.ok(lines.at(-1)!.startsWith("└─ #7"));
   assert.doesNotMatch(lines.join("\n"), /#2<-#1|#4<-#2,#3|#6<-#4,#5/);
 });
 
@@ -33,7 +33,7 @@ test("parent choice is deterministic: deepest predecessor, then list order", () 
   const current = sample();
   current.tasks[3]!.blockedBy = [3, 2];
   const reversed = renderTasks(current, 120, { maxRows: Infinity });
-  assert.match(reversed.join("\n"), /#4<-#3/);
+  assert.match(reversed.join("\n"), /│  │  ├─ #4<-#3/);
   current.tasks = [...current.tasks, { id: 8, subject: "更深父路径", status: "pending", blockedBy: [1, 6] }];
   current.nextId = 9;
   const deeper = renderTasks(current, 120, { maxRows: Infinity });
@@ -52,12 +52,12 @@ test("hidden parents never silently remove predecessor references or imply false
 
 test("40 columns retain the main path but remove fixed reference and right-side alignment", () => {
   const lines = renderTasks(sample(), 40, { maxRows: Infinity });
-  const first = lines.find((line) => /[├└]─\s*#1 /.test(line))!;
-  assert.equal(first, "├─          #1 ✓ 节点1 [主会话] [已完成]");
-  assert.ok(lines.some((line) => /[├└]─\s*#4<-#3 ○/.test(line)));
+  const first = lines.find((line) => line.startsWith("├─ #1"))!;
+  assert.equal(first, "├─ #1 ✓ 节点1 [主会话] [已完成]");
+  assert.ok(lines.some((line) => line.startsWith("│  │  ├─ #4<-#3 ○")));
   for (const line of lines) assert.ok(visibleWidth(line) <= 40);
   const wide = renderTasks(sample(), 120, { maxRows: Infinity });
-  assert.ok(wide.find((line) => /[├└]─\s*#1 /.test(line))!.includes("#1     ✓"));
+  assert.ok(wide.find((line) => line.startsWith("├─ #1"))!.includes("#1     ✓"));
 });
 
 test("extremely narrow paths flatten truthfully rather than inventing or hiding edges", () => {
