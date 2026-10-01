@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file. The format is b
 
 - **Automatic recovery from model errors** — a failed model request during Goal execution retries once per failure instead of pausing immediately. The budget is configurable with `goalErrorRetries` (0–20, default `5`), resets after a successful turn, and a single retry does not consume the continuation allowance. User aborts still pause immediately.
 
+### Changed
+
+- **Panel title colors** — the Todo, Plan, and Goal blocks in the panel and `/dag` header now use three different theme colors (`accent`, `error`, `success`) instead of coloring Plan and Goal with the same accent as Todo.
+
 ## [0.1.0] - 2026-10-01
 
 First public preview.

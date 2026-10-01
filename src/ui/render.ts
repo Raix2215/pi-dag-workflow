@@ -43,9 +43,11 @@ function header(state: WorkflowState, tasks: readonly Todo[], width: number, the
     }
     if (size() > width && planBlock) planBlock = "Plan";
   }
+  // One distinct theme color per block: Todo keeps the main accent, Plan marks the restricted
+  // read-only state, and Goal carries the active objective.
   const blocks = [tint(todoBlock, "accent", theme)];
-  if (planBlock) blocks.push(tint(planBlock, "warning", theme));
-  if (goalBlock) blocks.push(tint(goalBlock, "accent", theme));
+  if (planBlock) blocks.push(tint(planBlock, "error", theme));
+  if (goalBlock) blocks.push(tint(goalBlock, "success", theme));
   return [bounded(blocks.join(tint(" · ", "dim", theme)), width, theme)];
 }
 

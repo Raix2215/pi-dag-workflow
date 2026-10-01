@@ -32,4 +32,12 @@ test("semantic theme colors do not change terminal width or corrupt user content
   assert.ok(styled[1]!.startsWith(theme.getFgAnsi("dim")));
   assert.ok(styled[1]!.includes(theme.fg("accent", "已完成")));
   assert.ok(styled[1]!.includes(theme.fg("success", "✓")));
+  // The header gives each block its own color: Todo accent, Plan error, Goal success.
+  assert.ok(styled[0]!.includes(theme.fg("error", "󰏫 Plan [只读]")), "Plan block uses the error color");
+  const withGoal = renderTasks(state, 120, { theme, goalTitle: "#1 目标标题" });
+  const goalBlock = theme.fg("success", "󰓾 Goal: #1 目标标题");
+  assert.ok(withGoal[0]!.includes(goalBlock), "Goal block uses the success color");
+  assert.ok(withGoal[0]!.startsWith(theme.getFgAnsi("accent")), "Todo keeps the accent color");
+  const dag = renderDag(state, 120, theme, "#1 目标标题");
+  assert.ok(dag[0]!.includes(theme.fg("error", "󰏫 Plan [只读]")) && dag[0]!.includes(goalBlock), "the DAG header shares the same colors");
 });
