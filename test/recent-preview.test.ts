@@ -25,7 +25,7 @@ function scene(): WorkflowState {
 }
 
 const shownIds = (lines: string[]): number[] => lines.flatMap((line) => {
-  const match = /[├└]─ #([0-9]+)/.exec(line);
+  const match = /[├└]─\s*#([0-9]+)/.exec(line);
   return match ? [Number(match[1])] : [];
 });
 
