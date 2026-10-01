@@ -64,5 +64,6 @@ test("DAG solid lines retain fan-in and explicitly degrade at narrow width", () 
   assert.doesNotMatch(output, /<-|前驱/);
   const fallback = renderDag(current, 40).join("\n");
   assert.match(fallback, /降级/);
-  assert.match(fallback, /#4<-#2,#3/);
+  // Degraded DAG reuses the todo path tree: #4 nests under one parent, the other stays as reference.
+  assert.match(fallback, /#4<-#3/);
 });

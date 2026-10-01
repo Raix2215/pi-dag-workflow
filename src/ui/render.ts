@@ -121,14 +121,17 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
   const refWidth = rows.reduce((max, row) => Math.max(max, visibleWidth(reference(row.task, row.dependencies))), 0);
   const prefixWidth = rows.reduce((max, row) => Math.max(max, visibleWidth(row.prefix)), 0);
   // Alignment is optional presentation, never worth sacrificing the path or readable text.
+  // The id column includes the drawn tree prefix: nested rows keep the same icon offset as roots.
   const align = prefixWidth + refWidth + 4 + 6 + visibleWidth("[主会话] [进行中]") <= width;
   return rows.map(({ task, prefix, dependencies }) => {
     const icon = icons[task.status];
-    const refBudget = Math.max(0, width - visibleWidth(prefix) - visibleWidth(icon) - 2);
+    const refBudget = Math.max(0, width - prefixWidth - visibleWidth(icon) - 2);
     const budget = Math.min(refBudget, align ? refWidth : Math.max(visibleWidth(`#${task.id}`), Math.floor(width * 0.38)));
     const ref = clip(reference(task, dependencies), budget);
+    // Pad before the prefix so deeper rows keep the shared icon/status column offset.
+    const lead = prefix ? " ".repeat(prefixWidth - visibleWidth(prefix)) : "";
     const pad = align ? " ".repeat(Math.max(0, budget - visibleWidth(ref))) : "";
-    const left = tint(prefix + ref + pad, "dim", theme) + " " + tint(icon, colors[task.status], theme);
+    const left = tint(lead + prefix + ref + pad, "dim", theme) + " " + tint(icon, colors[task.status], theme);
     const available = width - visibleWidth(left) - 1;
     if (available <= 0) return bounded(left, width, theme);
     const title = clean(task.subject) || "(无标题)";
@@ -201,9 +204,9 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
   const limit = options?.maxLines !== undefined && Number.isFinite(options.maxLines) ? Math.max(3, Math.floor(options.maxLines)) : Infinity;
   const result = dagLayout(projection(state.tasks), width);
   if (!result.layout) {
-    lines.push(tint(clip(`图已降级为列表：${result.reason}；左编号保留完整前驱`, width), "dim", theme));
-    const selected = tasks.slice(0, limit === Infinity ? tasks.length : Math.max(1, limit - 2));
-    const rows = flatRows(selected, selected.length < tasks.length);
+    lines.push(tint(clip(`图已降级为任务列表：${result.reason}；/todos view list 查看完整列表`, width), "dim", theme));
+    const selected = previewTasks(tasks, limit === Infinity ? tasks.length : Math.max(1, limit - 2));
+    const rows = pathRows(state.tasks, selected, width, tasks.length > selected.length);
     const rendered = drawRows(rows, width, theme, jobs);
     for (const [index, row] of rows.entries()) {
       if (lines.length >= limit) break;
@@ -214,7 +217,7 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
         lines.push(...wrapTextWithAnsi(fullRef, width).map((part) => tint(part, 'dim', theme)));
       }
     }
-    if (selected.length < tasks.length || lines.length >= limit) return [...lines.slice(0, limit), tint(clip(`图预览 · 共 ${tasks.length} 项 · /dag 查看完整结构`, width), 'dim', theme)];
+    if (selected.length < tasks.length || lines.length >= limit) return [...lines.slice(0, limit), tint(clip(`图预览 · 共 ${tasks.length} 项 · /dag 滚动查看完整结构`, width), 'dim', theme)];
     return lines;
   }
   const layout = result.layout;
