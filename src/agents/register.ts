@@ -203,7 +203,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const reply = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data });
   const fail = (cause: unknown) => ({ isError: true, content: [{ type: "text" as const, text: String(cause) }], details: { error: String(cause) } });
 
-  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Optional todoId must be unblocked; profile selects a named model/tools config. Returns jobId. Children work at a single tier; at most four jobs run at once.",
+  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Optional todoId must be unblocked; profile selects a named model/tools config. Returns jobId. Children work at a single tier; at most eight jobs run at once.",
     parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) {
       try {
@@ -252,7 +252,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       return reply(result);
     } catch (cause) { return fail(cause); } },
   });
-  pi.registerTool({ name: "subagent_cancel", label: "Stop Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }, description: "Stop a child. Optional remove also discards its retained record and pending notices. The Todo and project files stay as they are.", parameters: Type.Object({ jobId: idSchema, remove: Type.Optional(Type.Boolean()) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
+  pi.registerTool({ name: "subagent_cancel", label: "Stop Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }, description: "Stop a child. Optional remove discards its retained record and pending notices; never completes/deletes the Todo or reverts files.", parameters: Type.Object({ jobId: idSchema, remove: Type.Optional(Type.Boolean()) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); if (params.remove || active(agent.inspect(params.jobId)[0]!)) notices.drop(params.jobId); await agent.cancel(params.jobId, { ...(params.remove !== undefined ? { remove: params.remove } : {}) }); original.delete(params.jobId); adjusted.delete(params.jobId); return reply({ jobId: params.jobId, stopped: true, removed: params.remove ?? false }); } catch (cause) { return fail(cause); } },
   });
 

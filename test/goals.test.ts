@@ -6,7 +6,7 @@ const create = (state: GoalState, title = '目标') => applyGoal(state, { action
 test('goals are independent records; only enable selects one active target', () => {
   let state = create(create(emptyGoalState(), 'A'), 'B');
   assert.equal(focusedGoal(state), undefined);
-  assert.equal(state.goals[0]!.maxTurns, 20);
+  assert.equal(state.goals[0]!.maxTurns, 32);
   state = applyGoal(state, { action: 'enable', id: 1 }).state;
   state = applyGoal(state, { action: 'enable', id: 2 }).state;
   assert.equal(focusedGoal(state)!.title, 'B');

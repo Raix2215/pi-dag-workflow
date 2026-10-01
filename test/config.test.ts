@@ -12,7 +12,7 @@ test('config and Profile share the requested Pi user directory; missing config h
     const paths = configPaths();
     assert.equal(paths.config, join(dir, 'pi-dag-workflow', 'pi-dag-workflow-config.json'));
     assert.equal(paths.profile, join(dir, 'pi-dag-workflow', 'pi-dag-workflow-profile.json'));
-    assert.deepEqual(await loadConfig(), { language: 'auto', goalMaxTurns: 20, goalNoProgressLimit: 3 });
+    assert.deepEqual(await loadConfig(), { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3 });
     assert.deepEqual(await readdir(dir), []);
     await mkdir(paths.directory);
     await writeFile(paths.config, JSON.stringify({ goalMaxTurns: 2, goalNoProgressLimit: 1 }));

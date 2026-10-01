@@ -98,7 +98,7 @@ test("actual Pi English independent Goal: continuation, untranslated description
   assert.equal(continuations.length, 1);
   assert.match(continuations[0]!, /^Goal #1 1\/2: Advance goal: 预算目标\./);
   assert.match(continuations[0]!, /Requirements: 完整描述不要翻译; full requirements via goal get\./);
-  assert.match(continuations[0]!, /This is a workflow continuation; authorization comes from the user\./);
+  assert.match(continuations[0]!, /This is a workflow continuation, not new user authorization\./);
   assert.ok(!hasHan(continuations[0]!.replace("预算目标", "").replace("完整描述不要翻译", "")), continuations[0]!);
 
   const state = goalState(entries)!;

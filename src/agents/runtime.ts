@@ -32,6 +32,8 @@ export interface AgentRuntimeOptions {
 interface RpcRecord { type: string; id?: string; success?: boolean; error?: string; [key: string]: unknown }
 interface PendingCommand { resolve: (record: RpcRecord) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
 const ACTIVE = new Set<JobStatus>(["starting", "running", "waiting"]);
+/** Concurrent child processes; a busy pool reports back instead of queueing work. */
+const MAX_ACTIVE_JOBS = 8;
 const DEFAULT_TIMEOUT = 600;
 
 /** Resolve the running Pi host first; package installs need not carry their own Pi copy. */
@@ -190,7 +192,7 @@ export class AgentRuntime {
     if (this.unavailable) throw new Error("Agent runtime is resetting or shut down");
     if (typeof input.task !== "string" || !input.task.trim() || input.task.length > 65536) throw new Error("task must contain 1–65536 characters");
     if (this.jobs.size >= 128) throw new Error("128 agent records retained. Remove old agents before spawning more.");
-    if (this.activeCount() >= 4) throw new Error("All 4 agent slots are busy. Wait or cancel an active agent; work is not queued.");
+    if (this.activeCount() >= MAX_ACTIVE_JOBS) throw new Error(`All ${MAX_ACTIVE_JOBS} agent slots are busy. Wait or cancel an active agent; work is not queued.`);
     if (input.todoId !== undefined && (!Number.isSafeInteger(input.todoId) || input.todoId < 1)) throw new Error("Invalid todoId");
     if (input.todoId !== undefined && [...this.jobs.values()].some((job) => job.summary.todoId === input.todoId && (ACTIVE.has(job.summary.status) || job.pipe))) throw new Error(`Todo #${input.todoId} already has an active agent`);
     const profile = this.options.profiles.resolve(input.profile, this.options.getInheritedModel(), input.tools);
@@ -199,7 +201,7 @@ export class AgentRuntime {
     const job: LiveJob = { summary, output: "", truncated: false, usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 };
     this.jobs.set(summary.id, job);
     job.timer = setTimeout(() => { void this.finish(job, "failed", "Agent deadline exceeded"); }, timeout * 1000);
-    this.changed(job); // Reserve the slot before the first await; concurrent spawn cannot exceed four.
+    this.changed(job); // Reserve the slot before the first await; concurrent spawn cannot exceed the limit.
     try {
       if (job.finishing) return structuredClone(job.summary);
       const cli = this.options.testCliPath ?? resolvePiCli();

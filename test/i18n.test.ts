@@ -137,7 +137,7 @@ test("applyGoal speaks English, keeps Chinese titles/descriptions and applies th
   assert.equal(created.state.goals[0]!.description, "完整描述不要翻译");
   assert.equal(applyGoal(emptyGoalState(), { action: "list" }, 20, en).text, "No goals");
   assert.throws(() => applyGoal(emptyGoalState(), { action: "create", title: "" }, 20, en), /title must be non-empty text of at most 1024 bytes/);
-  assert.throws(() => applyGoal(emptyGoalState(), { action: "create", title: "X", maxTurns: 201 }, 20, en), /Corrupt goal status\/budget/);
+  assert.throws(() => applyGoal(emptyGoalState(), { action: "create", title: "X", maxTurns: 201 }, 32, en), /Corrupt goal status\/budget/);
   assert.throws(() => applyGoal(emptyGoalState(), { action: "bogus" as never }, 20, en), /Unknown Goal action/);
   // A paused focused goal labels itself in English while preserving the title.
   const paused: GoalState = { ...created.state, focusId: 1, goals: [{ ...created.state.goals[0]!, status: "paused" }], run: { paused: true, used: 1, stalled: 0 } };
@@ -243,7 +243,7 @@ test("loadConfig defaults to language auto and loadLocale follows config before 
   process.env.PI_CODING_AGENT_DIR = directory;
   delete process.env.LC_ALL; delete process.env.LC_MESSAGES; delete process.env.LANGUAGE; delete process.env.LANG;
   try {
-    assert.deepEqual(await loadConfig(), { language: "auto", goalMaxTurns: 20, goalNoProgressLimit: 3 });
+    assert.deepEqual(await loadConfig(), { language: "auto", goalMaxTurns: 32, goalNoProgressLimit: 3 });
     process.env.LANG = "zh_CN.UTF-8";
     assert.equal(loadLocale(), "zh-CN");
     process.env.LC_ALL = "en_US.UTF-8";
@@ -254,7 +254,7 @@ test("loadConfig defaults to language auto and loadLocale follows config before 
     const write = (value: unknown) => writeFile(config, JSON.stringify(value));
     await write({ language: "en" });
     assert.equal(loadLocale(), "en");
-    assert.deepEqual(await loadConfig(), { language: "en", goalMaxTurns: 20, goalNoProgressLimit: 3 });
+    assert.deepEqual(await loadConfig(), { language: "en", goalMaxTurns: 32, goalNoProgressLimit: 3 });
     await write({ language: "zh-CN" });
     assert.equal(loadLocale(), "zh-CN");
     await write({ language: "auto" });

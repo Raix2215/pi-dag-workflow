@@ -84,18 +84,18 @@ test("real parent steering is delivered after a blocked tool batch, not as a new
   } finally { await ctx.close(); }
 });
 
-test("maximum four reserved slots, duplicate todo blocked, no fifth dispatch queue", async () => {
+test("maximum reserved slots, duplicate todo blocked, no extra dispatch queue", async () => {
   const ctx = await setup(true);
   try {
-    const started = [1, 2, 3, 4].map((todoId) => ctx.runtime.spawn({ task: "HOLD", todoId }));
-    assert.equal(ctx.runtime.activeCount(), 4);
-    await assert.rejects(ctx.runtime.spawn({ task: "HOLD" }), /4 agent slots/);
+    const started = [1, 2, 3, 4, 5, 6, 7, 8].map((todoId) => ctx.runtime.spawn({ task: "HOLD", todoId }));
+    assert.equal(ctx.runtime.activeCount(), 8);
+    await assert.rejects(ctx.runtime.spawn({ task: "HOLD" }), /All 8 agent slots/);
     const jobs = await Promise.all(started);
     await ctx.runtime.cancel(jobs[3]!.id);
     await assert.rejects(ctx.runtime.spawn({ task: "HOLD", todoId: 1 }), /already has an active/);
-    assert.equal(ctx.runtime.inspect().length, 4);
+    assert.equal(ctx.runtime.inspect().length, 8);
     await ctx.runtime.cancel(jobs[0]!.id, { remove: true });
-    assert.equal(ctx.runtime.inspect().length, 3);
+    assert.equal(ctx.runtime.inspect().length, 7);
     assert.throws(() => ctx.runtime.inspect(jobs[0]!.id), /Unknown agent/);
   } finally { await ctx.close(); }
 });

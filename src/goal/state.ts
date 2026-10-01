@@ -15,7 +15,7 @@ export interface Goal { id: number; title: string; description?: string; status:
 export interface GoalRun { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string }
 export interface GoalState { version: 1; goals: Goal[]; nextId: number; focusId?: number; run: GoalRun }
 export const GOAL_TYPE = 'pi-dag-workflow.goal';
-export const GOAL_DEFAULT_TURNS = 20;
+export const GOAL_DEFAULT_TURNS = 32;
 export const emptyGoalState = (): GoalState => ({ version: 1, goals: [], nextId: 1, run: { paused: true, used: 0, stalled: 0 } });
 export const focusedGoal = (state: GoalState): Goal | undefined => state.goals.find((goal) => goal.id === state.focusId && !['completed', 'deleted'].includes(goal.status));
 export const activates = (action: GoalParams['action']): boolean => action === 'enable';

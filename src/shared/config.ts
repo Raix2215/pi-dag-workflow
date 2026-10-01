@@ -9,7 +9,7 @@ export const configPaths = () => {
   return { directory, config: join(directory, 'pi-dag-workflow-config.json'), profile: join(directory, 'pi-dag-workflow-profile.json') };
 };
 export interface WorkflowConfig { language: Language; goalMaxTurns: number; goalNoProgressLimit: number }
-const defaults: WorkflowConfig = { language: 'auto', goalMaxTurns: 20, goalNoProgressLimit: 3 };
+const defaults: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3 };
 function parseConfig(source: string, msg: Translator): WorkflowConfig {
   if (Buffer.byteLength(source) > 16384) throw new Error(msg('配置超过 16 KiB'));
   const value = JSON.parse(source) as Record<string, unknown>;

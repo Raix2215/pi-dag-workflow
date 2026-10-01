@@ -14,7 +14,7 @@ interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly Age
 export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const msg = hooks.msg ?? chinese;
   let state = emptyGoalState();
-  let config: WorkflowConfig = { language: 'auto', goalMaxTurns: 20, goalNoProgressLimit: 3 };
+  let config: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3 };
   let error: string | undefined;
   let userAuthority = false;
   let automaticRound = false;
@@ -75,7 +75,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const consumed = { ...state, run: { ...state.run } };
     delete consumed.run.nextStep;
     commit(consumed, ctx); // Never replay a stale action indefinitely.
-    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑；授权以用户为准。`, display: true };
+    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
   }
   async function restore(ctx: ExtensionContext) {
     userAuthority = false; automaticRound = false; revision = 0; error = undefined;
@@ -95,7 +95,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('before_agent_start', (event) => {
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);
-    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; resuming takes an explicit user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
+    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
   });
   pi.on('input', (event) => { if (event.source !== 'extension') { userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
   pi.on('tool_execution_end', (event) => {
@@ -165,7 +165,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     }
     return result;
   }
-  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable one target, disable or complete after verification. Update progress/nextStep for research; empty nextStep waits for the user. Shared auto budget defaults to 20.', parameters: GoalParamsSchema, executionMode: 'sequential',
+  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable one target, disable or complete after verification. Update progress/nextStep for research; empty nextStep waits for the user. Shared auto budget defaults to 32.', parameters: GoalParamsSchema, executionMode: 'sequential',
     async execute(_id, params, _signal, _update, ctx) {
       try { const result = mutate(params, ctx); return { content: [{ type: 'text', text: result.text }], details: { goalState: structuredClone(state) } }; }
       catch (cause) { return { isError: true, content: [{ type: 'text', text: String(cause) }], details: { error: String(cause) } }; }

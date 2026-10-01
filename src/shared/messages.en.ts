@@ -135,7 +135,7 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '启动失败：{0}': 'Startup failed: {0}',
   '推进并核验 Todo #{0}：{1}': 'Advance and verify Todo #{0}: {1}',
   '要求：{0}；完整要求可 goal get。': 'Requirements: {0}; full requirements via goal get. ',
-  'Goal #{0} {1}/{2}: {3}。{4}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑；授权以用户为准。': 'Goal #{0} {1}/{2}: {3}. {4}Verify results; for research use goal update progress/nextStep, disable when the user is needed, complete when achieved. This is a workflow continuation; authorization comes from the user.',
+  'Goal #{0} {1}/{2}: {3}。{4}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑，不是用户新授权。': 'Goal #{0} {1}/{2}: {3}. {4}Verify results; for research use goal update progress/nextStep, disable when the user is needed, complete when achieved. This is a workflow continuation, not new user authorization.',
   '目标 new/list/enable/disable/complete/delete/edit/get/config/reset，或自然语言': 'Goal new/list/enable/disable/complete/delete/edit/get/config/reset, or natural language',
   '/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。': '/goal new title · list · enable [ #id] (omit the id for the current goal) · disable [ #id] · complete/delete #id · edit #id title · get #id · config · reset; creating does not start, viewing does not reset the budget, and a disabled goal needs an explicit enable.',
   '请给出目标编号': 'Provide a goal id',

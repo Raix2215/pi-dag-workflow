@@ -2,14 +2,14 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with `blockedBy` dependencies, a read-only Plan mode, up to four independent Pi subagents, and a Goal loop with a bounded continuation budget. The main model decides what to execute; the extension validates dependencies and keeps progress on screen.
+A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with `blockedBy` dependencies, a read-only Plan mode, up to eight independent Pi subagents, and a Goal loop with a bounded continuation budget. The main model decides what to execute; the extension validates dependencies and keeps progress on screen.
 
 ## What it does
 
 - **One task list, one derived DAG.** Todos carry prerequisites through `blockedBy`. Unfinished prerequisites block starting and completing downstream work, and `/dag` draws the real graph from that same list. There is no second queue or database.
 - **Plan before you build.** Plan is a read-only mode for reading, searching, asking, and rearranging Todos. Implementation, shell commands, and dispatch are blocked until you leave it.
-- **Real child jobs.** Run up to four Pi subprocesses. Give each one a task, an optional Todo link, and an optional named profile; send direction, answer questions, wait, cancel, or remove records. A finished child stays **Pending delivery** until its report reaches the main conversation. Returned work never completes a Todo by itself.
-- **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 20-wake allowance; a Goal also pauses after three consecutive rounds without new progress. Pause happens on interruption, restore, Plan, an exhausted allowance, or a stalled run.
+- **Real child jobs.** Run up to eight Pi subprocesses. Give each one a task, an optional Todo link, and an optional named profile; send direction, answer questions, wait, cancel, or remove records. A finished child stays **Pending delivery** until its report reaches the main conversation. Returned work never completes a Todo by itself.
+- **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance; a Goal also pauses after three consecutive rounds without new progress. Pause happens on interruption, restore, Plan, an exhausted allowance, or a stalled run.
 - **Readable progress.** A Nerd Font panel shows the task tree, a solid-line DAG, and live thinking/tool/output activity. Interface activity is not written into model context or persistent workflow state.
 - **Session-scoped persistence.** Todo, Goal, budget, and job snapshots follow the active Pi branch. Restoring a session never resurrects child processes and never resumes autonomous work on its own.
 
