@@ -1,5 +1,9 @@
 # pi-dag-workflow
 
+[![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev)
+[![Node 22.19.0+](https://img.shields.io/badge/Node-22.19.0%2B-brightgreen)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 English | [简体中文](README.zh-CN.md)
 
 A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with `blockedBy` dependencies, a read-only Plan mode, up to eight independent Pi subagents, and a Goal loop with a bounded continuation budget. The main model decides what to execute; the extension validates dependencies and keeps progress on screen.
@@ -42,6 +46,43 @@ Useful entries while you work:
 - `/goal new Improve the parser` creates a Goal without starting it; `/goal enable #1` starts focused continuation.
 
 Research does not require Todos: the model can report new progress and a concrete next step with `goal update`, or pause while it waits for your answer.
+
+## The panel
+
+The panel sits above the editor and refreshes as work moves; `/dag` shows the same list as a solid-line
+dependency graph. Both are rendered from the one Todo list.
+
+```text
+●  Todo (1/5) · 󰓾 Goal: #1 Ship the parser rewrite
+└─ #1              ✓ Survey the current … [Main session] [Completed]
+   └─ #2           ◐ Rewrite the tokenizer      [a1 · fast] [󰆍 Tool]
+      ├─ #3        ○ Add regression tests   [Main session] [Pending]
+      └─ #4        ○ Update the CLI docs    [Main session] [Pending]
+         └─ #5<-#3 ○ Benchmark 10k lines    [Main session] [Pending]
+```
+
+`#5<-#3` means task #5 additionally depends on #3, whose branch is not drawn. `[a1 · fast]` is a running
+child job; the status column shows what it is doing right now.
+
+```text
+●  Todo (1/3) DAG · 󰓾 Goal: #1 Ship the parser rewrite
+                       ┌───────────────────┐
+                       │ ✓ #1 Survey the … │
+                       │ [Main session]    │
+                       │ [Completed]       │
+                       └────────┬──────────┘
+                      ┌─────────┴─────────────┐
+                      │                       │
+                      │                       │
+           ┌──────────┴────────┐   ┌──────────┴────────┐
+           │ ◐ #2 Rewrite the… │   │ ○ #3 Add regress… │
+           │ [a1 · fast]       │   │ [Main session]    │
+           │ [󰆍 Tool]          │   │ [Pending]         │
+           └───────────────────┘   └───────────────────┘
+```
+
+A terminal that cannot fit the graph falls back to the list above, so the dependencies stay readable at any
+width.
 
 ## Tools
 
@@ -130,6 +171,22 @@ Save profiles with `/agents profile …`, or edit this optional user-level file:
 ```
 
 The command form is `/agents profile name provider/model [thinking] [comma-tools]`, where `provider/model` is a placeholder for a model already registered in Pi. A profile without a `model` field inherits the model selected in the current main session; children default to `read`, `grep`, `find`, and `ls` with thinking off. Explicit built-in tools may add `write`, `edit`, or `bash`. Arbitrary parent extension tools are not copied, and models and tools are validated when you save.
+
+## Security and privacy
+
+- **What is stored.** Todo, Goal, budget, and job snapshots live in Pi's own session records and follow the
+  active branch. The only file this plugin writes is `~/.pi/agent/pi-dag-workflow/pi-dag-workflow-profile.json`
+  when you save a profile (owner-only permissions); the config file is yours to create. Nothing is sent to a
+  database or a third-party service.
+- **No network calls of its own.** The plugin never contacts a remote endpoint and reports no telemetry.
+  Child agents run through Pi with the model and credentials you already configured.
+- **Child credentials.** Model bootstrap data reaches a child through an environment variable that the child
+  parses and deletes at startup, so it is not written to disk or exposed in command-line arguments.
+- **Same operating-system permissions.** The main session, Plan mode, and every child run as you. Plan and
+  tool selection are execution guards; cancelling a child stops the process without rolling back its edits.
+- **Reports and output.** Child reports, questions, and tool output are stripped of terminal control
+  characters before display, then injected into model context and kept in session records. There is no
+  plugin-imposed character cap, so long reports consume context and storage like any other session content.
 
 ## Important boundaries
 

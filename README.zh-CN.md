@@ -1,5 +1,9 @@
 # pi-dag-workflow
 
+[![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev)
+[![Node 22.19.0+](https://img.shields.io/badge/Node-22.19.0%2B-brightgreen)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 [English](README.md) | 简体中文
 
 为 [Pi](https://pi.dev) 提供可见、会话内的工作流：一份带 `blockedBy` 依赖的 Todo 清单、只读 Plan、最多八个独立 Pi 子 Agent，以及有界续跑的 Goal 循环。主模型决定执行什么，插件负责依赖校验并把进度保持在屏幕上。
@@ -42,6 +46,40 @@ pi install https://github.com/<owner>/pi-dag-workflow
 - `/goal new 改造解析器` 只创建 Goal，不启动；`/goal enable #1` 开始围绕它续跑。
 
 研究不强制创建 Todo：主模型可用 `goal update` 报告新的进展和具体下一步，或在等待你答复时暂停。
+
+## 面板
+
+面板始终贴在编辑器上方，随工作推进刷新；`/dag` 把同一份清单画成实线依赖图。两者都由那一份 Todo 渲染。
+
+```text
+●  Todo (1/5) · 󰓾 Goal: #1 完成解析器重写
+└─ #1              ✓ 调查现有解析器             [主会话] [已完成]
+   └─ #2           ◐ 重写分词器              [a1 · fast] [󰆍 工具]
+      ├─ #3        ○ 补充回归测试              [主会话] [待执行]
+      └─ #4        ○ 更新 CLI 文档             [主会话] [待执行]
+         └─ #5<-#3 ○ 万行基准测试              [主会话] [待执行]
+```
+
+`#5<-#3` 表示 #5 还依赖 #3，而 #3 的分支没有画出来。`[a1 · fast]` 是一个正在运行的子 Agent，状态列显示它当前在做什么。
+
+```text
+●  Todo (1/3) DAG · 󰓾 Goal: #1 完成解析器重写
+                       ┌───────────────────┐
+                       │ ✓ #1 调查现有解…  │
+                       │ [主会话]          │
+                       │ [已完成]          │
+                       └────────┬──────────┘
+                      ┌─────────┴─────────────┐
+                      │                       │
+                      │                       │
+           ┌──────────┴────────┐   ┌──────────┴────────┐
+           │ ◐ #2 重写分词器   │   │ ○ #3 补充回归测试 │
+           │ [a1 · fast]       │   │ [主会话]          │
+           │ [󰆍 工具]          │   │ [待执行]          │
+           └───────────────────┘   └───────────────────┘
+```
+
+终端宽度放不下图形时，`/dag` 会退回到上面的列表，依赖关系在任何宽度下都保持可读。
 
 ## 工具
 
@@ -130,6 +168,14 @@ pi install https://github.com/<owner>/pi-dag-workflow
 ```
 
 命令形式为 `/agents profile 名称 provider/model [thinking] [工具逗号列表]`，其中 `provider/model` 是已在 Pi 注册的模型占位符。Profile 不含 `model` 字段时继承当前主会话所选模型；子 Agent 默认使用 `read`、`grep`、`find`、`ls`，thinking 关闭。明确指定的内置工具可增加 `write`、`edit` 或 `bash`。不会自动复制主会话中任意扩展工具；保存时会校验模型和工具。
+
+## 安全与隐私
+
+- **存了什么。** Todo、Goal、预算与 Job 快照保存在 Pi 自己的会话记录里，跟随当前活动分支。插件唯一写入的文件是保存 Profile 时的 `~/.pi/agent/pi-dag-workflow/pi-dag-workflow-profile.json`（仅属主可读写）；配置文件由你自己创建。数据不会进入数据库或第三方服务。
+- **插件自身不联网。** 它不会访问任何远端地址，也不上报遥测。子 Agent 通过 Pi 使用你已经配置好的模型与凭据。
+- **子 Agent 凭据。** 模型启动信息通过环境变量传给子进程，子进程启动时立即解析并删除，不落盘、不出现在命令行参数里。
+- **与主会话相同的系统权限。** 主会话、Plan 模式和每个子进程都以你的身份运行。Plan 与工具选择是执行守卫；取消子 Agent 只停止进程，不回滚它已经改过的文件。
+- **报告与输出。** 子 Agent 报告、提问与工具输出在显示前会清除终端控制字符，随后进入模型上下文并保留在会话记录中。插件不设字符上限，长报告与会话中的其他内容一样占用上下文和存储。
 
 ## 必须了解的边界
 
