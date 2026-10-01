@@ -2,12 +2,40 @@
   "name": "pi-dag-workflow",
   "version": "0.1.0",
   "description": "A lightweight, session-local Todo DAG workflow for Pi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Raix2215/pi-dag-workflow.git"
+  },
+  "homepage": "https://github.com/Raix2215/pi-dag-workflow#readme",
+  "bugs": {
+    "url": "https://github.com/Raix2215/pi-dag-workflow/issues"
+  },
   "license": "MIT",
   "type": "module",
-  "keywords": ["pi-package", "pi", "workflow", "dag", "todo", "subagents"],
-  "files": ["src", "README.md", "README.zh-CN.md", "LICENSE", "CHANGELOG.md", "docs"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "workflow",
+    "dag",
+    "todo",
+    "subagents"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs"
+  ],
   "pi": {
-    "extensions": ["./src/todos/index.ts", "./src/plan/index.ts", "./src/agents/index.ts", "./src/goal/index.ts", "./src/ui/index.ts"]
+    "extensions": [
+      "./src/todos/index.ts",
+      "./src/plan/index.ts",
+      "./src/agents/index.ts",
+      "./src/goal/index.ts",
+      "./src/ui/index.ts"
+    ]
   },
   "engines": {
     "node": ">=22.19.0"

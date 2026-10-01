@@ -26,10 +26,10 @@ A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with 
 ## Install
 
 ```bash
-pi install https://github.com/<owner>/pi-dag-workflow
+pi install https://github.com/Raix2215/pi-dag-workflow
 ```
 
-Replace `<owner>` with the repository owner. Pi installs the extension from that GitHub repository; there is currently no npm package. Restart Pi or run `/reload` afterwards, then choose which modules to load with `pi config` (see below).
+Pi installs the extension from that GitHub repository; there is currently no npm package. Restart Pi or run `/reload` afterwards, then choose which modules to load with `pi config` (see below).
 
 If another extension already provides Todo, Plan, Goal, or subagent tools, enable one of them — see [Compatibility with other plugins](#compatibility-with-other-plugins).
 

@@ -5,7 +5,7 @@ Maintainer checklist for a public release. Run every command from the repository
 ## 1. Prepare metadata
 
 - Keep `version` at the intended release (`0.1.0` for the first public preview) and `license: MIT`.
-- Fill the real repository URL in `package.json` and update the clone/install links in `README.md` and `README.zh-CN.md`. The placeholder `<owner>` in the READMEs and an absent `repository` field are intentional until then; the checker only warns about the missing URL.
+- The repository URL lives in `package.json` (`repository`, `homepage`, `bugs`) and in the install snippets of both READMEs; keep them in sync when the project moves.
 - Keep `files` limited to `src`, both READMEs, `LICENSE`, `CHANGELOG.md`, and `docs`. Tests, fixtures, scripts, `.github`, and local artifacts must never ship.
 - Move the `0.1.0` section of `CHANGELOG.md` from `Unreleased` to the release date.
 

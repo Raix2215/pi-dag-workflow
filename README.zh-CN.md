@@ -26,10 +26,10 @@
 ## 安装
 
 ```bash
-pi install https://github.com/<owner>/pi-dag-workflow
+pi install https://github.com/Raix2215/pi-dag-workflow
 ```
 
-把 `<owner>` 替换为仓库拥有者。Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 Pi 或执行 `/reload`，再用 `pi config` 选择要加载的模块（见下文）。
+Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 Pi 或执行 `/reload`，再用 `pi config` 选择要加载的模块（见下文）。
 
 若其他插件已提供 Todo、Plan、Goal 或子 Agent 工具，请只启用其中一个，详见[与其他插件的兼容性](#与其他插件的兼容性)。
 
