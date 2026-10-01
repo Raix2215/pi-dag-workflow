@@ -135,7 +135,7 @@ pi install https://github.com/<owner>/pi-dag-workflow
 
 ### `pi-dag-workflow-config.json`
 
-可选。模块开关用 `pi config` 控制，不在此文件。修改后 `/reload` 生效。
+可选。这三个键就是全部配置项，缺省时使用示例中的默认值。模块开关用 `pi config` 控制，不在此文件；修改后 `/reload` 生效。
 
 ```json
 {
@@ -145,15 +145,15 @@ pi install https://github.com/<owner>/pi-dag-workflow
 }
 ```
 
-- `language` —— `"auto"`、`"en"` 或 `"zh-CN"`。`auto` 在终端 locale 为中文时选 `zh-CN`，否则选 `en`。插件标签、帮助、通知和工作流消息会本地化；用户内容、命令名和工具结构化字段保持原样。
-- `goalMaxTurns` —— 新建 Goal 的默认额度（1–200），由自动续跑和子报告唤醒共享。
-- `goalNoProgressLimit` —— Goal 在连续多少轮没有新进展后暂停（1–10）。
+- `language` —— `"auto"`（默认）、`"en"` 或 `"zh-CN"`。`auto` 在终端 locale 为中文时选 `zh-CN`，否则选 `en`。插件标签、帮助、通知和工作流消息会本地化；用户内容、命令名和工具结构化字段保持原样。
+- `goalMaxTurns` —— 新建 Goal 的默认额度，取值 1–200（默认 `32`），由自动续跑和子报告唤醒共享。
+- `goalNoProgressLimit` —— Goal 在连续多少轮没有新进展后暂停，取值 1–10（默认 `3`）。
 
-请删除旧版的 `modules` 字段。未知或无效字段会作为配置错误处理，而不是悄悄保留第二套开关。
+未知键和越界取值都会作为配置错误处理。旧版的 `modules` 字段必须删除；模块选择现在只在 `pi config` 里。
 
 ### `pi-dag-workflow-profile.json`
 
-可用 `/agents profile …` 保存，或手动编辑这个可选用户级文件：
+可用 `/agents profile …` 保存，或手动编辑这个可选用户级文件。示例包含一个只读研究 Profile 和一个明确指定模型的写入 Profile：
 
 ```json
 {
@@ -162,12 +162,23 @@ pi install https://github.com/<owner>/pi-dag-workflow
       "name": "research",
       "thinking": "off",
       "tools": ["read", "grep", "find", "ls"]
+    },
+    {
+      "name": "fast-edit",
+      "model": { "provider": "anthropic", "id": "claude-sonnet-4-5" },
+      "thinking": "low",
+      "tools": ["read", "grep", "find", "ls", "edit", "write"]
     }
   ]
 }
 ```
 
-命令形式为 `/agents profile 名称 provider/model [thinking] [工具逗号列表]`，其中 `provider/model` 是已在 Pi 注册的模型占位符。Profile 不含 `model` 字段时继承当前主会话所选模型；子 Agent 默认使用 `read`、`grep`、`find`、`ls`，thinking 关闭。明确指定的内置工具可增加 `write`、`edit` 或 `bash`。不会自动复制主会话中任意扩展工具；保存时会校验模型和工具。
+- `name` —— 1–48 个字母、数字、`_` 或 `-`，以字母或数字开头；`inherit` 为保留名。
+- `model` —— 必须是 Pi 已认识的 `provider` 与 `id`，写法与 `/model` 中显示的一致（`anthropic/claude-sonnet-4-5` 只是示例）。省略 `model` 表示继承主会话当前所选模型，如上面的 `research`。
+- `thinking` —— `off`（默认）、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；不支持推理的模型只能用 `off`。
+- `tools` —— 最多 8 个子 Agent 工具。`read`、`grep`、`find`、`ls` 始终可用，`edit`、`write`、`bash` 是可选的额外内置工具；主会话中的任意扩展工具不会被复制。
+
+同一份 Profile 也可以在会话里用 `/agents profile 名称 provider/model [thinking] [工具逗号列表]` 修改，用 `/agents unprofile 名称` 删除。文件最多保存 64 个 Profile、上限 64 KiB、不允许未知字段，从 `/agents` 保存时以仅属主可读写的权限写入。
 
 ## 安全与隐私
 

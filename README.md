@@ -138,7 +138,8 @@ Configuration only holds plugin settings and is stored separately from Pi's sess
 
 ### `pi-dag-workflow-config.json`
 
-Optional. Choose modules with `pi config`, not in this file. Apply changes with `/reload`.
+Optional. These three keys are the complete configuration; anything absent falls back to the value shown. Choose
+modules with `pi config`, not in this file, and apply changes with `/reload`.
 
 ```json
 {
@@ -148,15 +149,17 @@ Optional. Choose modules with `pi config`, not in this file. Apply changes with 
 }
 ```
 
-- `language` — `"auto"`, `"en"`, or `"zh-CN"`. `auto` selects `zh-CN` when the terminal locale is Chinese and `en` otherwise. Plugin labels, help, notifications, and workflow messages are localized. User-authored content, command names, and structured tool fields stay unchanged.
-- `goalMaxTurns` — default allowance for newly created Goals (1–200), shared by automatic continuation and child-report wakes.
-- `goalNoProgressLimit` — consecutive rounds without new progress before a Goal pauses (1–10).
+- `language` — `"auto"` (default), `"en"`, or `"zh-CN"`. `auto` selects `zh-CN` when the terminal locale is Chinese and `en` otherwise. Plugin labels, help, notifications, and workflow messages are localized. User-authored content, command names, and structured tool fields stay unchanged.
+- `goalMaxTurns` — default allowance for newly created Goals, 1–200 (default `32`), shared by automatic continuation and child-report wakes.
+- `goalNoProgressLimit` — consecutive rounds without new progress before a Goal pauses, 1–10 (default `3`).
 
-Remove any legacy `modules` field. An invalid or unknown field is a configuration error rather than a silently honored second set of switches.
+Unknown keys and out-of-range values are configuration errors. A legacy `modules` field in particular must be
+removed; module selection now lives in `pi config`.
 
 ### `pi-dag-workflow-profile.json`
 
-Save profiles with `/agents profile …`, or edit this optional user-level file:
+Save profiles with `/agents profile …`, or edit this optional user-level file. This example shows a
+read-only researcher and an explicitly configured writer:
 
 ```json
 {
@@ -165,12 +168,25 @@ Save profiles with `/agents profile …`, or edit this optional user-level file:
       "name": "research",
       "thinking": "off",
       "tools": ["read", "grep", "find", "ls"]
+    },
+    {
+      "name": "fast-edit",
+      "model": { "provider": "anthropic", "id": "claude-sonnet-4-5" },
+      "thinking": "low",
+      "tools": ["read", "grep", "find", "ls", "edit", "write"]
     }
   ]
 }
 ```
 
-The command form is `/agents profile name provider/model [thinking] [comma-tools]`, where `provider/model` is a placeholder for a model already registered in Pi. A profile without a `model` field inherits the model selected in the current main session; children default to `read`, `grep`, `find`, and `ls` with thinking off. Explicit built-in tools may add `write`, `edit`, or `bash`. Arbitrary parent extension tools are not copied, and models and tools are validated when you save.
+- `name` — 1–48 letters, digits, `_` or `-`, starting with a letter or digit. `inherit` is reserved.
+- `model` — `provider` and `id` of a model Pi already knows, spelled exactly as `/model` shows it (`anthropic/claude-sonnet-4-5` is an example). Omit `model` to inherit the model selected in the main session, as `research` does above.
+- `thinking` — `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. A model without reasoning support must use `off`.
+- `tools` — up to 8 child tools. `read`, `grep`, `find`, and `ls` are always available; `edit`, `write`, and `bash` are the optional built-ins. Arbitrary extension tools from the main session are never copied.
+
+The same profiles are editable from a session with `/agents profile name provider/model [thinking] [comma-tools]`
+and `/agents unprofile name`. The file holds at most 64 profiles, is limited to 64 KiB, allows no unknown
+fields, and is written with owner-only permissions when you save from `/agents`.
 
 ## Security and privacy
 
