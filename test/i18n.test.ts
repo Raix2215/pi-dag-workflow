@@ -305,7 +305,7 @@ test("registerTodos/Plan/Goal/Agents localize command descriptions and completio
     assert.ok(!hasHan(description), `/${name} description is not English: ${description}`);
   }
   assert.match(commands.get("todos")!.description!, /Current Todos/);
-  assert.match(commands.get("goal")!.description!, /Goal list\/new\/enable/);
+  assert.match(commands.get("goal")!.description!, /Goal new\/list\/enable/);
 
   const roots = (name: string): Record<string, string | undefined> => {
     const items = commands.get(name)!.getArgumentCompletions!("")!;
@@ -320,7 +320,9 @@ test("registerTodos/Plan/Goal/Agents localize command descriptions and completio
   assert.equal(plan["off"], "Exit planning and resume implementation");
   const goal = roots("goal");
   assert.equal(goal["new"], "Create a goal (does not start): new title");
-  assert.equal(goal["enable"], "Enable and advance a goal: enable #id");
+  assert.equal(goal["enable"], "Enable and advance a goal: enable [ #id]");
+  assert.equal(goal["disable"], "Disable or pause a goal: disable [ #id]");
+  assert.deepEqual(Object.keys(goal), ["new", "list", "enable", "disable", "complete", "delete", "edit", "get", "config", "reset", "help"]);
   const agents = roots("agents");
   assert.equal(agents["list"], "View Jobs and pause state");
   assert.equal(agents["profile"], "Save a Profile: profile name provider/model [thinking] [tools]");

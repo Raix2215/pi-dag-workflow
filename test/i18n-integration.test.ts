@@ -30,7 +30,7 @@ test("actual Pi English session advertises English commands, help and goal-reset
   assert.match(descriptions.get("dag")!, /dependency graph/);
   assert.match(descriptions.get("plan")!, /read-only planning/);
   assert.match(descriptions.get("agents")!, /Child agent status/);
-  assert.match(descriptions.get("goal")!, /Goal list\/new\/enable/);
+  assert.match(descriptions.get("goal")!, /Goal new\/list\/enable/);
   for (const name of ["todos", "dag", "plan", "agents", "goal"]) assert.ok(!hasHan(descriptions.get(name)!), `/${name}: ${descriptions.get(name)}`);
 
   for (const command of ["/todos help", "/plan help", "/agents help", "/goal help"]) {
@@ -38,6 +38,12 @@ test("actual Pi English session advertises English commands, help and goal-reset
     assert.ok(notice.length > 0, command);
     assert.ok(notice.every((message) => !hasHan(message)), `${command}: ${notice.join(" | ")}`);
   }
+  // Retired synonyms are answered locally in English instead of starting a model turn.
+  const turns = client.records.filter((record) => record.type === "agent_start").length;
+  const retired = notifications(await client.prompt("/goal off"));
+  assert.ok(retired.some((message) => message.includes("That spelling was removed")), retired.join(" | "));
+  assert.equal(client.records.filter((record) => record.type === "agent_start").length, turns, "/goal off must not start a model turn");
+
   // Local usage errors are localized too.
   const usage = notifications(await client.prompt("/todos view now"));
   assert.ok(usage.some((message) => message.includes("Usage: /todos view list|dag")), usage.join(" | "));

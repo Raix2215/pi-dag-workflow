@@ -29,10 +29,10 @@ test('mock host: shared Agent/Goal wakes consume one allowance, never reset on s
   assert.equal(await h.settle(), undefined);
   assert.match(h.controller.snapshot().run.reason!, /上限/);
   const state = h.controller.snapshot();
-  await h.call({ action: 'focus', id: 1 }); // User explicitly calls focus after the input, so this is a resume.
+  await h.call({ action: 'enable', id: 1 }); // User explicitly enables after the input, so this is a resume.
   assert.equal(state.run.used, 2);
 });
-test('mock host: Plan, restore and abort pause persistently; only explicit resume can rearm', async () => {
+test('mock host: Plan, restore and abort pause persistently; only explicit enable can rearm', async () => {
   const h = host(); await h.enable();
   h.controller.pause('进入 Plan', h.ctx); h.setPlan(true);
   assert.equal((await h.call({ action: 'create', title: '不应创建' })).isError, true);
@@ -41,7 +41,7 @@ test('mock host: Plan, restore and abort pause persistently; only explicit resum
   assert.equal(await h.settle(), undefined);
   await h.fire('session_tree');
   assert.equal(h.controller.snapshot().run.paused, true);
-  await h.fire('input', { source: 'rpc', text: '恢复目标' }); await h.call({ action: 'resume' });
+  await h.fire('input', { source: 'rpc', text: '恢复目标' }); await h.call({ action: 'enable' });
   await h.settle({ outcome: 'aborted' });
   assert.equal(h.controller.snapshot().run.paused, true);
   assert.equal(h.controller.canWake(), false);
@@ -89,11 +89,11 @@ test('mock host: native proposed continuation is not double charged; corrupt his
   assert.equal((await h.call({ action: 'create', title: '不覆盖历史' })).isError, true);
   assert.equal(h.entries.at(-1).data.version, 99);
 });
-test('mock host: explicit idle resume reserves and starts once; unknown extra args cannot start work', async () => {
+test('mock host: explicit idle enable reserves and starts once; unknown extra args cannot start work', async () => {
   const h = host(); await h.enable(); h.controller.pause('暂停', h.ctx); h.setIdle(true);
-  await h.commands.get('goal').handler('resume extra arguments', h.ctx);
+  await h.commands.get('goal').handler('enable extra arguments', h.ctx);
   assert.equal(h.wakes.length, 0);
-  await h.commands.get('goal').handler('resume', h.ctx);
+  await h.commands.get('goal').handler('enable', h.ctx);
   assert.equal(h.wakes.length, 1);
   assert.equal(h.controller.snapshot().run.used, 1);
   assert.match(h.wakes[0].message, /Goal #1.*不是用户新授权/);

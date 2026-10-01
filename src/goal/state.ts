@@ -2,7 +2,7 @@ import { Type, type Static } from 'typebox';
 import { chinese, type Translator } from '../shared/i18n.ts';
 
 export const GoalParamsSchema = Type.Object({
-  action: Type.Union([Type.Literal('create'), Type.Literal('update'), Type.Literal('list'), Type.Literal('get'), Type.Literal('delete'), Type.Literal('enable'), Type.Literal('disable'), Type.Literal('focus'), Type.Literal('switch'), Type.Literal('resume'), Type.Literal('pause'), Type.Literal('complete')]),
+  action: Type.Union([Type.Literal('create'), Type.Literal('update'), Type.Literal('list'), Type.Literal('get'), Type.Literal('delete'), Type.Literal('enable'), Type.Literal('disable'), Type.Literal('complete')]),
   id: Type.Optional(Type.Integer({ minimum: 1 })),
   title: Type.Optional(Type.String({ description: 'Short title; create requires it' })),
   description: Type.Optional(Type.String({ description: 'Objective and acceptance criteria' })),
@@ -18,8 +18,8 @@ export const GOAL_TYPE = 'pi-dag-workflow.goal';
 export const GOAL_DEFAULT_TURNS = 20;
 export const emptyGoalState = (): GoalState => ({ version: 1, goals: [], nextId: 1, run: { paused: true, used: 0, stalled: 0 } });
 export const focusedGoal = (state: GoalState): Goal | undefined => state.goals.find((goal) => goal.id === state.focusId && !['completed', 'deleted'].includes(goal.status));
-export const activates = (action: GoalParams['action']): boolean => ['enable', 'focus', 'switch', 'resume'].includes(action);
-export const stops = (action: GoalParams['action']): boolean => ['disable', 'pause', 'complete', 'delete'].includes(action);
+export const activates = (action: GoalParams['action']): boolean => action === 'enable';
+export const stops = (action: GoalParams['action']): boolean => ['disable', 'complete', 'delete'].includes(action);
 function text(value: unknown, field: string, bytes: number, required = false, msg: Translator = chinese): asserts value is string {
   if (typeof value !== 'string' || Buffer.byteLength(value) > bytes || required && !value.trim()) throw new Error(msg`${field} 需为${required ? msg('非空') : ''}文本，最多 ${bytes} 字节`);
 }
@@ -44,7 +44,7 @@ export function validateGoalState(state: GoalState, msg: Translator = chinese): 
   if (run.nextStep !== undefined) text(run.nextStep, 'nextStep', 2048, false, msg);
 }
 const fields: Record<GoalParams['action'], string[]> = {
-  create: ['title', 'description', 'maxTurns'], update: ['id', 'title', 'description', 'maxTurns', 'progress', 'nextStep'], list: [], get: ['id'], delete: ['id'], enable: ['id'], disable: ['id'], focus: ['id'], switch: ['id'], resume: ['id'], pause: ['id'], complete: ['id'],
+  create: ['title', 'description', 'maxTurns'], update: ['id', 'title', 'description', 'maxTurns', 'progress', 'nextStep'], list: [], get: ['id'], delete: ['id'], enable: ['id'], disable: ['id'], complete: ['id'],
 };
 export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = GOAL_DEFAULT_TURNS, msg: Translator = chinese): { state: GoalState; text: string } {
   const allowed = fields[params.action];
@@ -84,10 +84,10 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
       for (const item of next.goals) if (item.status === 'active') item.status = 'paused';
       goal.status = 'active'; next.focusId = goal.id;
       next.run = { paused: false, used: 0, stalled: 0, nextStep: msg`推进目标：${goal.title}` };
-    } else if (params.action === 'disable' || params.action === 'pause') {
+    } else if (params.action === 'disable') {
       if (goal.status === 'completed') throw new Error(msg('已完成目标无需停用'));
       goal.status = 'paused';
-      if (goal.id === next.focusId) next.run = { ...next.run, paused: true, reason: msg('用户停用') };
+      if (goal.id === next.focusId) next.run = { ...next.run, paused: true, reason: msg('已停用') };
     } else {
       goal.status = params.action === 'delete' ? 'deleted' : 'completed';
       if (goal.status === 'completed') goal.completedAt = Date.now();

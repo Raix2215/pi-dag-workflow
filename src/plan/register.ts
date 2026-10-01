@@ -39,7 +39,7 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
           ctx.ui.notify(msg("已保存额外只读工具；这不是操作系统沙箱，请只选择可信读取／搜索工具"), "info");
           return;
         }
-        const off = trimmed === "off" || trimmed === "exit" || !trimmed && hooks.state().plan;
+        const off = trimmed === "off" || !trimmed && hooks.state().plan;
         if (!ctx.isIdle()) throw new Error(msg("主会话仍在运行；请先停止或等待，再切换 Plan"));
         if (!off) hooks.assertCanEnter();
         commit({ ...hooks.state(), plan: !off }, ctx);

@@ -48,7 +48,7 @@ Research does not require Todos: the model can report new progress and a concret
 | Tool | Purpose |
 |---|---|
 | `todo` | create/update/list/get/delete/clear; numeric IDs and `blockedBy` prerequisites |
-| `goal` | create/update/list/get/delete; enable/focus/switch/resume; disable/pause/complete |
+| `goal` | create/update/list/get/delete; enable; disable; complete — one spelling per operation |
 | `subagent_spawn` | start one child with `task` and optional `todoId`/`profile`/`tools`/`timeout` |
 | `subagent_send` | message a `recipient` job ID, or answer a `requestId` |
 | `subagent_wait` | wait for a result or question; a timeout or abort stops the wait, not the child |
@@ -63,7 +63,7 @@ Research does not require Todos: the model can report new progress and a concret
 | Task display | `/todos paths`, `/todos flat`, `show`, `hide`, `view list`, `view dag` |
 | `/dag` | solid-line graph; ↑/↓, PgUp/PgDn, Home/End; Esc returns |
 | `/plan` | `start`, `off`, `status`, `tools name1,name2` to trust extra read-only tools; `tools none` clears |
-| `/goal` | `new Title`, `enable #1`, `focus #1`, `switch #2`, `resume`, `off`, `pause`, `edit #1 Title`, `complete #1`, `delete #1`, `config` |
+| `/goal` | `new Title`, `list`, `enable [ #1]`, `disable [ #1]`, `edit #1 Title`, `complete #1`, `delete #1`, `get #1`, `config`, `reset` |
 | `/agents` | `wait a1`, `send a1 Message`, `reply requestId Answer`, `cancel a1`, `remove a1`, `pause`, `resume` |
 | Profiles | `/agents profiles`, `profile name provider/model [thinking] [comma-tools]`, `unprofile name` |
 
@@ -71,7 +71,9 @@ Each command family supports `help`; help does not call a model or change modes.
 
 ### Goal lifecycle
 
-`new` only records a Goal and leaves it paused. `enable`, `focus`, `switch`, and `resume` are the same activation: one focused Goal runs, and a completed or deleted Goal cannot be restarted — create a new one for rework. `pause`, `disable`, and `off` are the same stop and keep the focus so you can resume later. Resuming after a pause starts a fresh allowance, not the remainder of the previous one. Switching Goals does not clear the shared Todo list. Pausing a Goal does not kill running children; stop those with `/agents cancel`.
+`new` only records a Goal and leaves it paused. `enable` is the only activation: it focuses a Goal, or re-enables the current one when the id is omitted, and a completed or deleted Goal cannot be restarted — create a new one for rework. `disable` is the only stop and keeps the focus so you can enable it later. Enabling after a stop starts a fresh allowance, not the remainder of the previous one. Enabling another Goal does not clear the shared Todo list, and disabling a Goal does not kill running children; stop those with `/agents cancel`.
+
+Every operation has exactly one spelling. Synonyms accepted by earlier versions (`focus`, `switch`, `resume`, `pause`, `on`, `off`, `done`, `del`, `create`, `status`, `/plan exit`) now answer with the valid actions instead of being forwarded to the model.
 
 ## Modules
 

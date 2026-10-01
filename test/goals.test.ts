@@ -3,25 +3,25 @@ import { test } from 'node:test';
 import { applyGoal, emptyGoalState, focusedGoal, pauseGoal, reserveGoalWake, restoreGoalState, validateGoalState, GOAL_TYPE, type GoalState } from '../src/goal/state.ts';
 
 const create = (state: GoalState, title = '目标') => applyGoal(state, { action: 'create', title }).state;
-test('goals are independent records; only enable/focus selects one active target', () => {
+test('goals are independent records; only enable selects one active target', () => {
   let state = create(create(emptyGoalState(), 'A'), 'B');
   assert.equal(focusedGoal(state), undefined);
   assert.equal(state.goals[0]!.maxTurns, 20);
   state = applyGoal(state, { action: 'enable', id: 1 }).state;
-  state = applyGoal(state, { action: 'switch', id: 2 }).state;
+  state = applyGoal(state, { action: 'enable', id: 2 }).state;
   assert.equal(focusedGoal(state)!.title, 'B');
   assert.equal(state.goals.filter((goal) => goal.status === 'active').length, 1);
   assert.equal(state.goals[0]!.status, 'paused');
 });
-test('same active focus cannot refill budget; explicit pause/resume can start a new allowance', () => {
+test('same active focus cannot refill budget; explicit disable then enable can start a new allowance', () => {
   let state = applyGoal(create(emptyGoalState()), { action: 'enable', id: 1 }).state;
   state = reserveGoalWake(state)!;
-  assert.equal(applyGoal(state, { action: 'focus', id: 1 }).state, state);
+  assert.equal(applyGoal(state, { action: 'enable', id: 1 }).state, state);
   assert.equal(state.run.used, 1);
   state = applyGoal(state, { action: 'disable' }).state;
   assert.equal(focusedGoal(state)!.id, 1, 'paused attention stays visible');
   assert.equal(reserveGoalWake(state), undefined);
-  state = applyGoal(state, { action: 'resume' }).state;
+  state = applyGoal(state, { action: 'enable' }).state;
   assert.equal(state.run.used, 0);
 });
 test('complete/delete clear focus, do not leave an invalid dangling id or revive tombstones', () => {

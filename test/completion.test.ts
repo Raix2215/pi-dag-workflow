@@ -148,6 +148,8 @@ test('registered /todos, /plan and /goal expose argument completions over live s
 
   const goal = commands.get('goal').getArgumentCompletions;
   assert.equal(typeof goal, 'function');
+  // One spelling per operation: retired synonyms never come back as candidates.
+  assert.deepEqual(values(await goal('')), ['new', 'list', 'enable', 'disable', 'complete', 'delete', 'edit', 'get', 'config', 'reset', 'help']);
   assert.deepEqual(values(await goal('enable ')), ['enable #1']);
   assert.deepEqual(values(await goal('delete ')), ['delete #1', 'delete #2']);
   assert.equal(await goal('new '), null);

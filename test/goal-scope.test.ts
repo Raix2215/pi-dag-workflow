@@ -15,11 +15,11 @@ test('automatic model cannot enlarge its allowance or silently switch objectives
   await call({ action: 'enable', id: 1 });
   assert.equal(control.reserveWake(ctx), true);
   assert.equal((await call({ action: 'update', maxTurns: 200 })).isError, true);
-  assert.equal((await call({ action: 'switch', id: 2 })).isError, true);
+  assert.equal((await call({ action: 'enable', id: 2 })).isError, true);
   assert.equal((await call({ action: 'update', progress: '新事实', nextStep: '继续核查' })).isError, undefined);
   assert.equal(control.snapshot().goals[0]!.maxTurns, 2);
   assert.equal(control.snapshot().focusId, 1);
   handlers.get('input')!({ source: 'rpc', text: '我明确要求切换到 B' }, ctx);
-  assert.equal((await call({ action: 'switch', id: 2 })).isError, undefined);
+  assert.equal((await call({ action: 'enable', id: 2 })).isError, undefined);
   assert.equal(control.snapshot().focusId, 2);
 });

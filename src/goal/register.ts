@@ -25,31 +25,23 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const workStamp = () => JSON.stringify([revision, hooks.state().tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, task.status])]);
   const paint = (ctx: ExtensionContext) => hooks.paint(ctx);
   const goalStatusLabel: Record<GoalState['goals'][number]['status'], string> = { active: '活动', paused: '暂停', completed: '已完成', deleted: '已删除' };
-  const activatable = new Set(['enable', 'on', 'focus', 'switch', 'resume']);
+  const activatable = new Set(['enable']);
   const completion: CompletionSpec = {
     actions: [
       { action: 'new', description: msg('创建目标（不启动）：new 标题') },
       { action: 'list', description: msg('查看目标与预算') },
-      { action: 'status', description: msg('查看目标与预算') },
-      { action: 'enable', description: msg('启用并推进目标：enable #编号') },
-      { action: 'resume', description: msg('恢复自动续跑：resume [ #编号]') },
-      { action: 'focus', description: msg('聚焦目标：focus #编号') },
-      { action: 'switch', description: msg('切换焦点目标：switch #编号') },
-      { action: 'edit', description: msg('修改标题：edit #编号 新标题') },
-      { action: 'pause', description: msg('暂停目标续跑：pause [ #编号]') },
-      { action: 'disable', description: msg('停用目标：disable #编号') },
-      { action: 'off', description: msg('停用当前目标') },
-      { action: 'on', description: msg('启用目标：on #编号') },
+      { action: 'enable', description: msg('启用并推进目标：enable [ #编号]') },
+      { action: 'disable', description: msg('停用或暂停目标：disable [ #编号]') },
       { action: 'complete', description: msg('标记完成：complete #编号') },
-      { action: 'done', description: msg('标记完成：done #编号') },
       { action: 'delete', description: msg('删除目标：delete #编号') },
+      { action: 'edit', description: msg('修改标题：edit #编号 新标题') },
       { action: 'get', description: msg('查看目标详情：get #编号') },
       { action: 'config', description: msg('查看配置路径与值') },
       { action: 'reset', description: msg('清除 Goal 状态') },
       { action: 'help', description: msg('查看命令帮助') },
     ],
-    freeText: ['new', 'create'],
-    tokens: (action) => ['enable', 'on', 'resume', 'focus', 'switch', 'edit', 'pause', 'disable', 'off', 'complete', 'done', 'delete', 'get'].includes(action) ? state.goals
+    freeText: ['new'],
+    tokens: (action) => ['enable', 'disable', 'edit', 'complete', 'delete', 'get'].includes(action) ? state.goals
       .filter((goal) => goal.status !== 'deleted' && (!activatable.has(action) || goal.status !== 'completed'))
       .map((goal) => ({ token: `#${goal.id}`, label: `#${goal.id} ${goal.title}`, description: msg(goalStatusLabel[goal.status]) })) : null,
   };
@@ -64,7 +56,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if (!focusedGoal(state) || state.run.paused) return;
     commit(pauseGoal(state, reason), ctx);
     hooks.pauseAgents();
-    ctx.ui.notify(msg`Goal 已暂停：${reason}；/goal resume 明确恢复`, 'warning');
+    ctx.ui.notify(msg`Goal 已暂停：${reason}；/goal enable 明确恢复`, 'warning');
   }
   const available = () => !error && !hooks.protected() && !hooks.state().plan && (!focusedGoal(state) ? standaloneReports : !state.run.paused && state.run.used < focusedGoal(state)!.maxTurns);
   function reserveWake(ctx: ExtensionContext): boolean {
@@ -83,7 +75,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const consumed = { ...state, run: { ...state.run } };
     delete consumed.run.nextStep;
     commit(consumed, ctx); // Never replay a stale action indefinitely.
-    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 pause，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
+    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
   }
   async function restore(ctx: ExtensionContext) {
     userAuthority = false; automaticRound = false; revision = 0; error = undefined;
@@ -103,7 +95,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('before_agent_start', (event) => {
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);
-    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use pause when waiting for the user, complete when achieved.'}`;
+    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
   });
   pi.on('input', (event) => { if (event.source !== 'extension') { userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
   pi.on('tool_execution_end', (event) => {
@@ -173,7 +165,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     }
     return result;
   }
-  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable/focus/switch/resume one target, disable/pause or complete after verification. Update progress/nextStep for research; empty nextStep waits for the user. Shared auto budget defaults to 20.', parameters: GoalParamsSchema, executionMode: 'sequential',
+  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable one target, disable or complete after verification. Update progress/nextStep for research; empty nextStep waits for the user. Shared auto budget defaults to 20.', parameters: GoalParamsSchema, executionMode: 'sequential',
     async execute(_id, params, _signal, _update, ctx) {
       try { const result = mutate(params, ctx); return { content: [{ type: 'text', text: result.text }], details: { goalState: structuredClone(state) } }; }
       catch (cause) { return { isError: true, content: [{ type: 'text', text: String(cause) }], details: { error: String(cause) } }; }
@@ -181,24 +173,24 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     renderCall(args, theme) { return new Text(theme.fg('toolTitle', `󰓾 goal ${clean(args.action ?? '')}${args.id ? ` #${args.id}` : ''}`), 0, 0); },
     renderResult(result, _options, theme) { return new Text(theme.fg(result.isError ? 'error' : 'text', result.content.filter((item) => item.type === 'text').map((item) => item.text.split('\n').map(clean).join('\n')).join('\n')), 0, 0); },
   });
-  pi.registerCommand('goal', { description: msg('目标 list/new/enable/resume/off/switch/edit/complete/delete/reset/config，或自然语言'), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
+  pi.registerCommand('goal', { description: msg('目标 new/list/enable/disable/complete/delete/edit/get/config/reset，或自然语言'), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
-      if (action === 'help') { ctx.ui.notify(msg('/goal list/status · new 标题 · enable/focus/switch #编号 · resume/off（当前焦点） · edit #编号 标题 · complete/delete #编号 · config · reset；创建不启动，查看不重置预算，暂停后需明确恢复。'), 'info'); return; }
+      if (action === 'help') { ctx.ui.notify(msg('/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。'), 'info'); return; }
       const id = (value?: string) => { if (value === undefined && state.focusId !== undefined) return state.focusId; if (!value || !/^#?[1-9]\d*$/.test(value)) throw new Error(msg('请给出目标编号')); return Number(value.replace(/^#/, '')); };
-      if (!args.trim() || action === 'list' || action === 'status') { ctx.ui.notify(`${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? (state.run.reason ? localizeSavedMessage(state.run.reason, msg) : msg('未启用')) : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
+      if (!args.trim() || action === 'list') { ctx.ui.notify(`${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? (state.run.reason ? localizeSavedMessage(state.run.reason, msg) : msg('未启用')) : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
       if (action === 'config') { ctx.ui.notify(JSON.stringify({ path: configPaths().config, ...config }), 'info'); return; }
       if (action === 'reset') {
         if (!ctx.hasUI || !await ctx.ui.confirm(msg('清除 Goal 状态？'), msg('保留历史、Todos、Job 和项目文件；自动续跑停止。'))) return;
         hooks.pauseAgents(); commit(emptyGoalState(), ctx); config = await loadConfig(msg); error = undefined; return;
       }
       let params: GoalParams | undefined;
-      if (action === 'new' || action === 'create') params = { action: 'create', title: parts.join(' ') };
+      if (action === 'new') params = { action: 'create', title: parts.join(' ') };
       else if (action === 'edit') params = { action: 'update', id: id(parts[0]), title: parts.slice(1).join(' ') };
-      else {
-        const mapped = action === 'off' ? 'disable' : action === 'on' ? 'enable' : action === 'done' ? 'complete' : action === 'del' ? 'delete' : action;
-        if (['enable', 'resume', 'focus', 'switch', 'disable', 'pause', 'complete', 'delete', 'get'].includes(mapped ?? '')) { if (parts.length > 1) throw new Error(msg('此命令只接受一个编号')); params = { action: mapped as GoalParams['action'], id: id(parts[0]) }; }
-      }
+      else if (['enable', 'disable', 'complete', 'delete', 'get'].includes(action ?? '')) {
+        if (parts.length > 1) throw new Error(msg('此命令只接受一个编号'));
+        params = { action: action as GoalParams['action'], id: id(parts[0]) };
+      } else if (['focus', 'switch', 'resume', 'pause', 'on', 'off', 'done', 'del', 'create', 'status'].includes(action ?? '')) throw new Error(msg('该写法已移除；可用 new/list/enable/disable/complete/delete/edit/get/config/reset'));
       if (params) { ctx.ui.notify(mutate(params, ctx, true).text, 'info'); return; }
       pi.sendUserMessage(msg`请管理当前 Goal：${args}`, ctx.isIdle() ? undefined : { deliverAs: 'followUp' });
     } catch (cause) { ctx.ui.notify(String(cause), 'error'); }

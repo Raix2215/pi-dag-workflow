@@ -32,7 +32,7 @@ test('actual Pi: explicit Agent resume works without a current Goal but never by
   await client.prompt('TEST CALL goal {"action":"create","title":"暂停测试","maxTurns":1}');
   await client.prompt('TEST CALL goal {"action":"enable","id":2}');
   events = await client.prompt('/agents resume');
-  assert.ok(events.some((event) => event.method === 'notify' && String(event.message).includes('先明确 /goal resume')));
+  assert.ok(events.some((event) => event.method === 'notify' && String(event.message).includes('先明确 /goal enable')));
   const entries = await client.entries() as any[];
   const goal = entries.findLast((entry) => entry.customType === 'pi-dag-workflow.goal').data;
   assert.equal(goal.run.paused, true); assert.equal(goal.run.used, 1);

@@ -31,7 +31,7 @@ test('actual Pi joint: Plan DAG, blocked dispatch, child files, manual acceptanc
   await call(client, 'todo', { action: 'update', id: 1, status: 'completed' });
   await call(client, 'goal', { action: 'create', title: '联合验收目标', maxTurns: 2 });
   await call(client, 'goal', { action: 'enable', id: 1 });
-  await call(client, 'goal', { action: 'pause' });
+  await call(client, 'goal', { action: 'disable' });
   const pausedUsed = (await state(client, GOAL_TYPE)).run.used;
   const ids: string[] = [];
   for (const [todoId, path, content] of [[2, 'left.txt', 'LEFT\n'], [3, 'right.txt', 'RIGHT\n']] as const) {

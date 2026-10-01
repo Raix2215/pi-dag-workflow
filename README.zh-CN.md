@@ -63,7 +63,7 @@ pi install https://github.com/<owner>/pi-dag-workflow
 | 任务展示 | `/todos paths`、`/todos flat`、`show`、`hide`、`view list`、`view dag` |
 | `/dag` | 实线依赖图；↑/↓、PgUp/PgDn、Home/End；Esc 返回 |
 | `/plan` | `start`、`off`、`status`；`tools 名称1,名称2` 明确信任额外只读工具，`tools none` 清空 |
-| `/goal` | `new 标题`、`enable #1`、`focus #1`、`switch #2`、`resume`、`off`、`pause`、`edit #1 标题`、`complete #1`、`delete #1`、`config` |
+| `/goal` | `new 标题`、`list`、`enable [ #1]`、`disable [ #1]`、`edit #1 标题`、`complete #1`、`delete #1`、`get #1`、`config`、`reset` |
 | `/agents` | `wait a1`、`send a1 消息`、`reply requestId 回答`、`cancel a1`、`remove a1`、`pause`、`resume` |
 | Profile | `/agents profiles`、`profile 名称 provider/model [thinking] [工具逗号列表]`、`unprofile 名称` |
 
@@ -71,7 +71,9 @@ pi install https://github.com/<owner>/pi-dag-workflow
 
 ### Goal 生命周期
 
-`new` 只记录 Goal，创建后保持暂停。`enable`、`focus`、`switch`、`resume` 是同一种激活：同一时间只有一个聚焦 Goal 在跑，已完成或已删除的 Goal 都不能重启——返工请新建一个。`pause`、`disable`、`off` 是同一种停止，并保留焦点，便于之后恢复。暂停后 `resume` 开启的是新一轮完整额度，而不是上一轮的剩余额度。切换 Goal 不会清空共用的 Todo 清单。暂停 Goal 不会杀死正在运行的子 Agent，停止它们请用 `/agents cancel`。
+`new` 只记录 Goal，创建后保持暂停。`enable` 是唯一的激活方式：聚焦某个 Goal；省略编号时重新启用当前目标。已完成或已删除的 Goal 都不能重启——返工请新建一个。`disable` 是唯一的停止方式，并保留焦点，便于之后重新启用。停用后再 `enable` 开启的是新一轮完整额度，而不是上一轮的剩余额度。启用另一个 Goal 不会清空共用的 Todo 清单；停用 Goal 也不会杀死正在运行的子 Agent，停止它们请用 `/agents cancel`。
+
+每个操作只有一个写法。旧版本接受过的同义词（`focus`、`switch`、`resume`、`pause`、`on`、`off`、`done`、`del`、`create`、`status`、`/plan exit`）现在会直接提示可用动作，而不再转交给模型。
 
 ## 模块选择
 

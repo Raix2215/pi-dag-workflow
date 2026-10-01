@@ -9,7 +9,7 @@ export const PLAN_GUIDANCE = "Plan mode: explore, read, search and ask questions
 export function planViolation(state: WorkflowState, tool: string, input: unknown, msg: Translator = chinese): string | undefined {
   if (!state.plan) return;
   if (["subagent_inspect", "subagent_wait", "subagent_cancel"].includes(tool)) return;
-  if (tool === "goal" && ["list", "get", "disable", "pause", "complete", "delete"].includes((input as { action?: string } | null)?.action ?? "")) return;
+  if (tool === "goal" && ["list", "get", "disable", "complete", "delete"].includes((input as { action?: string } | null)?.action ?? "")) return;
   if (["write", "edit", "bash", "powershell", "goal"].includes(tool) || tool.startsWith("subagent_")) return msg`Plan 中不允许执行 ${tool}；先 /plan off`;
   if (tool === "todo") {
     const params = input as { action?: string; status?: string } | null;

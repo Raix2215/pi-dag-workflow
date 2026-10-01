@@ -31,7 +31,7 @@ test('actual Pi: real focus header, shared budget reaches its cap and inspection
   entries = await client.entries(); state = goals(entries)!;
   assert.equal(state.run.used, 2); assert.equal(continuations(entries).length, 2);
   assert.equal(state.run.paused, true);
-  assert.ok(!(await call(client, { action: 'resume' })).isError);
+  assert.ok(!(await call(client, { action: 'enable' })).isError);
   assert.equal(continuations(await client.entries()).length, 4);
 });
 test('actual Pi: no-Todo research reports must be novel; repeats stop after three, completion is explicit', { timeout: 30000 }, async (t) => {
@@ -41,7 +41,7 @@ test('actual Pi: no-Todo research reports must be novel; repeats stop after thre
   assert.equal(state.run.paused, true); assert.match(state.run.reason!, /无新进展/);
   assert.equal(state.run.stalled, 3); assert.equal(continuations(entries).length, 4);
   assert.ok(!entries.some((entry: any) => entry.customType === STATE_TYPE), 'research does not require Todo creation');
-  await call(client, { action: 'create', title: '完成测试' }); await call(client, { action: 'switch', id: 2 });
+  await call(client, { action: 'create', title: '完成测试' }); await call(client, { action: 'enable', id: 2 });
   const completed = goals(await client.entries())!;
   assert.equal(completed.goals[1]!.status, 'completed'); assert.equal(completed.focusId, undefined);
 });
