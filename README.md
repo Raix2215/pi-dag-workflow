@@ -212,7 +212,8 @@ read-only researcher and an explicitly configured writer:
     {
       "name": "research",
       "thinking": "off",
-      "tools": ["read", "grep", "find", "ls"]
+      "tools": ["read", "grep", "find", "ls"],
+      "instructions": "Read before writing. Report file paths and line numbers, and never edit files."
     },
     {
       "name": "fast-edit",
@@ -228,6 +229,7 @@ read-only researcher and an explicitly configured writer:
 - `model` — `provider` and `id` of a model Pi already knows, spelled exactly as `/model` shows it (`anthropic/claude-sonnet-4-5` is an example). Omit `model` to inherit the model selected in the main session, as `research` does above.
 - `thinking` — `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. A model without reasoning support must use `off`.
 - `tools` — up to 8 child tools. `read`, `grep`, `find`, and `ls` are always available; `edit`, `write`, and `bash` are the optional built-ins. Arbitrary extension tools from the main session are never copied.
+- `instructions` — optional guidance, up to 2000 characters, that becomes a system prompt section in every child this profile dispatches (`dag_profile`, next to the built-in child rules). Use it for how this kind of work is done; it cannot grant permissions the task does not have. It travels through the child's environment, is read once and removed there, and never reaches the model through `subagent_inspect`.
 
 The same profiles are editable from a session with `/agents profile name provider/model [thinking] [comma-tools]`
 and `/agents unprofile name`. The file holds at most 64 profiles, is limited to 64 KiB, allows no unknown

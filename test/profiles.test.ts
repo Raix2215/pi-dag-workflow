@@ -68,3 +68,41 @@ test("profile file contains only configuration, load/save validate and load is a
     await assert.rejects(new ProfileStore({ registry }).save(), /No profile/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("profile instructions are normalized, bounded and carried into the resolved profile", () => {
+  const store = new ProfileStore({ registry });
+  store.set({ name: "browser", model, thinking: "high", instructions: "First line.\r\nSecond line.  " });
+  assert.equal(store.get("browser")!.instructions, "First line.\nSecond line.");
+  assert.equal(store.resolve("browser").instructions, "First line.\nSecond line.");
+  // Profiles without instructions stay exactly as before.
+  store.set({ name: "plain", model });
+  assert.equal("instructions" in store.resolve("plain"), false);
+  assert.throws(() => store.set({ name: "bad", instructions: "" }), /contain text/);
+  assert.throws(() => store.set({ name: "bad", instructions: "   " }), /contain text/);
+  assert.throws(() => store.set({ name: "bad", instructions: 42 as unknown as string }), /must be text/);
+  assert.throws(() => store.set({ name: "bad", instructions: "x".repeat(2001) }), /at most 2000/);
+  assert.equal(store.resolve("browser").thinking, "high");
+});
+
+test("instructions survive a save/load round trip and never leak into other profiles", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-dag-profiles-"));
+  try {
+    const path = join(root, "profile.json");
+    const first = new ProfileStore({ path, registry });
+    first.set({ name: "browser", model, instructions: "Stay read-only unless asked otherwise." });
+    first.set({ name: "other", model });
+    await first.save();
+    const reloaded = new ProfileStore({ path, registry });
+    await reloaded.load();
+    assert.equal(reloaded.get("browser")!.instructions, "Stay read-only unless asked otherwise.");
+    assert.equal("instructions" in reloaded.get("other")!, false);
+    // A profile re-saved through the command path keeps the text that was already stored.
+    const existing = reloaded.get("browser")!.instructions;
+    reloaded.set({ name: "browser", model, thinking: "xhigh", ...(existing ? { instructions: existing } : {}) });
+    await reloaded.save();
+    const again = new ProfileStore({ path, registry });
+    await again.load();
+    assert.equal(again.get("browser")!.instructions, "Stay read-only unless asked otherwise.");
+    assert.equal(again.get("browser")!.thinking, "xhigh");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -194,7 +194,8 @@ Plan 模式、Goal 与子 Agent Job 并不共享：它们各自保存在本插�
     {
       "name": "research",
       "thinking": "off",
-      "tools": ["read", "grep", "find", "ls"]
+      "tools": ["read", "grep", "find", "ls"],
+      "instructions": "先读后写。报告文件路径与行号，不要修改任何文件。"
     },
     {
       "name": "fast-edit",
@@ -210,6 +211,7 @@ Plan 模式、Goal 与子 Agent Job 并不共享：它们各自保存在本插�
 - `model` —— 必须是 Pi 已认识的 `provider` 与 `id`，写法与 `/model` 中显示的一致（`anthropic/claude-sonnet-4-5` 只是示例）。省略 `model` 表示继承主会话当前所选模型，如上面的 `research`。
 - `thinking` —— `off`（默认）、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；不支持推理的模型只能用 `off`。
 - `tools` —— 最多 8 个子 Agent 工具。`read`、`grep`、`find`、`ls` 始终可用，`edit`、`write`、`bash` 是可选的额外内置工具；主会话中的任意扩展工具不会被复制。
+- `instructions` —— 可选提示词，上限 2000 字符，会成为该 profile 派发的每个子 Agent 的一个系统提示词段（`dag_profile`，与内置子 Agent 规则并列）。用来固化“这类活该怎么干”；它不会赋予任务之外的权限。文本通过子进程环境变量传递、读取一次即删除，也不会经 `subagent_inspect` 出现在模型上下文里。
 
 同一份 Profile 也可以在会话里用 `/agents profile 名称 provider/model [thinking] [工具逗号列表]` 修改，用 `/agents unprofile 名称` 删除。文件最多保存 64 个 Profile、上限 64 KiB、不允许未知字段，从 `/agents` 保存时以仅属主可读写的权限写入。
 

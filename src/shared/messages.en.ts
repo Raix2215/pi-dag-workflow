@@ -216,7 +216,7 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '会话已切换，派发已停止': 'Session switched; dispatch stopped',
   'recipient 与 requestId 需且只能提供一个': 'Provide exactly one of recipient or requestId',
   '子 Agent 状态／消息／取消与 Profile；也可直接描述需求': 'Child agent status/messages/cancel and Profiles; you can also just describe what you need',
-  '/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset': '/agents list · wait jobId · send jobId message · reply requestId answer · cancel/remove jobId · pause/resume · profiles · profile name provider/model [thinking] [comma-separated tools] · unprofile name · reset',
+  '/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset · Profile 的 instructions 写在配置文件里，成为该 profile 子 Agent 的系统提示词段': '/agents list · wait jobId · send jobId message · reply requestId answer · cancel/remove jobId · pause/resume · profiles · profile name provider/model [thinking] [comma-separated tools] · unprofile name · reset · a profile "instructions" lives in the config file and becomes a system prompt section in its children',
   '清除 Agent 运行记录？': 'Clear Agent runtime records?',
   '先停止所有子 Agent，不撤销文件修改；历史记录保留。': 'Stops all child agents first without reverting file changes; history is kept.',
   '已暂停结果自动唤醒；子 Agent 仍可能运行，停止请用 /agents cancel': 'Paused automatic result wake-ups; child agents may still run, use /agents cancel to stop them',

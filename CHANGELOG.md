@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-10-02
+
+### Added
+
+- **Profile `instructions`** — a profile can now carry up to 2000 characters of guidance that every child it dispatches receives as its own system prompt section (`dag_profile`, next to the built-in child rules). Use it for how-that-kind-of-work-is-done text such as bridge endpoints, allowed actions, or reporting rules. The text rides the child's environment, is read once and deleted there, never reaches the model through `subagent_inspect`, and survives a profile re-saved with `/agents profile`.
+
 ## [0.1.6] - 2026-10-02
 
 ### Changed

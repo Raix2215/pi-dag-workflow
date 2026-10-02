@@ -7,8 +7,8 @@ const OPTIONAL_TOOLS = new Set(["bash", "edit", "write", "powershell"]);
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = typeof THINKING_LEVELS[number];
 export interface ModelRef { provider: string; id: string }
-export interface Profile { name: string; model?: ModelRef; thinking?: ThinkingLevel; tools?: string[] }
-export interface ResolvedProfile { name: string; model: ModelRef; thinking: ThinkingLevel; tools: string[] }
+export interface Profile { name: string; model?: ModelRef; thinking?: ThinkingLevel; tools?: string[]; instructions?: string }
+export interface ResolvedProfile { name: string; model: ModelRef; thinking: ThinkingLevel; tools: string[]; instructions?: string }
 export interface ProfileRegistry { find(provider: string, id: string): unknown }
 export interface ProfileStoreOptions { path?: string; registry: ProfileRegistry; trustedTools?: readonly string[] }
 
@@ -46,9 +46,21 @@ export class ProfileStore {
     for (const tool of value as string[]) if (!allowed.has(tool)) throw new Error(`Child tool is not trusted or supported: ${tool}`);
     return [...new Set(value as string[])];
   }
+  /**
+   * Free-form guidance for the children this profile dispatches. It travels to the child process
+   * through the environment and becomes a system prompt section there, so it is bounded and
+   * normalized before it ever leaves this store.
+   */
+  instructions(value: unknown): string {
+    if (typeof value !== "string") throw new Error("instructions must be text");
+    const text = value.replace(/\r\n?/g, "\n").trim();
+    if (!text) throw new Error("instructions must contain text");
+    if (text.length > 2000) throw new Error("instructions must be at most 2000 characters");
+    return text;
+  }
   private validate(value: unknown): Profile {
     const record = object(value);
-    exactKeys(record, ["name", "model", "thinking", "tools"]);
+    exactKeys(record, ["name", "model", "thinking", "tools", "instructions"]);
     const name = nonempty(record.name, "profile name");
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$/.test(name) || name === "inherit") throw new Error("Profile name must be 1–48 letters, digits, '_' or '-' (inherit is reserved)");
     if (record.thinking !== undefined && !THINKING_LEVELS.includes(record.thinking as ThinkingLevel)) throw new Error("Invalid thinking level");
@@ -59,6 +71,7 @@ export class ProfileStore {
       ...(model === undefined ? {} : { model }),
       ...(record.thinking === undefined ? {} : { thinking: record.thinking as ThinkingLevel }),
       ...(record.tools === undefined ? {} : { tools: this.validateTools(record.tools) }),
+      ...(record.instructions === undefined ? {} : { instructions: this.instructions(record.instructions) }),
     };
   }
   list(): Profile[] { return structuredClone([...this.profiles.values()]); }
@@ -73,7 +86,7 @@ export class ProfileStore {
     const model = this.model(selected);
     const thinking = profile?.thinking ?? 'off';
     if (thinking !== 'off' && (this.options.registry.find(model.provider, model.id) as { reasoning?: boolean } | undefined)?.reasoning === false) throw new Error('Selected model does not support thinking; use off');
-    return { name: profile?.name ?? "inherit", model, thinking, tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...CORE_TOOLS]) };
+    return { name: profile?.name ?? "inherit", model, thinking, tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...CORE_TOOLS]), ...(profile?.instructions ? { instructions: profile.instructions } : {}) };
   }
   async load(): Promise<void> {
     if (!this.options.path) return;

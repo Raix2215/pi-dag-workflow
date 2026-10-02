@@ -48,6 +48,7 @@ process.stdin.on('data', chunk => {
         setTimeout(()=> { emit({type:'tool_execution_end',toolCallId:'two',toolName:'read'}); end('done'); settled(); }, 100);
       }
       else if (command.message === 'HOLD') { /* deliberately no completion */ }
+      else if (command.message.startsWith('ENV:')) { end(`env ${command.message.slice(4)}=${process.env[command.message.slice(4)] ?? ''}`); settled(); }
       else { end(command.message); settled(); }
     } else response({});
   }

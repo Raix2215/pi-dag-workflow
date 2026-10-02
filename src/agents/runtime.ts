@@ -236,7 +236,7 @@ export class AgentRuntime {
       }
       const childExtension = fileURLToPath(new URL("./child.ts", import.meta.url));
       const args = ["--mode", "rpc", "--no-session", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve", "--provider", profile.model.provider, "--model", profile.model.id, "--tools", [...profile.tools, "subagent_send"].join(","), "-e", childExtension, ...(this.options.testExtensions ?? []).flatMap((path) => ["-e", path])];
-      job.pipe = new RpcPipe(cli, args, this.options.cwd, { ...process.env, ...this.options.childEnv, ...bootstrapEnv, PI_OFFLINE: "1", PI_DAG_CHILD: "1" }, (record) => this.record(job, record), (error) => { void this.finish(job, "failed", "Child process failed", error.message); });
+      job.pipe = new RpcPipe(cli, args, this.options.cwd, { ...process.env, ...this.options.childEnv, ...bootstrapEnv, ...(profile.instructions ? { PI_DAG_AGENT_PROFILE_PROMPT: profile.instructions } : {}), PI_OFFLINE: "1", PI_DAG_CHILD: "1" }, (record) => this.record(job, record), (error) => { void this.finish(job, "failed", "Child process failed", error.message); });
       await job.pipe.command("get_state");
       if (job.finishing) return structuredClone(job.summary);
       // CLI model lookup permits fuzzy IDs. RPC set_model must resolve the exact registry ID.

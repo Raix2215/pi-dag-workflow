@@ -268,7 +268,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   pi.registerCommand("agents", { description: msg("子 Agent 状态／消息／取消与 Profile；也可直接描述需求"), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
-      if (action === 'help') { ctx.ui.notify(msg('/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset'), 'info'); return; }
+      if (action === 'help') { ctx.ui.notify(msg('/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset · Profile 的 instructions 写在配置文件里，成为该 profile 子 Agent 的系统提示词段'), 'info'); return; }
       if (action === "reset") {
         if (!ctx.hasUI || !await ctx.ui.confirm(msg("清除 Agent 运行记录？"), msg("先停止所有子 Agent，不撤销文件修改；历史记录保留。"))) return;
         restoring = true; clearDelivery(); clearActivity(); await runtime?.shutdown();
@@ -288,7 +288,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         const [name, model, thinking, tools] = parts;
         if (!name || !model || parts.length > 4 || !model.includes("/")) throw new Error(msg("/agents profile 名称 provider/model [thinking] [工具逗号列表]"));
         const split = model.indexOf("/");
-        profiles!.set({ name, model: { provider: model.slice(0, split), id: model.slice(split + 1) }, ...(thinking ? { thinking: thinking as NonNullable<Profile["thinking"]> } : {}), ...(tools ? { tools: tools.split(",") } : {}) });
+        profiles!.set({ name, model: { provider: model.slice(0, split), id: model.slice(split + 1) }, ...(thinking ? { thinking: thinking as NonNullable<Profile["thinking"]> } : {}), ...(tools ? { tools: tools.split(",") } : {}), ...(profiles!.get(name)?.instructions ? { instructions: profiles!.get(name)!.instructions } : {}) });
         await profiles!.save(); ctx.ui.notify(msg`已保存 Profile ${name}`, "info"); return;
       }
       if (action === "unprofile") { ready(ctx); if (parts.length !== 1) throw new Error(msg("/agents unprofile 名称")); profiles!.delete(parts[0]!); await profiles!.save(); return; }

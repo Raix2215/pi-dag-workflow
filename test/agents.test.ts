@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { AgentRuntime, resolvePiCli, type AgentNotice, type JobSummary } from "../src/agents/runtime.ts";
 import { ProfileStore } from "../src/agents/profiles.ts";
+import { takeProfilePrompt } from "../src/agents/child.ts";
 
 const model = { provider: "dag-test", id: "scripted" };
 const offline = fileURLToPath(new URL("./fixtures/offline-model.ts", import.meta.url));
@@ -405,4 +406,25 @@ test("the panel label is one bounded line of the spawn task and restore sanitize
       } finally { await bare.shutdown(); }
     } finally { await restored.shutdown(); }
   } finally { await ctx.close(); }
+});
+
+test("profile instructions reach the child process through the environment exactly once", async () => {
+  const ctx = await setup(true);
+  try {
+    ctx.profiles.set({ name: "browser", model, instructions: "Stay read-only unless the task says otherwise." });
+    const job = await ctx.runtime.spawn({ task: "ENV:PI_DAG_AGENT_PROFILE_PROMPT", profile: "browser" });
+    const result = await ctx.runtime.wait(job.id, { timeout: 5 });
+    assert.match(result.output, /env PI_DAG_AGENT_PROFILE_PROMPT=Stay read-only unless the task says otherwise\./);
+    // A profile without instructions leaves the variable unset, so children inherit no guidance.
+    const plain = await ctx.runtime.spawn({ task: "ENV:PI_DAG_AGENT_PROFILE_PROMPT" });
+    assert.match((await ctx.runtime.wait(plain.id, { timeout: 5 })).output, /env PI_DAG_AGENT_PROFILE_PROMPT=\s*$/);
+  } finally { await ctx.close(); }
+});
+
+test("the child reads its profile instructions once and removes them from its environment", () => {
+  const env: NodeJS.ProcessEnv = { PI_DAG_AGENT_PROFILE_PROMPT: "Use the Chrome bridge over curl." };
+  assert.equal(takeProfilePrompt(env), "Use the Chrome bridge over curl.");
+  assert.equal("PI_DAG_AGENT_PROFILE_PROMPT" in env, false, "a leftover variable would leak to further child processes");
+  assert.equal(takeProfilePrompt({}), undefined);
+  assert.equal(takeProfilePrompt({ PI_DAG_AGENT_PROFILE_PROMPT: "   " }), undefined);
 });
