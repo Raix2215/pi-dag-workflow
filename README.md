@@ -102,7 +102,9 @@ task that still depends on running work belongs to the parent until that work se
 is capped at eight children; children never spawn children.
 
 Ask the child to send a short interim message as each step of a chain finishes, then advance the
-task statuses from those messages; the final report is still what you verify. Completing a task also
+task statuses from those messages; the final report is still what you verify. Bind the chain to the
+task it must finish last: a child that has already reported stops blocking that task's completion,
+while every other edit, delete, or clear still waits for the child to stop. Completing a task also
 prints a one-line hint naming the tasks it just unblocked, and the plugin never starts them on its
 own.
 

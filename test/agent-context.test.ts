@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fragmentContext } from "../src/agents/context.ts";
 import { takeChildContext } from "../src/agents/child.ts";
+import { claimedBy } from "../src/agents/register.ts";
 import type { Todo } from "../src/todos/state.ts";
 
 const step = (id: number, key: string, subject: string, status: Todo["status"], position: number, run = 1): Todo => ({ id, subject, status, blockedBy: [], metadata: { preset: "browser-check", run, key, step: position } });
@@ -40,4 +41,19 @@ test("the child reads the brief once and removes it from its environment", () =>
   assert.equal("PI_DAG_AGENT_CONTEXT" in env, false);
   assert.equal(takeChildContext({}), undefined);
   assert.equal(takeChildContext({ PI_DAG_AGENT_CONTEXT: "  " }), undefined);
+});
+
+test("a child that already reported no longer blocks completing its task", () => {
+  const job = { id: "a1", todoId: 5 };
+  const none = new Set<string>();
+  assert.equal(claimedBy(job, { action: "update", id: 5, status: "completed" }, { adjusted: none, reported: true }), false);
+  assert.equal(claimedBy(job, { action: "update", id: 5, status: "completed" }, { adjusted: none, reported: false }), true);
+  // Every other change still waits for the child: reopening, editing, deleting, clearing.
+  assert.equal(claimedBy(job, { action: "update", id: 5, status: "pending" }, { adjusted: none, reported: true }), true);
+  assert.equal(claimedBy(job, { action: "update", id: 5, subject: "改名" }, { adjusted: none, reported: true }), true);
+  assert.equal(claimedBy(job, { action: "update", id: 5, subject: "改名" }, { adjusted: new Set(["a1"]), reported: false }), false);
+  assert.equal(claimedBy(job, { action: "delete", id: 5 }, { adjusted: none, reported: true }), true);
+  assert.equal(claimedBy(job, { action: "clear" }, { adjusted: none, reported: true }), true);
+  // Read-only actions never reach this guard, but the predicate stays conservative if they do.
+  assert.equal(claimedBy(job, { action: "list" }, { adjusted: none, reported: false }), true);
 });

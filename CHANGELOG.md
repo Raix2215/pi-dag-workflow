@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-10-02
+
+### Changed
+
+- **A child that already reported stops blocking its task's completion** — with one child carrying a serial chain, the guard blocked the parent from completing the chain's first task until the child exited, which contradicted advancing statuses from interim reports. An active child no longer blocks a `completed` status once it has sent at least one interim report; reopening, editing, deleting, or clearing still waits for the child to stop, and a silent child still blocks completion.
+- **A chain binds to its last task** — the dispatch guidance now says to bind a serial chain to the task it must finish last, so earlier steps stay free to advance.
+
 ## [0.1.11] - 2026-10-02
 
 ### Added

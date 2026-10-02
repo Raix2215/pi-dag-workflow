@@ -148,6 +148,8 @@ interface LiveJob {
   summary: JobSummary; output: string; requests: Map<string, string>; usage: AgentUsage;
   activity?: JobActivity; activeTools: Map<string, { tool: string; since: number }>; pipe?: RpcPipe; timer?: NodeJS.Timeout; listeners: Set<() => void>; finishing?: Promise<void>;
   sawEnd: boolean; lastStop?: string; lastError?: string; settling: boolean; settleAgain: boolean; generation: number; sends: number;
+  /** Reports the child sent while it kept working; a bound task may be closed once it reported. */
+  messages: number;
 }
 function seconds(value: number | undefined, fallback: number, max: number): number {
   const result = value ?? fallback;
@@ -201,6 +203,8 @@ export class AgentRuntime {
   activities(): { jobId: string; activity: JobActivity }[] {
     return [...this.jobs.values()].filter((job): job is LiveJob & { activity: JobActivity } => Boolean(job.activity)).map((job) => ({ jobId: job.summary.id, activity: structuredClone(job.activity) }));
   }
+  /** Interim reports this job sent so far; 0 means it has not reported on its work yet. */
+  reports(jobId: string): number { return this.jobs.get(jobId)?.messages ?? 0; }
   private job(id: string): LiveJob { const job = this.jobs.get(id); if (!job) throw new Error(`Unknown agent: ${id}`); return job; }
   private changed(job?: LiveJob): void {
     if (job) { job.summary.pendingRequests = job.requests.size; for (const listener of job.listeners) listener(); }
@@ -221,7 +225,7 @@ export class AgentRuntime {
     const timeout = seconds(input.timeout, DEFAULT_TIMEOUT, 86400);
     const label = jobLabel(input.task);
     const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
-    const job: LiveJob = { summary, output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 };
+    const job: LiveJob = { summary, output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0, messages: 0 };
     this.jobs.set(summary.id, job);
     job.timer = setTimeout(() => { void this.finish(job, "failed", "Agent deadline exceeded"); }, timeout * 1000);
     this.changed(job); // Reserve the slot before the first await; concurrent spawn cannot exceed the limit.
@@ -289,6 +293,7 @@ export class AgentRuntime {
       const id = record.id;
       if (record.method === "notify" && typeof record.message === "string" && record.message.startsWith(CHILD_NOTICE_PREFIX)) {
         const text = record.message.slice(CHILD_NOTICE_PREFIX.length);
+        job.messages += 1;
         this.append(job, `[Report] ${text}\n`); this.notice(job, { kind: "message", message: text });
       } else if (record.method === "input" && id && typeof record.title === "string" && record.title.startsWith(CHILD_QUESTION_PREFIX)) {
         if (job.requests.size >= 16) { void this.finish(job, "failed", "Too many pending child questions"); return; }
@@ -435,7 +440,7 @@ export class AgentRuntime {
         this.sequence = Math.max(this.sequence, Number(summary.id.slice(1)));
         const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
         const usage = { requests: number(record.usage?.requests), input: number(record.usage?.input), output: number(record.usage?.output), estimatedCost: number(record.usage?.estimatedCost) };
-        this.jobs.set(summary.id, { summary, usage, output, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 });
+        this.jobs.set(summary.id, { summary, usage, output, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, messages: 0, sends: 0 });
       }
     } finally { this.unavailable = false; this.restoring = false; }
     this.changed();

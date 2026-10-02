@@ -421,6 +421,19 @@ test("profile instructions reach the child process through the environment exact
   } finally { await ctx.close(); }
 });
 
+test("interim reports are counted per job so a bound task can be closed", async () => {
+  const ctx = await setup(true, reportFixture);
+  try {
+    const reported = await ctx.runtime.spawn({ task: "REPORT" });
+    await ctx.runtime.wait(reported.id, { timeout: 5 });
+    assert.equal(ctx.runtime.reports(reported.id), 1);
+    assert.equal(ctx.runtime.reports("a404"), 0);
+    const silent = await ctx.runtime.spawn({ task: "SILENT" });
+    await ctx.runtime.wait(silent.id, { timeout: 5 });
+    assert.equal(ctx.runtime.reports(silent.id), 0);
+  } finally { await ctx.close(); }
+});
+
 test("a fragment brief reaches the child process and nothing is sent when unset", async () => {
   const ctx = await setup(true);
   try {

@@ -24,6 +24,19 @@ const seconds = Type.Number({ exclusiveMinimum: 0, maximum: 86400 });
 const text = Type.String({ minLength: 1 });
 
 /** Registration is side-effect-free; session hooks own runtime resources. */
+/**
+ * Whether an active child blocks this todo mutation. A child that already sent an interim report
+ * may have its task completed while it keeps working on later steps; every other edit, and any
+ * task the child has not reported on, still waits for the child to stop.
+ */
+export function claimedBy(job: { id: string; todoId?: number }, params: TodoParams, options: { adjusted: ReadonlySet<string>; reported: boolean }): boolean {
+  if (params.action === "update") {
+    if (params.status === "completed" && options.reported) return false;
+    if (params.status === undefined && options.adjusted.has(job.id)) return false;
+  }
+  return true;
+}
+
 export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const msg = hooks.msg ?? chinese;
   let runtime: AgentRuntime | undefined;
@@ -209,7 +222,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     promptGuidelines: [
       "Delegate work that is independent and verifiable, such as research or isolated edits; keep the critical path and final verification in the main session.",
       "Pass todoId to bind a job to its task and choose the profile that fits the job. A returned report never completes the task by itself: verify the work first.",
-      "Give one child a serial chain (A then B then C) when the steps share context, and ask it to send a short interim message as each step finishes so you can advance the task statuses; start parallel children for independent branches. Dispatch a task only when its prerequisites are already completed: never ask a child to wait on work another child is doing.",
+      "Give one child a serial chain (A then B then C) when its steps share context, bind the chain to the task it must finish last so the earlier steps stay free to advance, and ask it to send a short interim message as each step finishes. Start parallel children for independent branches, and dispatch a task only when its prerequisites are completed: never ask a child to wait on work another child is doing.",
       "Set context:true when the task belongs to a task fragment, so the child receives its step position, the whole fragment with statuses, and the report heads of earlier steps instead of rediscovering them.",
     ],
     parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach the task's fragment state and earlier step report heads" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
@@ -316,7 +329,8 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       if (params.action === "list" || params.action === "get" || params.action === "create" || claiming !== undefined && params.action === "update" && params.id === claiming) return;
       const jobs = (runtime?.inspect() ?? []).filter(active).filter((job) => params.action === "clear" || job.todoId === params.id);
       for (const job of jobs) {
-        if (params.action !== "update" || params.status !== undefined || !adjusted.has(job.id)) throw new Error(msg`任务 #${job.todoId} 关联活动 ${job.id}；内容修改先发送明确调整信息，完成／删除／清空先停止该 Agent`);
+        const reported = (runtime?.reports(job.id) ?? 0) > 0;
+        if (claimedBy(job, params, { adjusted, reported })) throw new Error(msg`任务 #${job.todoId} 关联活动 ${job.id}；内容修改先发送明确调整信息；未收到它的汇报前不能完成，删除／清空请先停止该 Agent`);
       }
     },
     afterTodoMutation(params: TodoParams) { for (const job of runtime?.inspect() ?? []) if (job.todoId === params.id) adjusted.delete(job.id); },
