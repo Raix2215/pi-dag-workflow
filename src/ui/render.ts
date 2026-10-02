@@ -172,12 +172,17 @@ function agentRank(job: AgentView): number {
   return pendingReport(job) ? 1 : 2;
 }
 
+/** Same meaning as the Todo root mark: solid while the block still holds unfinished business. */
+function agentRootMark(jobs: readonly AgentView[]): string {
+  return jobs.some((job) => ACTIVE_LIVE.has(job.status) || job.status === "waiting" || pendingReport(job)) ? "●" : "○";
+}
+
 function agentSection(jobs: readonly AgentView[], width: number, theme?: Theme, msg: Translator = chinese): string[] {
   const unbound = jobs.filter((job) => job.todoId === undefined && (job.status !== "completed" || job.reportDelivery === "pending"));
   if (!unbound.length) return [];
   const ordered = [...unbound].sort((a, b) => agentRank(a) - agentRank(b));
   const shown = ordered.slice(0, AGENT_ROWS);
-  const lines = [bounded(tint(`\uf0c0 ${msg`Subagents · ${unbound.length}`}`, "accent", theme), width, theme)];
+  const lines = [bounded(tint(`${agentRootMark(unbound)} \uf0c0 ${msg`Subagents · ${unbound.length}`}`, "accent", theme), width, theme)];
   for (const [index, job] of shown.entries()) {
     const prefix = index === shown.length - 1 && shown.length === ordered.length ? "└─ " : "├─ ";
     const live = job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
@@ -186,7 +191,7 @@ function agentSection(jobs: readonly AgentView[], width: number, theme?: Theme, 
     // Narrow terminals keep the job and its state; the profile and the excerpt are presentation.
     const compact = visibleWidth(prefix) + visibleWidth(clean(job.id)) + statusWidth + 2 > width;
     const owner = compact || !job.profile ? clean(job.id) : `${clean(job.id)} · ${clean(job.profile)}`;
-    const head = tint(prefix, "dim", theme) + tint(owner, "dim", theme);
+    const head = tint(prefix, "dim", theme) + tint(owner, "muted", theme);
     const room = width - visibleWidth(prefix + owner) - statusWidth - 2;
     const excerpt = room >= 4 ? clip(clean(job.label ?? ""), room) : "";
     const text = excerpt ? ` ${tint(excerpt, "accent", theme)}` : "";

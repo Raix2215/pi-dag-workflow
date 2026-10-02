@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-10-02
+
+### Changed
+
+- **The Subagents block reads like the Todo block** — it gained the same root mark (`●` while the block still holds unfinished business, `○` once only settled jobs are left), and each row's job reference (`a1 · fast`) uses the `muted` color of a Todo owner bracket instead of `dim`. The right-hand status bracket keeps its per-state color.
+
 ## [0.1.4] - 2026-10-02
 
 ### Changed

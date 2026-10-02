@@ -39,7 +39,9 @@ test("semantic theme colors do not change terminal width or corrupt user content
   assert.ok(withGoal[0]!.includes(goalBlock), "Goal block uses the success color");
   assert.ok(withGoal[0]!.startsWith(theme.getFgAnsi("accent")), "Todo keeps the accent color");
   const withFree = renderTasks({ ...emptyState(), tasks: [] }, 120, { theme, jobs: [{ id: "a1", profile: "fast", status: "running", label: "独立任务" }] });
-  assert.ok(withFree[0]!.includes(theme.fg("accent", "\uf0c0 Subagents · 1")), "the Subagents block shares the Todo accent color");
+  assert.ok(withFree[0]!.includes(theme.fg("accent", "● \uf0c0 Subagents · 1")), "the Subagents block shares the Todo accent color");
+  assert.ok(withFree[1]!.includes(theme.fg("muted", "a1 · fast")), "the job reference uses the same muted color as a Todo owner bracket");
+  assert.ok(withFree[1]!.includes(theme.fg("accent", "独立任务")), "the excerpt keeps the Todo title accent");
   const dag = renderDag(state, 120, theme, "#1 目标标题");
   assert.ok(dag[0]!.includes(theme.fg("error", "󰏫 Plan [只读]")) && dag[0]!.includes(goalBlock), "the DAG header shares the same colors");
 });

@@ -12,9 +12,18 @@ const lines = (jobs: readonly AgentView[], width = 80, state = base, translate: 
 
 test("a job spawned without a Todo gets its own section below the list", () => {
   const rendered = lines([free("a1")]);
-  assert.match(rendered, /\uf0c0 Subagents · 1/);
+  assert.match(rendered, /● \uf0c0 Subagents · 1/);
   assert.match(rendered, /[├└]─ a1 · fast .*调研现有实现/);
   assert.match(rendered, /\[󰥔 运行中\]/);
+});
+
+test("the root mark follows the Todo rule: solid while unfinished work remains", () => {
+  assert.match(lines([free("a1")]), /● \uf0c0/);
+  assert.match(lines([free("a1", "waiting")]), /● \uf0c0/);
+  assert.match(lines([free("a1", "completed", { reportDelivery: "pending" })]), /● \uf0c0/);
+  // Only settled jobs are left, so the block reads as closed.
+  assert.match(lines([free("a1", "failed")]), /○ \uf0c0/);
+  assert.match(lines([free("a1", "cancelled"), free("a2", "interrupted")]), /○ \uf0c0/);
 });
 
 test("the section stays away when no unbound job needs attention", () => {
@@ -33,7 +42,7 @@ test("delivered reports stay out while pending handoff, failures and interruptio
     free("a4", "cancelled"),
     free("a5", "completed", { reportDelivery: "delivered" }),
   ]);
-  assert.match(rendered, /\uf0c0 Subagents · 4/);
+  assert.match(rendered, /● \uf0c0 Subagents · 4/);
   assert.match(rendered, /\[󰥔 待交付\]/);
   assert.match(rendered, /\[󰅙 失败\]/);
   assert.match(rendered, /\[󰙦 已中断\]/);
@@ -47,7 +56,7 @@ test("live work is listed before closed jobs and the section is bounded", () => 
   const positions = ["a2", "a3", "a4", "a5"].map((id) => rendered.indexOf(`─ ${id} `));
   assert.ok(positions.every((index) => index >= 0), `live work fills the section first: ${rendered}`);
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
-  assert.match(rendered, /\uf0c0 Subagents · 6/);
+  assert.match(rendered, /● \uf0c0 Subagents · 6/);
   assert.match(rendered, /└─ … 隐藏 2 项/);
   // The clipped jobs are the closed one and the waiting handoff, never live work.
   assert.doesNotMatch(rendered, /a1 · fast/);
@@ -56,7 +65,7 @@ test("live work is listed before closed jobs and the section is bounded", () => 
 
 test("an unbound job alone still renders the panel when the task list is empty", () => {
   const rendered = lines([free("a1")], 80, { ...emptyState() });
-  assert.match(rendered, /\uf0c0 Subagents · 1/);
+  assert.match(rendered, /● \uf0c0 Subagents · 1/);
   assert.doesNotMatch(rendered, /Todo/);
 });
 

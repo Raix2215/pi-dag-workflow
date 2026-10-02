@@ -59,7 +59,7 @@ dependency graph. Both are rendered from the one Todo list.
       ├─ #3        ○ Add regression tests   [Main session] [Pending]
       └─ #4        ○ Update the CLI docs    [Main session] [Pending]
          └─ #5<-#3 ○ Benchmark 10k lines    [Main session] [Pending]
- Subagents · 2
+●  Subagents · 2
 ├─ a2 · fast   Survey the flaky CI job        [󰧑 Thinking]
 └─ a3 · codex  Draft the migration guide      [󰥔 Pending delivery]
 ```
@@ -70,7 +70,8 @@ child job; the status column shows what it is doing right now.
 A child spawned without a `todoId` has no task row to report on, so those jobs fill the `Subagents` section
 below the list: live work first, then reports waiting for handoff, then failed, cancelled, or interrupted
 jobs. The section stays hidden while no such job needs attention and never repeats a job a task row
-already shows.
+already shows. Its root mark follows the same rule as the Todo block: solid while the block still holds
+unfinished business, hollow once only settled jobs are left.
 
 ```text
 ●  Todo (1/3) DAG · 󰓾 Goal: #1 Ship the parser rewrite
