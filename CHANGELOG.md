@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-10-02
+
+### Added
+
+- **A panel section for children spawned without a Todo** — `subagent_spawn` takes an optional `todoId`, and a job without one had no row to report on. The panel now lists those jobs below the list under `\uf0c0 Agents · N`: live work first, then reports waiting for handoff, then failed, cancelled, or interrupted jobs. Each row carries the job id, its profile, a one-line excerpt of its task, and its live status. Jobs a task row already shows stay out, delivered reports stay out, the section hides itself while nothing needs attention, it is capped at four rows with a hidden counter, and narrow terminals drop the excerpt before the state.
+
+### Changed
+
+- **Jobs remember a one-line task excerpt** — `JobSummary.label` keeps the panel excerpt with the job, so a restored session still explains what an interrupted child was doing. `subagent_inspect` stays private-safe: the excerpt never reaches the model through inspection, and restored labels are re-sanitized (escape sequences removed, whitespace collapsed, 80 columns at most).
+
 ## [0.1.2] - 2026-10-02
 
 ### Changed

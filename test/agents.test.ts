@@ -377,3 +377,32 @@ test("Unix process-group cancellation kills tool descendants even if they ignore
     assert.equal(ctx.runtime.activeCount(), 0);
   } finally { await ctx.close(); }
 });
+
+test("the panel label is one bounded line of the spawn task and restore sanitizes foreign text", async () => {
+  const ctx = await setup(true);
+  try {
+    const dirty = `第一行\n第二行\u0007\u001b[31m红\u001b[0m ${"长".repeat(120)}`;
+    const job = await ctx.runtime.spawn({ task: dirty });
+    const label = ctx.runtime.viewSummaries()[0]!.label!;
+    assert.match(label, /^第一行 第二行红/);
+    assert.doesNotMatch(label, /[\r\n\u0007\u001b]|\[31m|\[0m/);
+    assert.equal(label.length, 80);
+    // The model-facing inspect stays private-safe; only persistence and the panel keep the excerpt.
+    assert.equal("label" in ctx.runtime.inspect(job.id)[0]!, false);
+    assert.equal(ctx.runtime.exportSummaries()[0]!.label, label);
+    assert.equal(ctx.runtime.viewSummaries()[0]!.label, label);
+    const records = ctx.runtime.exportRecords();
+    const restored = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-cannot-spawn.mjs") });
+    try {
+      await restored.importSummaries([{ ...records[0]!, label: "跨行\n\u001b[32m标签" } as never]);
+      assert.equal(restored.viewSummaries()[0]!.label, "跨行 标签");
+      // A record without a label restores without one.
+      const bare = new AgentRuntime({ cwd: ctx.root, profiles: ctx.profiles, getInheritedModel: () => model, testCliPath: join(ctx.root, "m2-cannot-spawn.mjs") });
+      try {
+        const { label: _dropped, ...withoutLabel } = records[0]!;
+        await bare.importSummaries([withoutLabel as never]);
+        assert.equal("label" in bare.viewSummaries()[0]!, false);
+      } finally { await bare.shutdown(); }
+    } finally { await restored.shutdown(); }
+  } finally { await ctx.close(); }
+});

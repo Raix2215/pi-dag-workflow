@@ -135,6 +135,8 @@ export interface AgentView {
   status: "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
   /** Execution completion and report handoff are separate stages. */
   reportDelivery?: 'pending' | 'delivered';
+  /** One-line spawn task excerpt, shown for jobs that no Todo row can carry. */
+  label?: string;
   /** Live activity from the child's real event stream; display-only, never persisted. */
   activity?: { kind: "thinking" | "tool" | "output"; tool?: string; since?: number };
 }
@@ -157,6 +159,43 @@ function activityLabel(activity: NonNullable<AgentView["activity"]>, now: number
   return msg("󰆍 工具");
 }
 const ACTIVE_LIVE = new Set(["starting", "running"]);
+/** Rows of the standalone section that carries jobs without a Todo of their own. */
+const AGENT_ROWS = 4;
+
+/**
+ * A job bound to a Todo reports on that task row. A job spawned without one has no row to appear
+ * on, so the panel lists it separately: live work first, then reports waiting for handoff, then
+ * closed jobs that still explain themselves. Delivered reports stay out.
+ */
+function agentRank(job: AgentView): number {
+  if (ACTIVE_LIVE.has(job.status) || job.status === "waiting") return 0;
+  return pendingReport(job) ? 1 : 2;
+}
+
+function agentSection(jobs: readonly AgentView[], width: number, theme?: Theme, msg: Translator = chinese): string[] {
+  const unbound = jobs.filter((job) => job.todoId === undefined && (job.status !== "completed" || job.reportDelivery === "pending"));
+  if (!unbound.length) return [];
+  const ordered = [...unbound].sort((a, b) => agentRank(a) - agentRank(b));
+  const shown = ordered.slice(0, AGENT_ROWS);
+  const lines = [bounded(tint("\uf0c0 ", "dim", theme) + tint(msg`子 Agent · ${unbound.length}`, "muted", theme), width, theme)];
+  for (const [index, job] of shown.entries()) {
+    const prefix = index === shown.length - 1 && shown.length === ordered.length ? "└─ " : "├─ ";
+    const live = job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
+    const status = `[${live ? activityLabel(live, Date.now(), msg) : agentLabel(job, msg)}]`;
+    const statusWidth = visibleWidth(status);
+    // Narrow terminals keep the job and its state; the profile and the excerpt are presentation.
+    const compact = visibleWidth(prefix) + visibleWidth(clean(job.id)) + statusWidth + 2 > width;
+    const owner = compact || !job.profile ? clean(job.id) : `${clean(job.id)} · ${clean(job.profile)}`;
+    const head = tint(prefix, "dim", theme) + tint(owner, "dim", theme);
+    const room = width - visibleWidth(prefix + owner) - statusWidth - 2;
+    const excerpt = room >= 4 ? clip(clean(job.label ?? ""), room) : "";
+    const text = excerpt ? ` ${tint(excerpt, "accent", theme)}` : "";
+    const gap = " ".repeat(Math.max(1, width - visibleWidth(prefix + owner) - visibleWidth(text) - statusWidth));
+    lines.push(bounded(head + text + gap + tint(status, agentColor(job), theme), width, theme));
+  }
+  if (ordered.length > shown.length) lines.push(tint(clip(msg`└─ … 隐藏 ${ordered.length - shown.length} 项`, width), "dim", theme));
+  return lines;
+}
 function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: readonly AgentView[] = [], msg: Translator = chinese): string[] {
   const byTodo = new Map(jobs.filter((job) => job.todoId !== undefined).map((job) => [job.todoId!, job]));
   const refWidth = rows.reduce((max, row) => Math.max(max, visibleWidth(reference(row.task, row.dependencies))), 0);
@@ -234,6 +273,7 @@ export function renderTasks(state: WorkflowState, width: number, options?: TaskV
   const rows = state.treeStyle === "flat" ? flatRows(selected, more) : pathRows(selected, width, more);
   lines.push(...drawRows(rows, width, options?.theme, options?.jobs, msg));
   if (more) lines.push(tint(clip(msg`└─ … 隐藏 ${tasks.length - selected.length} 项`, width), "dim", options?.theme));
+  lines.push(...agentSection(options?.jobs ?? [], width, options?.theme, msg));
   return lines;
 }
 

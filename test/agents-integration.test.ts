@@ -130,3 +130,23 @@ test("actual Pi delivers an idle terminal report automatically and marks it deli
   assert.match(JSON.stringify(reports), /自动交付报告/);
   assert.equal(jobs(entries).find((job) => job.id === jobId)!.reportDelivery, "delivered");
 });
+
+test("actual Pi lists a child spawned without a Todo in its own panel section until its report is delivered", { timeout: 30000 }, async (t) => {
+  const client = await start(); t.after(() => client.close());
+  const lastWidget = () => {
+    const record = client.records.findLast((item) => item.method === "setWidget" && Array.isArray(item.widgetLines));
+    return ((record?.widgetLines as string[] | undefined) ?? []).map(stripTerminalSequences).join("\n");
+  };
+  await client.prompt("开始游离子 Agent 验收");
+  const result = await call(client, "subagent_spawn", { task: "调研不需要绑定任务的场景" });
+  assert.ok(!result.isError, JSON.stringify(result));
+  const jobId = result.details.jobId as string;
+  assert.match(widgets(client), /子 Agent · 1/);
+  assert.match(widgets(client), new RegExp(`${jobId} · inherit`));
+  assert.match(widgets(client), /调研不需要绑定任务的场景/);
+  const waited = await call(client, "subagent_wait", { jobId, timeout: 10 });
+  assert.equal(waited.details.status, "completed");
+  // The wait hands the report to this context, so nothing is left for the section to carry.
+  await client.prompt("/todos list");
+  assert.doesNotMatch(lastWidget(), /子 Agent/);
+});

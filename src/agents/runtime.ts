@@ -11,6 +11,8 @@ export type JobStatus = "starting" | "running" | "waiting" | "completed" | "fail
 export interface JobSummary {
   id: string; todoId?: number; profile: string; model: ModelRef; thinking: ThinkingLevel;
   tools: string[]; status: JobStatus; startedAt: number; endedAt?: number; error?: string; pendingRequests: number;
+  /** Display-only one-line excerpt of the spawn task; never used for control flow. */
+  label?: string;
   /** Terminal jobs stay "pending" until their report is delivered into the parent context. */
   reportDelivery?: "pending" | "delivered";
 }
@@ -157,6 +159,21 @@ function message(value: string): string {
   return value;
 }
 
+/**
+ * One clean line for the panel: the spawn task can span lines, carry control characters, or be
+ * arbitrarily long, and it is shown next to jobs that are not bound to any Todo.
+ */
+function jobLabel(task: string): string {
+  return task
+    // Escape sequences first: without this, removing the control bytes would leave "[31m" behind.
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b[@-Z\\-_]|\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .trim()
+    .slice(0, 80);
+}
+
 /** In-memory live processes, with compact plain summaries exported for native Pi entries. */
 export class AgentRuntime {
   private readonly options: AgentRuntimeOptions;
@@ -166,15 +183,20 @@ export class AgentRuntime {
   private restoring = false;
   constructor(options: AgentRuntimeOptions) { this.options = options; }
   activeCount(): number { return [...this.jobs.values()].filter((job) => ACTIVE.has(job.summary.status) || job.pipe !== undefined).length; }
-  inspect(jobId?: string): JobSummary[] { return structuredClone(jobId ? [this.job(jobId).summary] : [...this.jobs.values()].map((job) => job.summary)); }
-  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status' | 'reportDelivery'> & { activity?: JobActivity })[] {
+  /** Model-facing projection: ids, states and progress only, never task text or child output. */
+  inspect(jobId?: string): JobSummary[] {
+    const plain = (summary: JobSummary): JobSummary => { const { label: _label, ...rest } = summary; return rest; };
+    return structuredClone(jobId ? [plain(this.job(jobId).summary)] : [...this.jobs.values()].map((job) => plain(job.summary)));
+  }
+  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status' | 'reportDelivery' | 'label'> & { activity?: JobActivity })[] {
     return [...this.jobs.values()].map((job) => ({ id: job.summary.id, profile: job.summary.profile, status: job.summary.status,
       ...(job.summary.todoId !== undefined ? { todoId: job.summary.todoId } : {}),
       ...(job.summary.reportDelivery !== undefined ? { reportDelivery: job.summary.reportDelivery } : {}),
+      ...(job.summary.label !== undefined ? { label: job.summary.label } : {}),
       ...(job.activity ? { activity: { ...job.activity } } : {}),
     }));
   }
-  exportSummaries(): JobSummary[] { return this.inspect(); }
+  exportSummaries(): JobSummary[] { return structuredClone([...this.jobs.values()].map((job) => job.summary)); }
   exportRecords(): JobResult[] { return [...this.jobs.values()].map((job) => this.result(job)); }
   activities(): { jobId: string; activity: JobActivity }[] {
     return [...this.jobs.values()].filter((job): job is LiveJob & { activity: JobActivity } => Boolean(job.activity)).map((job) => ({ jobId: job.summary.id, activity: structuredClone(job.activity) }));
@@ -197,7 +219,8 @@ export class AgentRuntime {
     if (input.todoId !== undefined && [...this.jobs.values()].some((job) => job.summary.todoId === input.todoId && (ACTIVE.has(job.summary.status) || job.pipe))) throw new Error(`Todo #${input.todoId} already has an active agent`);
     const profile = this.options.profiles.resolve(input.profile, this.options.getInheritedModel(), input.tools);
     const timeout = seconds(input.timeout, DEFAULT_TIMEOUT, 86400);
-    const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, status: "starting", startedAt: Date.now(), pendingRequests: 0 };
+    const label = jobLabel(input.task);
+    const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
     const job: LiveJob = { summary, output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0 };
     this.jobs.set(summary.id, job);
     job.timer = setTimeout(() => { void this.finish(job, "failed", "Agent deadline exceeded"); }, timeout * 1000);
@@ -391,6 +414,7 @@ export class AgentRuntime {
       const summary: JobSummary = {
         id: item.id, ...(Number.isSafeInteger(item.todoId) && item.todoId! > 0 ? { todoId: item.todoId } : {}),
         profile: item.profile.slice(0, 48), model: { provider: item.model.provider.slice(0, 200), id: item.model.id.slice(0, 200) },
+        ...(typeof (item as { label?: unknown }).label === "string" ? { label: jobLabel(String((item as { label?: unknown }).label)) } : {}),
         thinking: item.thinking, tools: item.tools.filter((tool: unknown): tool is string => typeof tool === "string").slice(0, 8),
         status: ACTIVE.has(item.status) ? "interrupted" : item.status, startedAt: item.startedAt, pendingRequests: 0,
         ...(typeof item.endedAt === "number" ? { endedAt: item.endedAt } : {}),

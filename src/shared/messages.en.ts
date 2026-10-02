@@ -249,6 +249,7 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '󰏫 输出中': '󰏫 Outputting',
   '󰆍 工具': '󰆍 Tool',
   '[主会话] [进行中]': '[Main session] [In progress]',
+  '子 Agent · {0}': 'Agents · {0}',
   '(无标题)': '(untitled)',
   '└─ … 隐藏 {0} 项': '└─ … {0} hidden',
   '图已降级为列表：{0}；左编号保留完整前驱': 'Graph degraded to a list: {0}; left ids keep all predecessors',
