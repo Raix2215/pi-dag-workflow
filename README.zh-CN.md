@@ -108,6 +108,7 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 | `/plan` | `start`、`off`、`status`；`tools 名称1,名称2` 明确信任额外只读工具，`tools none` 清空 |
 | `/goal` | `new 标题`、`list`、`enable [ #1]`、`disable [ #1]`、`edit #1 标题`、`complete #1`、`delete #1`、`get #1`、`config`、`reset` |
 | `/agents` | `wait a1`、`send a1 消息`、`reply requestId 回答`、`cancel a1`、`remove a1`、`pause`、`resume` |
+| 任务片段 | `/todos presets`、`apply 名称 [键=值 …]`、`reset 名称 [步骤键]` |
 | Profile | `/agents profiles`、`profile 名称 provider/model [thinking] [工具逗号列表]`、`unprofile 名称` |
 
 各命令组都支持 `help`；查看帮助不调用模型，也不切换模式。自然语言也能驱动已注册的工具。
@@ -214,6 +215,35 @@ Plan 模式、Goal 与子 Agent Job 并不共享：它们各自保存在本插�
 - `instructions` —— 可选提示词，上限 2000 字符，会成为该 profile 派发的每个子 Agent 的一个系统提示词段（`dag_profile`，与内置子 Agent 规则并列）。用来固化“这类活该怎么干”；它不会赋予任务之外的权限。文本通过子进程环境变量传递、读取一次即删除，也不会经 `subagent_inspect` 出现在模型上下文里。
 
 同一份 Profile 也可以在会话里用 `/agents profile 名称 provider/model [thinking] [工具逗号列表]` 修改，用 `/agents unprofile 名称` 删除。文件最多保存 64 个 Profile、上限 64 KiB、不允许未知字段，从 `/agents` 保存时以仅属主可读写的权限写入。
+
+### `pi-dag-workflow-preset.json`
+
+可选的可复用任务片段，用于反复执行的固定流程。`apply` 一次把片段的任务全部加入清单；`reset` 把已完成的实例重新打开，让同一片段再跑一轮：
+
+```json
+{
+  "presets": [
+    {
+      "name": "release",
+      "description": "发布一个版本",
+      "skill": "release-checklist",
+      "steps": [
+        { "key": "verify", "subject": "跑全量检查", "owner": "fast" },
+        { "key": "changelog", "subject": "更新 CHANGELOG 到 v{version}" },
+        { "key": "tag", "subject": "打标签并发布 v{version}", "after": ["verify", "changelog"] }
+      ]
+    }
+  ]
+}
+```
+
+- `name` —— 1–48 个字母、数字、`_` 或 `-`，以字母或数字开头。
+- `description` —— 单行、≤200 字符；它会像 skill 描述一样出现在系统提示词里，模型不必读步骤就知道这个片段存在。
+- `skill` —— 可选，执行片段前建议加载的 Pi skill 名称。
+- `steps` —— 1–32 步。`key` 是片段内的稳定标识，`subject` 是任务标题，`{占位符}` 由 apply 时的 `vars` 填充；`after` 列出必须先完成的步骤键，`owner` 预置负责人/profile，`description`/`activeForm` 与任务字段同义。
+- apply **总是开新一轮**（`release#2`、`release#3`…）且绝不复用编号，已完成的轮次保留为历史；片段任务在面板里于 owner 与状态之**前**显示 `[release#2]`。
+- `reset` 重开最新一轮，或只重开某个步骤**及其全部下游**（`reset 名称 步骤键`）；用 `run` 指定更早的实例。依赖被重开步骤的任务会一并重开，图里不会出现"前置已重开、后继仍为完成"的假象。
+- 片段放在一个用户级文件里（64 KiB、最多 64 个片段，写入时仅属主可读写）；默认不定义任何片段。
 
 ## 安全与隐私
 

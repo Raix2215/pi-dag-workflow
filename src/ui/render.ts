@@ -22,6 +22,12 @@ const bounded = (line: string, width: number, theme?: Theme): string => {
 };
 const reference = (task: Todo, dependencies: readonly number[]): string => `#${task.id}${dependencies.length ? `<-${dependencies.map((id) => `#${id}`).join(",")}` : ""}`;
 const rootMark = (tasks: readonly Todo[]): string => tasks.some((task) => task.status !== "completed") ? "●" : "○";
+/** Fragment instances carry their preset name and run in task metadata. */
+function fragmentTag(task: Todo): string {
+  const preset = task.metadata?.preset;
+  const run = task.metadata?.run;
+  return typeof preset === "string" && typeof run === "number" ? `${clean(preset)}#${run}` : "";
+}
 
 function projection(tasks: readonly Todo[]): DagStructure { return dagStructure(tasks); }
 
@@ -226,24 +232,36 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
     const title = clean(task.subject) || msg("(无标题)");
     const job = byTodo.get(task.id);
     const owner = job ? `${clean(job.id)} · ${clean(job.profile)}` : clean(task.owner ?? "") || msg("主会话");
+    const fragment = fragmentTag(task);
+    const fragmentText = fragment ? `[${fragment}]` : "";
     const live = job?.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
     const label = job ? live ? activityLabel(live, Date.now(), msg) : agentLabel(job, msg) : msg(statusLabel[task.status]);
     const minTitle = Math.min(6, visibleWidth(title));
     const statusBudget = available - minTitle - 1;
     const variants = live?.kind === "tool" ? [label, label.replace(/ \d+s$/, ""), "󰆍"] : [label];
     const ownerText = `[${owner}]`;
-    const withOwner = variants.find((value) => visibleWidth(ownerText) + 1 + visibleWidth(value) + 2 <= statusBudget);
-    const chosen = withOwner ?? variants.find((value) => visibleWidth(value) + 2 <= statusBudget);
-    const status = chosen !== undefined ? `[${chosen}]` : "";
-    const ownerPart = withOwner !== undefined ? ownerText + " " : "";
-    const suffix = ownerPart + status;
+    // Tail order is fragment, owner, status; narrow terminals drop the fragment first, then the
+    // owner, and keep the state that explains the row.
+    const tails = [
+      ...(fragment ? [[fragmentText, ownerText]] : []),
+      [ownerText],
+      [],
+    ];
+    let head = "";
+    let status = "";
+    for (const parts of tails) {
+      const prefix = parts.length ? parts.join(" ") + " " : "";
+      const value = variants.find((candidate) => visibleWidth(prefix) + visibleWidth(candidate) + 2 <= statusBudget);
+      if (value !== undefined) { head = prefix; status = `[${value}]`; break; }
+    }
+    const suffix = head + status;
     const titleBudget = available - (suffix ? visibleWidth(suffix) + 1 : 0);
     let body = clip(title, titleBudget);
     const active = task.status === "in_progress" ? clean(task.activeForm ?? "") : "";
     const activeBudget = titleBudget - visibleWidth(title) - visibleWidth(" · ");
     if (active && activeBudget >= 1) body = `${title} · ${clip(active, activeBudget)}`;
     const gap = suffix ? align ? " ".repeat(Math.max(1, available - visibleWidth(body) - visibleWidth(suffix))) : " " : "";
-    return bounded(left + " " + tint(body, "accent", theme) + gap + tint(ownerPart, "muted", theme) + tint(status, job ? agentColor(job) : 'muted', theme), width, theme);
+    return bounded(left + " " + tint(body, "accent", theme) + gap + tint(head, "muted", theme) + tint(status, job ? agentColor(job) : 'muted', theme), width, theme);
   });
 }
 

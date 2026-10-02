@@ -129,7 +129,7 @@ test('registered /todos, /plan and /goal expose argument completions over live s
 
   const todos = commands.get('todos').getArgumentCompletions;
   assert.equal(typeof todos, 'function');
-  assert.deepEqual(values(await todos('')), ['add', 'start', 'done', 'pending', 'delete', 'edit', 'list', 'view', 'paths', 'flat', 'show', 'hide', 'clear', 'help']);
+  assert.deepEqual(values(await todos('')), ['add', 'start', 'done', 'pending', 'delete', 'edit', 'list', 'view', 'paths', 'flat', 'show', 'hide', 'clear', 'presets', 'apply', 'reset', 'help']);
   assert.deepEqual(values(await todos('view ')), ['view list', 'view dag']);
   assert.deepEqual(values(await todos('start ')), ['start #41', 'start #43']);
   assert.deepEqual(values(await todos('delete ')), ['delete #41', 'delete #42', 'delete #43']);

@@ -6,7 +6,7 @@ import { chinese, resolveLocale, type Language, type Locale, type Translator } f
 
 export const configPaths = () => {
   const directory = join(getAgentDir(), 'pi-dag-workflow');
-  return { directory, config: join(directory, 'pi-dag-workflow-config.json'), profile: join(directory, 'pi-dag-workflow-profile.json') };
+  return { directory, config: join(directory, 'pi-dag-workflow-config.json'), profile: join(directory, 'pi-dag-workflow-profile.json'), preset: join(directory, 'pi-dag-workflow-preset.json') };
 };
 export interface WorkflowConfig { language: Language; goalMaxTurns: number; goalNoProgressLimit: number; goalErrorRetries: number; planTools: string[] }
 const defaults: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5, planTools: [] };

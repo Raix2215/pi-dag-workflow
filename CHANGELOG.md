@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-10-02
+
+### Added
+
+- **Reusable task fragments (presets)** — `pi-dag-workflow-preset.json` defines workflows that repeat: steps with stable keys, `{placeholder}` variables, pre-assigned owners, and `after` dependencies. `todo action=apply preset=name` adds the whole fragment in one call and starts a new run (`release#2`) instead of reusing ids, so finished runs stay as history. `todo action=reset preset=name [step]` reopens the newest run, or one step plus every task that depends on it, which is the only sanctioned way to turn finished work back into pending work; a task outside the fragment that depends on a reopened step reopens too. Fragment names and descriptions are advertised in the system prompt like skill descriptions, the panel labels each fragment task with `[release#2]` before its owner and status, and an optional `skill` field points at the skill that explains the workflow. Commands: `/todos presets`, `/todos apply name [key=value]`, `/todos reset name [step]`; names and step keys complete on Tab.
+
 ## [0.1.7] - 2026-10-02
 
 ### Added

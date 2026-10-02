@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { applyTodo, emptyState, restoreState, STATE_TYPE, type TodoParams, type WorkflowState } from "../todos/state.ts";
+import { PresetStore, type Preset } from "../todos/presets.ts";
 import { NORMAL_GUIDANCE, PLAN_GUIDANCE } from "../plan/policy.ts";
 import { renderDag, renderTasks } from "../ui/render.ts";
 import { registerAgents } from "../agents/register.ts";
@@ -10,7 +11,7 @@ import { detailView } from "../ui/detail.ts";
 import { noFeatures, type Feature } from './features.ts';
 import { registerTodos } from '../todos/register.ts';
 import { registerPlan } from '../plan/register.ts';
-import { loadLocale } from '../shared/config.ts';
+import { loadLocale, configPaths } from '../shared/config.ts';
 import { createTranslator } from '../shared/i18n.ts';
 
 const WIDGET = "pi-dag-workflow.todos";
@@ -28,6 +29,16 @@ export function createWorkflow(pi: ExtensionAPI) {
   let detailOpen = false;
   let refreshDetail: (() => void) | undefined;
   let agents: ReturnType<typeof registerAgents> | undefined;
+  // Task fragments come from one user-level file, reloaded on demand so edits apply without a restart.
+  const presetStore = new PresetStore({ path: configPaths().preset });
+  let presetList: Preset[] = [];
+  async function refreshPresets(): Promise<void> { await presetStore.load(); presetList = presetStore.list(); }
+  /** One line like Pi's skill list: names and short descriptions only, never the step bodies. */
+  function presetSummary(): string {
+    const shown = presetList.slice(0, 8).map((preset) => `${preset.name}${preset.description ? ` (${preset.description})` : ''}`);
+    const more = presetList.length > shown.length ? `, +${presetList.length - shown.length} more (/todos presets)` : '';
+    return `${shown.join(', ')}${more}`.slice(0, 400);
+  }
   const jobs = () => agents?.summaries() ?? [];
   const activeState = () => modules.todos ? state : { ...state, tasks: [] };
   let goals: ReturnType<typeof registerGoal> | undefined;
@@ -80,6 +91,8 @@ export function createWorkflow(pi: ExtensionAPI) {
 
   function restore(ctx: ExtensionContext): void {
     warnedEphemeral = false;
+    // A broken fragment file must not block the workflow: report it and keep the last good list.
+    void refreshPresets().then(() => paint(ctx)).catch((error) => ctx.ui.notify(msg`Todo 片段（preset）配置无效：${error instanceof Error ? error.message : String(error)}`, 'error'));
     try {
       state = modules.todos || modules.plan ? restoreState(ctx.sessionManager.getBranch(), msg) : emptyState();
       if (!modules.plan) state = { ...state, plan: false }; // Disabled Plan cannot strand a read-only session.
@@ -95,7 +108,7 @@ export function createWorkflow(pi: ExtensionAPI) {
   function mutate(params: TodoParams, ctx: ExtensionContext) {
     if (restoreError && params.action !== "list" && params.action !== "get") throw new Error(msg`状态恢复失败，不能修改：${restoreError}`);
     agents?.assertTodoMutation(params);
-    const result = applyTodo(state, params, msg);
+    const result = applyTodo(state, params, msg, presetStore);
     commit(result.state, ctx);
     agents?.afterTodoMutation(params);
     return result;
@@ -118,7 +131,10 @@ export function createWorkflow(pi: ExtensionAPI) {
       if (modules.ui) ctx.ui.setWidget(WIDGET, undefined);
     });
     owner.on('before_agent_start', (event) => {
-      if (modules.todos || modules.plan) event.systemPromptOptions.sections['dag_workflow_mode'] = state.plan ? (modules.todos ? PLAN_GUIDANCE : 'Plan mode: only read, search and ask; no implementation or dispatch. Only the user can exit /plan off.') : (modules.todos ? NORMAL_GUIDANCE : 'Normal mode.');
+      if (modules.todos || modules.plan) {
+        const base = state.plan ? (modules.todos ? PLAN_GUIDANCE : 'Plan mode: only read, search and ask; no implementation or dispatch. Only the user can exit /plan off.') : (modules.todos ? NORMAL_GUIDANCE : 'Normal mode.');
+        event.systemPromptOptions.sections['dag_workflow_mode'] = modules.todos && presetList.length ? `${base} Presets (todo action=apply preset=NAME): ${presetSummary()}.` : base;
+      }
     });
   }
   async function show(ctx: ExtensionContext, view: "list" | "dag"): Promise<void> {
@@ -144,6 +160,7 @@ export function createWorkflow(pi: ExtensionAPI) {
       attached.add(feature);
       registerLifecycle(owner, feature);
       if (feature === 'todos') registerTodos(owner, { msg, state: () => state, mutate, commit, show, protected: () => !!restoreError,
+        presets: () => presetList, refreshPresets,
         reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
       });
       if (feature === 'plan') registerPlan(owner, { msg, state: () => state, commit, protected: () => !!restoreError,

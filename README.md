@@ -116,6 +116,7 @@ width.
 | `/goal` | `new Title`, `list`, `enable [ #1]`, `disable [ #1]`, `edit #1 Title`, `complete #1`, `delete #1`, `get #1`, `config`, `reset` |
 | `/agents` | `wait a1`, `send a1 Message`, `reply requestId Answer`, `cancel a1`, `remove a1`, `pause`, `resume` |
 | Profiles | `/agents profiles`, `profile name provider/model [thinking] [comma-tools]`, `unprofile name` |
+| Task fragments | `/todos presets`, `apply name [key=value …]`, `reset name [step]` |
 
 Each command family supports `help`; help does not call a model or change modes. Natural-language requests also drive the registered tools.
 
@@ -234,6 +235,36 @@ read-only researcher and an explicitly configured writer:
 The same profiles are editable from a session with `/agents profile name provider/model [thinking] [comma-tools]`
 and `/agents unprofile name`. The file holds at most 64 profiles, is limited to 64 KiB, allows no unknown
 fields, and is written with owner-only permissions when you save from `/agents`.
+
+### `pi-dag-workflow-preset.json`
+
+Optional reusable task fragments for workflows that repeat. Apply one to add its tasks in a single
+call; reset reopens a finished instance so the same fragment can run again:
+
+```json
+{
+  "presets": [
+    {
+      "name": "release",
+      "description": "Ship a version",
+      "skill": "release-checklist",
+      "steps": [
+        { "key": "verify", "subject": "Run the full check", "owner": "fast" },
+        { "key": "changelog", "subject": "Update CHANGELOG for v{version}" },
+        { "key": "tag", "subject": "Tag and publish v{version}", "after": ["verify", "changelog"] }
+      ]
+    }
+  ]
+}
+```
+
+- `name` — 1–48 letters, digits, `_` or `-`, starting with a letter or digit.
+- `description` — one line, up to 200 characters. It is advertised in the system prompt like a skill description, so the model knows the fragment exists without reading its steps.
+- `skill` — optional name of a Pi skill to load before running the fragment.
+- `steps` — 1–32 steps. `key` is the step's stable name inside the fragment, `subject` is the task title, and `{placeholders}` are filled from the `vars` of an apply call. `after` lists the keys that must finish first, `owner` pre-assigns a profile or session, and `description`/`activeForm` carry the same meaning as on a task.
+- Applying always starts a **new run** (`release#2`, `release#3`, …) and never reuses ids, so finished runs stay as history. Each fragment task shows `[release#2]` before its owner and status in the panel.
+- `reset` reopens the newest run, or one step plus every task that depends on it, with `reset name step`. A `run` field picks an older instance; a task that depends on a reopened step is reopened too, so the graph never claims finished work behind a reopened prerequisite.
+- Fragments live in one user-level file (64 KiB, 64 presets, owner-only permissions when written), and no fragment is defined by default.
 
 ## Security and privacy
 

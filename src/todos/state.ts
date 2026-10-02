@@ -1,10 +1,11 @@
 import { Type, type Static } from "typebox";
 import { dagStructure, reuseDagStructure } from "../dag/cache.ts";
 import { chinese, type Translator } from "../shared/i18n.ts";
+import { expand, nextRun, resetClosure, type PresetStore } from "./presets.ts";
 
 const Status = Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("deleted")]);
 export const TodoParamsSchema = Type.Object({
-  action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("list"), Type.Literal("get"), Type.Literal("delete"), Type.Literal("clear")]),
+  action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("list"), Type.Literal("get"), Type.Literal("delete"), Type.Literal("clear"), Type.Literal("apply"), Type.Literal("reset")]),
   id: Type.Optional(Type.Integer({ minimum: 1, description: "Required for update/get/delete" })),
   subject: Type.Optional(Type.String({ description: "Short title; required for create" })),
   description: Type.Optional(Type.String({ description: "Task instructions or evidence" })),
@@ -16,6 +17,10 @@ export const TodoParamsSchema = Type.Object({
   owner: Type.Optional(Type.String()),
   metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   includeDeleted: Type.Optional(Type.Boolean()),
+  preset: Type.Optional(Type.String({ description: "Task fragment to apply or reset" })),
+  vars: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "apply: values for {placeholders} in the fragment" })),
+  run: Type.Optional(Type.Integer({ minimum: 1, description: "reset: instance run, default the newest" })),
+  step: Type.Optional(Type.String({ description: "reset: reopen this step and every task that depends on it" })),
 }, { additionalProperties: false });
 export type TodoParams = Static<typeof TodoParamsSchema>;
 export type TodoStatus = Static<typeof Status>;
@@ -46,6 +51,7 @@ const fields: Record<string, readonly string[]> = {
   create: ["subject", "description", "activeForm", "owner", "metadata", "blockedBy"],
   update: ["id", "subject", "description", "activeForm", "owner", "metadata", "status", "addBlockedBy", "removeBlockedBy"],
   list: ["status", "includeDeleted"], get: ["id"], delete: ["id"], clear: [],
+  apply: ["preset", "vars"], reset: ["preset", "run", "step"],
 };
 const transitions: Record<TodoStatus, readonly TodoStatus[]> = {
   pending: ["pending", "in_progress", "completed", "deleted"],
@@ -83,10 +89,34 @@ export function validateState(state: WorkflowState, msg: Translator = chinese): 
 }
 
 /** Atomic pure mutation: errors never modify the current state. */
-export function applyTodo(state: WorkflowState, params: TodoParams, msg: Translator = chinese): { state: WorkflowState; text: string } {
+export function applyTodo(state: WorkflowState, params: TodoParams, msg: Translator = chinese, presets?: PresetStore): { state: WorkflowState; text: string } {
   const allowed = fields[params.action];
   if (!allowed) throw new Error(msg("未知 Todo 操作"));
   for (const key of Object.keys(params)) if (key !== "action" && !allowed.includes(key)) throw new Error(msg`${params.action} 不接受字段 ${key}`);
+  if (params.action === "apply" || params.action === "reset") {
+    const name = params.preset ?? "";
+    if (!presets || !name) throw new Error(msg("apply/reset 需要 preset，且需配置片段文件"));
+    if (params.action === "apply") {
+      const preset = presets.get(name);
+      if (!preset) throw new Error(msg`未找到片段 ${name}`);
+      const { tasks: created, ids } = expand(preset, nextRun(state.tasks, name), state.nextId, params.vars);
+      for (const task of created) validateTask(task, msg);
+      const tasks = [...state.tasks, ...created];
+      if (!reuseDagStructure(state.tasks, tasks)) dagStructure(tasks);
+      const map = [...ids].map(([key, id]) => `${key}=#${id}`).join(", ");
+      const hint = preset.skill ? msg`；执行前建议加载 skill：${preset.skill}` : "";
+      return { state: { ...state, tasks, nextId: state.nextId + created.length }, text: msg`已创建片段 ${name} 第 ${nextRun(state.tasks, name)} 轮（${created.length} 项）：${map}${hint}` };
+    }
+    const ids = resetClosure(state.tasks, name, params.step, params.run);
+    if (!ids.length) throw new Error(params.step ? msg`片段 ${name} 中没有步骤 ${params.step}` : msg`没有可重置的片段 ${name}`);
+    const reopened = new Set(ids);
+    const tasks = state.tasks.map((task) => {
+      if (!reopened.has(task.id)) return task;
+      const { activeForm: _dropped, ...rest } = task;
+      return { ...rest, status: "pending" as const };
+    });
+    return { state: { ...state, tasks }, text: msg`已重置片段 ${name} 的 ${ids.length} 项为待执行：${ids.map((id) => `#${id}`).join(", ")}` };
+  }
   if (params.action === "list") {
     const tasks = state.tasks.filter((task) => (params.includeDeleted || task.status !== "deleted") && (!params.status || task.status === params.status));
     return { state, text: tasks.length ? tasks.map((task) => `${todoRef(task)} [${msg(statusLabel[task.status])}] ${task.subject}`).join("\n") : msg("暂无任务") };
