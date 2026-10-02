@@ -93,13 +93,27 @@ unfinished business, hollow once only settled jobs are left.
 A terminal that cannot fit the graph falls back to the list above, so the dependencies stay readable at any
 width.
 
+### Dispatching children
+
+One child per task is the default, but a child can also carry a whole serial chain: give it `A` and
+`B` when `B` needs what `A` found, and start separate children for independent branches. Dispatch a
+task only once its prerequisites are completed — a child cannot wait on another child's task, so a
+task that still depends on running work belongs to the parent until that work settles. Concurrency
+is capped at eight children; children never spawn children.
+
+`context: true` adds a brief to that child alone: its step position inside the fragment, the whole
+fragment with current statuses, and the report heads of the fragment's earlier steps. Set it when a
+child continues a task fragment so it does not rediscover what an earlier step already reported. The
+brief is read once from the environment and removed in the child process, and `subagent_inspect`
+never exposes it.
+
 ## Tools
 
 | Tool | Purpose |
 |---|---|
 | `todo` | create/update/list/get/delete/clear; numeric IDs and `blockedBy` prerequisites |
 | `goal` | create/update/list/get/delete; enable; disable; complete — one spelling per operation |
-| `subagent_spawn` | start one child with `task` and optional `todoId`/`profile`/`tools`/`timeout` |
+| `subagent_spawn` | start one child with `task` and optional `todoId`/`profile`/`tools`/`timeout`/`context` |
 | `subagent_send` | message a `recipient` job ID, or answer a `requestId` |
 | `subagent_wait` | wait for a result or question; a timeout or abort stops the wait, not the child |
 | `subagent_inspect` | job summaries and profiles, not full child conversations |

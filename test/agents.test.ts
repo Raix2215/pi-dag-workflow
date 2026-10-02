@@ -421,6 +421,16 @@ test("profile instructions reach the child process through the environment exact
   } finally { await ctx.close(); }
 });
 
+test("a fragment brief reaches the child process and nothing is sent when unset", async () => {
+  const ctx = await setup(true);
+  try {
+    const briefed = await ctx.runtime.spawn({ task: "ENV:PI_DAG_AGENT_CONTEXT", context: "Fragment browser-check run 1, step 2 of 3" });
+    assert.match((await ctx.runtime.wait(briefed.id, { timeout: 5 })).output, /env PI_DAG_AGENT_CONTEXT=Fragment browser-check run 1, step 2 of 3/);
+    const plain = await ctx.runtime.spawn({ task: "ENV:PI_DAG_AGENT_CONTEXT" });
+    assert.match((await ctx.runtime.wait(plain.id, { timeout: 5 })).output, /env PI_DAG_AGENT_CONTEXT=\s*$/);
+  } finally { await ctx.close(); }
+});
+
 test("the child reads its profile instructions once and removes them from its environment", () => {
   const env: NodeJS.ProcessEnv = { PI_DAG_AGENT_PROFILE_PROMPT: "Use the Chrome bridge over curl." };
   assert.equal(takeProfilePrompt(env), "Use the Chrome bridge over curl.");

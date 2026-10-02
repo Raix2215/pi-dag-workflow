@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-10-02
+
+### Added
+
+- **Opt-in brief for a child that continues a task fragment** — `subagent_spawn` takes `context: true`, which attaches the child's step position, the whole fragment with current statuses, and the report heads of the fragment's earlier steps (200 characters each). It is built only from the same fragment instance, rides the child's environment, is read once and deleted there, and never reaches the model through `subagent_inspect`.
+
+### Changed
+
+- **Dispatch guidance separates serial from parallel work** — one child may carry a serial chain when its steps share context, independent branches get separate children, and a task is dispatched only when its prerequisites are completed, because a child cannot wait on another child's task. The `todo` guidance now allows one `in_progress` task per work stream instead of one overall.
+
 ## [0.1.9] - 2026-10-02
 
 ### Changed

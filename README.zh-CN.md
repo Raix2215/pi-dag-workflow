@@ -86,13 +86,19 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 
 终端宽度放不下图形时，`/dag` 会退回到上面的列表，依赖关系在任何宽度下都保持可读。
 
+### 派发子 Agent
+
+默认一个任务一个子 Agent，但一个子 Agent 也可以带**整条串行链**：当 B 需要 A 的结论时，把 A、B 一起交给它；互相独立的分支则分别派发。**只派发前置已完成的任务**——子 Agent 无法等待另一个子 Agent 的任务，所以仍依赖在跑工作的任务应留在主模型手里，等工作结束后再派。并发上限 8 个，子 Agent 不能再派子 Agent。
+
+`context: true` 会给这一个子 Agent 附上一段简报：它在片段中的步骤位置、整个片段及当前状态、以及该片段前序步骤报告的开头部分。让子 Agent 接着片段往下走时打开它，可以省掉重复摸底。简报经环境变量传入、在子进程中读取一次即删除，且不会通过 `subagent_inspect` 暴露。
+
 ## 工具
 
 | 工具 | 用途 |
 |---|---|
 | `todo` | create/update/list/get/delete/clear；数字编号与 `blockedBy` 前驱 |
 | `goal` | create/update/list/get/delete；enable/focus/switch/resume；disable/pause/complete |
-| `subagent_spawn` | 启动一个子进程，字段为 `task` 及可选 `todoId`/`profile`/`tools`/`timeout` |
+| `subagent_spawn` | 启动一个子进程，字段为 `task` 及可选 `todoId`/`profile`/`tools`/`timeout`/`context` |
 | `subagent_send` | 给 `recipient` 编号发消息，或回答 `requestId` |
 | `subagent_wait` | 等待结果或提问；超时、取消等待不会停止子进程 |
 | `subagent_inspect` | Job 摘要与 Profile，不默认回传完整子对话 |

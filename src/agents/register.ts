@@ -4,6 +4,7 @@ import { configPaths } from "../shared/config.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { AgentRuntime, type JobSummary, type JobResult } from "./runtime.ts";
 import { ProfileStore, type Profile } from "./profiles.ts";
+import { fragmentContext } from "./context.ts";
 import { AgentNotices, type Notice } from "./notices.ts";
 import { clean } from "../ui/render.ts";
 import { applyTodo, type TodoParams, type WorkflowState } from "../todos/state.ts";
@@ -203,13 +204,15 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const reply = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data });
   const fail = (cause: unknown) => ({ isError: true, content: [{ type: "text" as const, text: String(cause) }], details: { error: String(cause) } });
 
-  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Optional todoId must be unblocked; profile selects a named model/tools config. Returns jobId. No grandchildren; maximum eight active jobs.",
+  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Optional todoId must be unblocked; profile selects a named model/tools config; context:true attaches the task's fragment state and earlier step reports. Returns jobId. No grandchildren; maximum eight active jobs.",
     promptSnippet: "Use subagent_spawn to start one isolated child agent for independent work",
     promptGuidelines: [
       "Delegate work that is independent and verifiable, such as research or isolated edits; keep the critical path and final verification in the main session.",
       "Pass todoId to bind a job to its task and choose the profile that fits the job. A returned report never completes the task by itself: verify the work first.",
+      "Give one child a serial chain (A then B then C) when the steps share context, and start parallel children for independent branches. Dispatch a task only when its prerequisites are already completed: never ask a child to wait on work another child is doing.",
+      "Set context:true when the task belongs to a task fragment, so the child receives its step position, the whole fragment with statuses, and the report heads of earlier steps instead of rediscovering them.",
     ],
-    parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
+    parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach the task's fragment state and earlier step report heads" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) {
       try {
         const agent = ready(ctx);
@@ -220,9 +223,18 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
           if (!task || task.status === "completed" || task.status === "deleted") throw new Error(msg("只能派发未完成的当前 Todo"));
           applyTodo(before, { action: "update", id: task.id, status: "in_progress" }, msg); // Validate without claiming work on startup failure.
         }
+        // Opt-in: the parent decides per dispatch, and only a bound task can carry a fragment brief.
+        const context = params.context === true && task ? fragmentContext(task.id, before.tasks, agent.exportRecords()) : undefined;
         const ownGeneration = generation;
         paused = false;
-        const job = await agent.spawn(params);
+        const job = await agent.spawn({
+          task: params.task,
+          ...(params.todoId === undefined ? {} : { todoId: params.todoId }),
+          ...(params.profile === undefined ? {} : { profile: params.profile }),
+          ...(params.tools === undefined ? {} : { tools: params.tools }),
+          ...(params.timeout === undefined ? {} : { timeout: params.timeout }),
+          ...(context ? { context } : {}),
+        });
         if (ownGeneration !== generation) throw new Error(msg("会话已切换，派发已停止"));
         original.set(job.id, fingerprint(before, params.todoId));
         if (task && job.status !== "failed") {

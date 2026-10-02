@@ -32,7 +32,9 @@ test('Pi actual resource loader loads all five public entries without user setti
     const definitions = new Map(loaded.extensions.flatMap((item) => [...item.tools.entries()].map(([name, tool]) => [name, tool.definition] as const)));
     assert.doesNotMatch(definitions.get('todo')!.promptSnippet!, /optional/i);
     assert.equal(definitions.get('todo')!.promptGuidelines?.length, 4);
-    assert.equal(definitions.get('subagent_spawn')!.promptGuidelines?.length, 2);
+    assert.equal(definitions.get('subagent_spawn')!.promptGuidelines?.length, 4);
+    assert.ok(definitions.get('subagent_spawn')!.promptGuidelines!.some((rule) => rule.includes('serial chain')));
+    assert.ok(definitions.get('subagent_spawn')!.promptGuidelines!.some((rule) => rule.includes('context:true')));
     assert.equal(definitions.get('goal')!.promptGuidelines?.length, 1);
     assert.ok(definitions.get('todo')!.promptGuidelines!.some((rule) => rule.includes('blockedBy')));
     loaded.runtime.invalidate();
