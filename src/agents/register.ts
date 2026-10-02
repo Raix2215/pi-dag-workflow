@@ -209,7 +209,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     promptGuidelines: [
       "Delegate work that is independent and verifiable, such as research or isolated edits; keep the critical path and final verification in the main session.",
       "Pass todoId to bind a job to its task and choose the profile that fits the job. A returned report never completes the task by itself: verify the work first.",
-      "Give one child a serial chain (A then B then C) when the steps share context, and start parallel children for independent branches. Dispatch a task only when its prerequisites are already completed: never ask a child to wait on work another child is doing.",
+      "Give one child a serial chain (A then B then C) when the steps share context, and ask it to send a short interim message as each step finishes so you can advance the task statuses; start parallel children for independent branches. Dispatch a task only when its prerequisites are already completed: never ask a child to wait on work another child is doing.",
       "Set context:true when the task belongs to a task fragment, so the child receives its step position, the whole fragment with statuses, and the report heads of earlier steps instead of rediscovering them.",
     ],
     parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach the task's fragment state and earlier step report heads" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,

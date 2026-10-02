@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { applyTodo, emptyState, restoreState, STATE_TYPE, type TodoParams, type WorkflowState } from "../todos/state.ts";
+import { applyTodo, emptyState, newlyReady, restoreState, STATE_TYPE, type TodoParams, type WorkflowState } from "../todos/state.ts";
 import { PresetStore, type Preset } from "../todos/presets.ts";
 import { NORMAL_GUIDANCE, PLAN_GUIDANCE } from "../plan/policy.ts";
-import { renderDag, renderTasks } from "../ui/render.ts";
+import { clean, renderDag, renderTasks } from "../ui/render.ts";
 import { registerAgents } from "../agents/register.ts";
 import { registerGoal } from "../goal/register.ts";
 import { detailView } from "../ui/detail.ts";
@@ -109,8 +109,10 @@ export function createWorkflow(pi: ExtensionAPI) {
     if (restoreError && params.action !== "list" && params.action !== "get") throw new Error(msg`状态恢复失败，不能修改：${restoreError}`);
     agents?.assertTodoMutation(params);
     const result = applyTodo(state, params, msg, presetStore);
+    const ready = newlyReady(state, result.state);
     commit(result.state, ctx);
     agents?.afterTodoMutation(params);
+    if (ready.length) ctx.ui.notify(msg`前置已完成，可开始：${ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、')}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`, 'info');
     return result;
   }
 

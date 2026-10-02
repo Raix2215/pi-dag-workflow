@@ -170,6 +170,16 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
  * A list left by rpiv-todo (same tool name, same result shape) is read only when this
  * plugin has no snapshot of its own on the branch, so an existing session keeps its tasks.
  */
+/**
+ * Pending tasks that were blocked before the change and are ready after it. Used for the
+ * "prerequisites are done" hint; it never starts anything on its own.
+ */
+export function newlyReady(before: WorkflowState, after: WorkflowState): Todo[] {
+  const wasDone = (state: WorkflowState, id: number): boolean => state.tasks.find((task) => task.id === id)?.status === "completed";
+  if (!after.tasks.some((task, index) => task.status === "completed" && before.tasks[index]?.status !== "completed")) return [];
+  return after.tasks.filter((task) => task.status === "pending" && task.blockedBy.length > 0 && task.blockedBy.every((id) => wasDone(after, id)) && !task.blockedBy.every((id) => wasDone(before, id)));
+}
+
 export function restoreState(branch: readonly { type: string; customType?: string; data?: unknown; message?: unknown }[], msg: Translator = chinese): WorkflowState {
   let rpiv: unknown;
   for (let index = branch.length - 1; index >= 0; index--) {

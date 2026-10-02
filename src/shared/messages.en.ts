@@ -251,6 +251,8 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '[主会话] [进行中]': '[Main session] [In progress]',
   '(无标题)': '(untitled)',
   '└─ … 隐藏 {0} 项': '└─ … {0} hidden',
+  '前置已完成，可开始：{0}': 'Prerequisites are done, ready to start: {0}',
+  ' 等 {0} 项': ' and {0} more',
   '查看片段预设：presets': 'Configured task fragments: presets',
   '套用片段：apply 名称 [键=值 ...]': 'Apply a fragment: apply name [key=value ...]',
   '重开片段：reset 名称 [步骤键]': 'Reopen a fragment: reset name [step key]',

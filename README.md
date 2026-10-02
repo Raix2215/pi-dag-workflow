@@ -101,6 +101,11 @@ task only once its prerequisites are completed — a child cannot wait on anothe
 task that still depends on running work belongs to the parent until that work settles. Concurrency
 is capped at eight children; children never spawn children.
 
+Ask the child to send a short interim message as each step of a chain finishes, then advance the
+task statuses from those messages; the final report is still what you verify. Completing a task also
+prints a one-line hint naming the tasks it just unblocked, and the plugin never starts them on its
+own.
+
 `context: true` adds a brief to that child alone: its step position inside the fragment, the whole
 fragment with current statuses, and the report heads of the fragment's earlier steps. Set it when a
 child continues a task fragment so it does not rediscover what an earlier step already reported. The

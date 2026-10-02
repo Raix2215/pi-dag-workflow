@@ -56,6 +56,8 @@ test("actual Pi: fragments apply from one call, advertise in the prompt, and res
 
   await call("todo", { action: "update", id: 1, status: "in_progress" });
   await call("todo", { action: "update", id: 1, status: "completed" });
+  // Finishing a prerequisite tells the session what it unlocked, without starting anything.
+  assert.ok(client.records.some((record) => record.method === "notify" && typeof record.message === "string" && /前置已完成，可开始：#2 打标签/.test(record.message)), "the unblocked hint must name the task");
   const reopened = await call("todo", { action: "reset", preset: "release" });
   assert.match(reopened.content[0]!.text, /已重置片段 release 的 2 项为待执行：#1, #2/);
   assert.ok((await state()).tasks.every((task) => task.status === "pending"));

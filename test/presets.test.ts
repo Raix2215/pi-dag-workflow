@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expand, fill, instances, nextRun, PresetStore, resetClosure, type Preset } from "../src/todos/presets.ts";
-import { applyTodo, emptyState, type WorkflowState } from "../src/todos/state.ts";
+import { applyTodo, emptyState, newlyReady, type WorkflowState } from "../src/todos/state.ts";
 
 async function storeWith(presets: unknown): Promise<{ store: PresetStore; close: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), "pi-dag-presets-"));
@@ -158,4 +158,22 @@ test("apply and reset work through the task tool, keeping ids unique and blocks 
     const planned = applyTodo({ ...emptyState(), plan: true, nextId: 1 }, { action: "apply", preset: "release", vars: { version: "2.0" } }, undefined, store);
     assert.equal(planned.state.tasks.length, 4);
   } finally { await close(); }
+});
+
+test("completing a prerequisite reports the tasks it just unlocked", () => {
+  const base: WorkflowState = { ...emptyState(), tasks: [
+    { id: 1, subject: "前置", status: "in_progress", blockedBy: [] },
+    { id: 2, subject: "依赖前置", status: "pending", blockedBy: [1] },
+    { id: 3, subject: "双重依赖", status: "pending", blockedBy: [1, 4] },
+    { id: 4, subject: "另一前置", status: "pending", blockedBy: [] },
+    { id: 5, subject: "无关任务", status: "pending", blockedBy: [] },
+  ], nextId: 6 };
+  const done = (state: WorkflowState, id: number): WorkflowState => ({ ...state, tasks: state.tasks.map((task) => task.id === id ? { ...task, status: "completed" as const } : task) });
+  assert.deepEqual(newlyReady(base, done(base, 1)).map((task) => task.id), [2]);
+  // Only when every prerequisite is completed, and never before the change.
+  assert.deepEqual(newlyReady(base, done(base, 4)).map((task) => task.id), []);
+  const both = done(done(base, 1), 4);
+  assert.deepEqual(newlyReady(base, both).map((task) => task.id), [2, 3]);
+  assert.deepEqual(newlyReady(both, done(both, 5)).map((task) => task.id), []);
+  assert.deepEqual(newlyReady(base, { ...base, tasks: base.tasks.map((task) => task.id === 1 ? { ...task, subject: "改名" } : task) }), []);
 });

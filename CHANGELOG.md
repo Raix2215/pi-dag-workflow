@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-10-02
+
+### Added
+
+- **An unblocked hint** — completing a task prints one line naming the tasks that just became startable (`Prerequisites are done, ready to start: #5 …`). It is a hint only: the plugin still never starts, dispatches, or completes anything on its own.
+
+### Changed
+
+- **Multi-step dispatch is documented and guided** — one child may carry a serial chain when its steps share context, and the guidance asks it to send a short interim message as each step finishes so the parent can advance the task statuses from those messages. Dispatching a task whose prerequisites are still running stays out of scope: a child cannot wait on another child.
+
 ## [0.1.10] - 2026-10-02
 
 ### Added
