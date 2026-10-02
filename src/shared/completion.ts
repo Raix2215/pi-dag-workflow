@@ -62,9 +62,21 @@ function completeSecond(spec: CompletionSpec, free: ReadonlySet<string>, action:
   if (!tokens?.length) return null;
   const items = tokens
     .filter((entry) => tokenMatches(entry.token, typed))
-    .map((entry) => makeItem(`${action} ${entry.token}`, entry.label ?? entry.token, entry.description))
+    .map((item) => makeItem(`${action} ${item.token}`, item.label ?? item.token, item.description))
     .filter((item): item is AutocompleteItem => item !== undefined);
   return items.length ? items : null;
+}
+
+/**
+ * Drop candidates once the typed argument already equals one of them.
+ *
+ * Pi confirms the highlighted candidate on Enter and submits the line only for a
+ * command-name completion. An open menu on a finished argument therefore eats the
+ * first Enter and leaves the command unsent, so a complete argument offers none.
+ */
+function suppressCompleted(items: AutocompleteItem[] | null, typed: string): AutocompleteItem[] | null {
+  if (!items) return null;
+  return items.some((item) => item.value === typed) ? null : items;
 }
 
 /**
@@ -84,9 +96,9 @@ export function completeArguments(text: string, spec: CompletionSpec): Autocompl
 
   // The user is still typing the action name (or nothing yet).
   if (tokens.length === 0) return completeRoot(spec, '');
-  if (tokens.length === 1) return trailing ? completeSecond(spec, free, tokens[0]!, '') : completeRoot(spec, tokens[0]!);
-
-  // Only the second argument position has candidates; anything later is free text.
-  if (tokens.length === 2 && !trailing) return completeSecond(spec, free, tokens[0]!, tokens[1]!);
-  return null;
+  const candidates = tokens.length === 1
+    ? (trailing ? completeSecond(spec, free, tokens[0]!, '') : completeRoot(spec, tokens[0]!))
+    // Only the second argument position has candidates; anything later is free text.
+    : (tokens.length === 2 && !trailing ? completeSecond(spec, free, tokens[0]!, tokens[1]!) : null);
+  return suppressCompleted(candidates, trimmed);
 }

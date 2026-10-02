@@ -35,16 +35,20 @@ test('completeArguments: root sub-actions, view second level, ids, prefix and sp
   assert.deepEqual(values(completeArguments('', spec)), ['start', 'view', 'add', 'edit']);
   // Partial root action filters.
   assert.deepEqual(values(completeArguments('vi', spec)), ['view']);
-  assert.deepEqual(values(completeArguments('start', spec)), ['start']);
+
+  // A finished argument offers nothing so Enter submits instead of confirming a candidate.
+  assert.equal(completeArguments('start', spec), null);
 
   // view second level completes with the full argument prefix.
   assert.deepEqual(values(completeArguments('view ', spec)), ['view list', 'view dag']);
   assert.deepEqual(values(completeArguments('view d', spec)), ['view dag']);
+  assert.equal(completeArguments('view list', spec), null);
   assert.equal(completeArguments('view list ', spec), null);
 
   // Ids: trailing space lists valid ids and the value keeps the whole argument prefix.
   assert.deepEqual(values(completeArguments('start ', spec)), ['start #41']);
   assert.deepEqual(values(completeArguments('start #4', spec)), ['start #41']);
+  assert.equal(completeArguments('start #41', spec), null);
   assert.equal(completeArguments('start #42', spec), null);
   // Multiple spaces collapse to the same token boundaries.
   assert.deepEqual(values(completeArguments('start   #4', spec)), ['start #41']);

@@ -10,9 +10,11 @@ import { FEATURE_NAMES } from '../src/workflow/features.ts';
 
 test('manifest exposes five independently selectable Pi resources and release metadata', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
   assert.deepEqual(manifest.pi.extensions, FEATURE_NAMES.map((name) => `./src/${name}/index.ts`));
   assert.notEqual(manifest.private, true, 'package must be publishable');
-  assert.equal(manifest.version, '0.1.0');
+  // The version carries a dated changelog heading, so a release always documents itself.
+  assert.match(changelog, new RegExp(`^## \\[${manifest.version.replaceAll('.', '\\.')}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
   assert.equal(manifest.license, 'MIT');
   assert.equal(manifest.peerDependencies['@earendil-works/pi-coding-agent'], '*');
   assert.equal(manifest.dependencies, undefined);

@@ -19,7 +19,7 @@ A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with 
 
 ## Requirements
 
-- Pi `>= 0.99.2`
+- Pi `>= 1.0.0`
 - Node.js `>= 22.19.0`. The subagent module requires Pi to run under Node; standalone binary hosts are outside its supported scope.
 - A Nerd Font is recommended for the intended panel glyphs (icons, not emoji)
 
