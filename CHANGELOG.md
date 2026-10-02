@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-10-02
+
+### Fixed
+
+- **Every failed request gets its own retry** — recovery was answered once per agent run, so when the retry turn failed too (a provider answering `500` and then `503`, for example) the second failure was swallowed: no retry, no pause, and the Goal stayed idle until the user typed something. The decision now waits for the run to settle, so Pi's own retry finishes first, and it keys on the failed request itself: each failure earns one retry until `goalErrorRetries` is spent, and the pause follows when it is.
+
 ## [0.1.12] - 2026-10-02
 
 ### Changed

@@ -4,6 +4,7 @@ import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall
 /** Deterministic test provider, not a real language model. No network or credentials. */
 export default function offlineModel(pi: ExtensionAPI): void {
   let sequence = 0;
+  let flaky = 0;
   const prefix = Date.now();
   pi.registerProvider("dag-test", {
     api: "dag-test-api", baseUrl: "http://offline.invalid", apiKey: "offline-test-only",
@@ -32,6 +33,11 @@ export default function offlineModel(pi: ExtensionAPI): void {
               });
             }
             const explicit = /^TEST CALL (\w+) (\{[\s\S]*\})$/.exec(prompt);
+            // Goal error-recovery tests: one Goal fails the first two requests, another fails until
+            // its retry budget is spent. Only Goal turns fail; the test's own tool calls stay intact.
+            const goalWork = prompt.startsWith('Goal #') || prompt.includes('自动重试');
+            if (goalWork && prompt.includes('出错重试测试') && flaky < 2) { flaky++; throw new Error('scripted provider failure (500)'); }
+            if (goalWork && prompt.includes('出错暂停测试')) throw new Error('scripted provider failure (500)');
             const childRequest = /requestId=([^\]]+)/.exec(prompt);
             if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('委派测试')) calls.push({ name: 'subagent_spawn', arguments: { task: 'TEST CALL subagent_send {"message":"M3预算提问","question":true}' } });

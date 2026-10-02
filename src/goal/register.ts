@@ -9,7 +9,7 @@ import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, localizeSavedMessage, type Translator } from '../shared/i18n.ts';
 
-interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void }
+interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void; retryDelayMs?: number }
 /** One shared budget for plugin continuations and child-report wakes. No goal dispatcher. */
 export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const msg = hooks.msg ?? chinese;
@@ -20,7 +20,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   let automaticRound = false;
   let standaloneReports = true;
   let revision = 0;
-  let retryIssued = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retriedFailure: string | undefined;
   let baseline = '';
   let lastProgress = '';
   const workStamp = () => JSON.stringify([revision, hooks.state().tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, task.status])]);
@@ -90,11 +91,27 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     return true;
   }
   const modelErrorPause = () => config.goalErrorRetries > 0 ? msg`模型出错（已重试 ${config.goalErrorRetries} 次）` : msg('模型出错');
-  /** One failure can surface at several boundaries; never issue two retries for the same one. */
-  function failRun(ctx: ExtensionContext) {
-    if (retryIssued) return;
-    retryIssued = recoverFromModelError(ctx);
-    if (!retryIssued) pause(modelErrorPause(), ctx);
+  /**
+   * The newest assistant message, when the run that ended failed. Pi persists one entry per request,
+   * so the entry id names exactly one failure and stays stable while the run reports it.
+   */
+  function lastFailure(ctx: ExtensionContext): string | undefined {
+    const branch = ctx.sessionManager.getBranch();
+    for (let index = branch.length - 1; index >= 0; index--) {
+      const entry = branch[index];
+      if (!entry || entry.type !== 'message' || entry.message.role !== 'assistant') continue;
+      return entry.message.stopReason === 'error' ? entry.id : undefined;
+    }
+    return undefined;
+  }
+  /** Answer a failure Pi gave up on with one bounded retry turn; pause once the budget is spent. */
+  function recoverFailure(ctx: ExtensionContext) {
+    retryTimer = undefined;
+    if (!ctx.isIdle() || hooks.protected() || hooks.state().plan) return;
+    const failure = lastFailure(ctx);
+    if (!failure || failure === retriedFailure) return;
+    retriedFailure = failure;
+    if (!recoverFromModelError(ctx)) pause(modelErrorPause(), ctx);
   }
   function continuation(ctx: ExtensionContext, nextStep: string) {
     if (!reserveWake(ctx)) return;
@@ -105,7 +122,9 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
   }
   async function restore(ctx: ExtensionContext) {
-    userAuthority = false; automaticRound = false; revision = 0; error = undefined; retryIssued = false;
+    userAuthority = false; automaticRound = false; revision = 0; error = undefined;
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = undefined; retriedFailure = undefined;
     try {
       state = restoreGoalState(ctx.sessionManager.getBranch(), msg);
       state = pauseGoal(state, focusedGoal(state) ? msg('会话恢复') : state.run.reason ?? '');
@@ -118,9 +137,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   }
   pi.on('session_start', (_event, ctx) => restore(ctx));
   pi.on('session_tree', (_event, ctx) => restore(ctx));
-  pi.on('session_shutdown', () => { state = emptyGoalState(); userAuthority = false; });
+  pi.on('session_shutdown', () => { state = emptyGoalState(); userAuthority = false; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; });
   pi.on('before_agent_start', (event) => {
-    retryIssued = false;
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);
     if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
@@ -135,15 +153,21 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('turn_end', (event, ctx) => {
     if (event.outcome === 'completed') { if (state.run.errorRetries) commit({ ...state, run: { ...state.run, errorRetries: 0 } }, ctx); return; }
     if (event.outcome === 'aborted') pause(msg('用户中断'), ctx);
-    else failRun(ctx);
   });
   pi.on('agent_end', (event, ctx) => {
     const last = event.messages.findLast((message) => message.role === 'assistant');
     if (ctx.signal?.aborted || last?.role === 'assistant' && last.stopReason === 'aborted') pause(msg('用户中断'), ctx);
-    else if (last?.role === 'assistant' && last.stopReason === 'error') failRun(ctx);
+  });
+  // One failure reports at several boundaries, and Pi drains queued messages inside the same run,
+  // so retries are decided once the run settled and Pi's own recovery had its chance.
+  pi.on('agent_settled', (_event, ctx) => {
+    if (retryTimer || hooks.protected() || hooks.state().plan || !focusedGoal(state) || state.run.paused) return;
+    const failure = lastFailure(ctx);
+    if (!failure || failure === retriedFailure) return;
+    retryTimer = setTimeout(() => recoverFailure(ctx), hooks.retryDelayMs ?? 1000);
   });
   pi.on('agent_before_settle', (event, ctx) => {
-    if (event.outcome !== 'completed') { if (event.outcome === 'aborted') pause(msg('用户中断'), ctx); else failRun(ctx); return; }
+    if (event.outcome !== 'completed') { if (event.outcome === 'aborted') pause(msg('用户中断'), ctx); return; }
     if (!focusedGoal(state) || state.run.paused || error || hooks.protected() || hooks.state().plan) return;
     if (event.continue) return; // An Agent report already requested and paid for this next request.
     const goal = focusedGoal(state)!;
