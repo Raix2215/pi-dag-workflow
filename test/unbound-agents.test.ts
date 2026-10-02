@@ -12,17 +12,17 @@ const lines = (jobs: readonly AgentView[], width = 80, state = base, translate: 
 
 test("a job spawned without a Todo gets its own section below the list", () => {
   const rendered = lines([free("a1")]);
-  assert.match(rendered, /\uf0c0 子 Agent · 1/);
+  assert.match(rendered, /\uf0c0 Subagents · 1/);
   assert.match(rendered, /[├└]─ a1 · fast .*调研现有实现/);
   assert.match(rendered, /\[󰥔 运行中\]/);
 });
 
 test("the section stays away when no unbound job needs attention", () => {
   const bound: AgentView = { id: "a1", todoId: 1, profile: "fast", status: "running", label: "绑定任务" };
-  assert.doesNotMatch(lines([]), /子 Agent/);
-  assert.doesNotMatch(lines([bound]), /子 Agent/);
+  assert.doesNotMatch(lines([]), /Subagents/);
+  assert.doesNotMatch(lines([bound]), /Subagents/);
   // A report that already reached the main context no longer explains anything.
-  assert.doesNotMatch(lines([free("a1", "completed", { reportDelivery: "delivered" })]), /子 Agent/);
+  assert.doesNotMatch(lines([free("a1", "completed", { reportDelivery: "delivered" })]), /Subagents/);
 });
 
 test("delivered reports stay out while pending handoff, failures and interruptions remain", () => {
@@ -33,7 +33,7 @@ test("delivered reports stay out while pending handoff, failures and interruptio
     free("a4", "cancelled"),
     free("a5", "completed", { reportDelivery: "delivered" }),
   ]);
-  assert.match(rendered, /\uf0c0 子 Agent · 4/);
+  assert.match(rendered, /\uf0c0 Subagents · 4/);
   assert.match(rendered, /\[󰥔 待交付\]/);
   assert.match(rendered, /\[󰅙 失败\]/);
   assert.match(rendered, /\[󰙦 已中断\]/);
@@ -47,7 +47,7 @@ test("live work is listed before closed jobs and the section is bounded", () => 
   const positions = ["a2", "a3", "a4", "a5"].map((id) => rendered.indexOf(`─ ${id} `));
   assert.ok(positions.every((index) => index >= 0), `live work fills the section first: ${rendered}`);
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
-  assert.match(rendered, /\uf0c0 子 Agent · 6/);
+  assert.match(rendered, /\uf0c0 Subagents · 6/);
   assert.match(rendered, /└─ … 隐藏 2 项/);
   // The clipped jobs are the closed one and the waiting handoff, never live work.
   assert.doesNotMatch(rendered, /a1 · fast/);
@@ -56,7 +56,7 @@ test("live work is listed before closed jobs and the section is bounded", () => 
 
 test("an unbound job alone still renders the panel when the task list is empty", () => {
   const rendered = lines([free("a1")], 80, { ...emptyState() });
-  assert.match(rendered, /\uf0c0 子 Agent · 1/);
+  assert.match(rendered, /\uf0c0 Subagents · 1/);
   assert.doesNotMatch(rendered, /Todo/);
 });
 
@@ -71,6 +71,6 @@ test("narrow terminals keep the job and its state and drop the excerpt first", (
 
 test("the section follows the English locale", () => {
   const rendered = lines([free("a1")], 80, base, createTranslator("en"));
-  assert.match(rendered, /\uf0c0 Agents · 1/);
+  assert.match(rendered, /\uf0c0 Subagents · 1/);
   assert.match(rendered, /\[󰥔 Running\]/);
 });

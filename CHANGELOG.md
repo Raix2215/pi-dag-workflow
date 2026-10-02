@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-10-02
+
+### Changed
+
+- **The Subagents block is titled `Subagents` and carries the Todo accent color** — the block for children spawned without a Todo used a dim glyph and muted text, which read as secondary information. It now shares the accent color of the Todo block, and its title is `Subagents · N` in every locale.
+
 ## [0.1.3] - 2026-10-02
 
 ### Added
