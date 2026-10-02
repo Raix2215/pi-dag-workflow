@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-10-02
+
+### Changed
+
+- **The workflow tools describe themselves where the model reads first** — Pi lists a tool in the Available tools section only when it declares `promptSnippet`, and appends `promptGuidelines` to the Guidelines section while the tool is active. Previously only `todo` appeared there, calling the list "optional", and no rule mentioned the workflow tools at all. Now `todo`, all five `subagent_*` tools, and `goal` carry snippets, and seven rules cover when to open a list, one `in_progress` task at a time, verifying before completing, `blockedBy` dependencies, when to delegate, that a returned report never completes a task by itself, and creating a Goal only when the user asks for it.
+
+- **Normal-mode and agent guidance rewritten** — `NORMAL_GUIDANCE` asks for the one todo list instead of calling Todos optional, and `<dag_workflow_agents>` keeps only the invariants (single tier, verify returned work) so it does not repeat the new rules.
+
 ## [0.1.1] - 2026-10-02
 
 ### Added

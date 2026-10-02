@@ -23,7 +23,18 @@ test('Pi actual resource loader loads all five public entries without user setti
       assert.equal(tool.definition.namespace?.name, 'pi_dag_workflow');
       assert.ok(tool.definition.namespace?.instructions);
       assert.ok(tool.definition.annotations);
+      // Pi lists a tool in the model's Available tools section only with a snippet, and its
+      // guidelines land in the Guidelines section while the tool is active.
+      assert.ok(tool.definition.promptSnippet, `${tool.definition.name} needs a promptSnippet to appear in <tools>`);
+      assert.doesNotMatch(tool.definition.promptSnippet, /[\r\n]/);
+      assert.equal(tool.definition.promptSnippet, tool.definition.promptSnippet.trim());
     }
+    const definitions = new Map(loaded.extensions.flatMap((item) => [...item.tools.entries()].map(([name, tool]) => [name, tool.definition] as const)));
+    assert.doesNotMatch(definitions.get('todo')!.promptSnippet!, /optional/i);
+    assert.equal(definitions.get('todo')!.promptGuidelines?.length, 4);
+    assert.equal(definitions.get('subagent_spawn')!.promptGuidelines?.length, 2);
+    assert.equal(definitions.get('goal')!.promptGuidelines?.length, 1);
+    assert.ok(definitions.get('todo')!.promptGuidelines!.some((rule) => rule.includes('blockedBy')));
     loaded.runtime.invalidate();
   } finally { await rm(temporary, { recursive: true, force: true }); }
 });

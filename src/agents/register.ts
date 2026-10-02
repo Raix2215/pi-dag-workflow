@@ -177,7 +177,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   pi.on("session_shutdown", async () => { restoring = true; generation++; clearDelivery(); clearActivity(); await runtime?.shutdown(); runtime = undefined; context = undefined; });
   pi.on("before_agent_start", (event, ctx) => {
     context = ctx;
-    event.systemPromptOptions.sections["dag_workflow_agents"] = "Use subagent_spawn for useful independent work (optional todoId/profile); no grandchildren. Inspect profiles as needed, send direction or reply by requestId, wait or cancel. Check returned work yourself before completing Todos.";
+    event.systemPromptOptions.sections["dag_workflow_agents"] = "Child agents are single-tier: no grandchildren. Verify returned work yourself before completing a Todo.";
   });
   pi.on("input", (event, ctx) => { context = ctx; if (event.source !== "extension" && !hooks.state().plan && !event.text.trim().startsWith("/")) paused = false; });
   const reportBoundary = (outcome: string, ctx: ExtensionContext) => {
@@ -204,6 +204,11 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const fail = (cause: unknown) => ({ isError: true, content: [{ type: "text" as const, text: String(cause) }], details: { error: String(cause) } });
 
   pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Optional todoId must be unblocked; profile selects a named model/tools config. Returns jobId. No grandchildren; maximum eight active jobs.",
+    promptSnippet: "Use subagent_spawn to start one isolated child agent for independent work",
+    promptGuidelines: [
+      "Delegate work that is independent and verifiable, such as research or isolated edits; keep the critical path and final verification in the main session.",
+      "Pass todoId to bind a job to its task and choose the profile that fits the job. A returned report never completes the task by itself: verify the work first.",
+    ],
     parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) {
       try {
@@ -230,10 +235,12 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       } catch (cause) { return fail(cause); }
     },
   });
-  pi.registerTool({ name: "subagent_inspect", label: "Agents", namespace: workflowNamespace, annotations: readOnly, description: "List private-safe job summaries and named profiles; no full child conversations.", parameters: Type.Object({ jobId: Type.Optional(idSchema) }, { additionalProperties: false }), renderResult,
+  pi.registerTool({ name: "subagent_inspect", label: "Agents", namespace: workflowNamespace, annotations: readOnly, description: "List private-safe job summaries and named profiles; no full child conversations.",
+    promptSnippet: "Use subagent_inspect to list child jobs, status, and saved profiles", parameters: Type.Object({ jobId: Type.Optional(idSchema) }, { additionalProperties: false }), renderResult,
     async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); await profiles!.load(); return reply({ jobs: agent.inspect(params.jobId), profiles: profiles!.list(), profilePath: configPaths().profile, paused }); } catch (cause) { return fail(cause); } },
   });
-  pi.registerTool({ name: "subagent_send", label: "Agent message", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Send direction to recipient jobId, or answer a pending requestId; provide exactly one target. Keep messages focused and include the detail needed for the task.", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text }, { additionalProperties: false }), executionMode: "sequential", renderResult,
+  pi.registerTool({ name: "subagent_send", label: "Agent message", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Send direction to recipient jobId, or answer a pending requestId; provide exactly one target. Keep messages focused and include the detail needed for the task.",
+    promptSnippet: "Use subagent_send to direct a child job or answer its question", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) { try {
       const agent = ready(ctx);
       if (!!params.recipient === !!params.requestId) throw new Error(msg("recipient 与 requestId 需且只能提供一个"));
@@ -242,7 +249,8 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       return reply({ delivered: true });
     } catch (cause) { return fail(cause); } },
   });
-  pi.registerTool({ name: "subagent_wait", label: "Wait for Agent", namespace: workflowNamespace, annotations: readOnly, description: "Wait for a result or question. Timeout/abort stops only this wait, not the child. Returned work is not automatic Todo completion.", parameters: Type.Object({ jobId: idSchema, timeout: Type.Optional(Type.Number({ minimum: 0, maximum: 300 })) }, { additionalProperties: false }), executionMode: "parallel", renderResult,
+  pi.registerTool({ name: "subagent_wait", label: "Wait for Agent", namespace: workflowNamespace, annotations: readOnly, description: "Wait for a result or question. Timeout/abort stops only this wait, not the child. Returned work is not automatic Todo completion.",
+    promptSnippet: "Use subagent_wait to collect a child result or question", parameters: Type.Object({ jobId: idSchema, timeout: Type.Optional(Type.Number({ minimum: 0, maximum: 300 })) }, { additionalProperties: false }), executionMode: "parallel", renderResult,
     async execute(_id, params, signal, _update, ctx) { try {
       const agent = ready(ctx, false);
       const result = await agent.wait(params.jobId, { ...(params.timeout !== undefined ? { timeout: params.timeout } : {}), ...(signal ? { signal } : {}) });
@@ -252,7 +260,8 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       return reply(result);
     } catch (cause) { return fail(cause); } },
   });
-  pi.registerTool({ name: "subagent_cancel", label: "Stop Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }, description: "Stop a child. Optional remove discards its retained record and pending notices; never completes/deletes the Todo or reverts files.", parameters: Type.Object({ jobId: idSchema, remove: Type.Optional(Type.Boolean()) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
+  pi.registerTool({ name: "subagent_cancel", label: "Stop Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }, description: "Stop a child. Optional remove discards its retained record and pending notices; never completes/deletes the Todo or reverts files.",
+    promptSnippet: "Use subagent_cancel to stop one child job", parameters: Type.Object({ jobId: idSchema, remove: Type.Optional(Type.Boolean()) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); if (params.remove || active(agent.inspect(params.jobId)[0]!)) notices.drop(params.jobId); await agent.cancel(params.jobId, { ...(params.remove !== undefined ? { remove: params.remove } : {}) }); original.delete(params.jobId); adjusted.delete(params.jobId); return reply({ jobId: params.jobId, stopped: true, removed: params.remove ?? false }); } catch (cause) { return fail(cause); } },
   });
 

@@ -2,7 +2,7 @@ import type { WorkflowState } from "../todos/state.ts";
 import { chinese, type Translator } from "../shared/i18n.ts";
 
 const READ_TOOLS = new Set(["read", "grep", "find", "ls", "ask_user_question", "ask-user-question"]);
-export const NORMAL_GUIDANCE = "Normal mode. Todos are optional; use one current list and blockedBy for dependencies. Start or complete work only after its predecessors are completed. Do not create a separate plan or graph.";
+export const NORMAL_GUIDANCE = "Normal mode. Plan multi-step work in the one todo list and keep blockedBy current; start or complete work only after its predecessors are completed. Do not create a separate plan or graph.";
 export const PLAN_GUIDANCE = "Plan mode: explore, read, search and ask questions; use todo to create/edit the current list. Do not implement, start/complete tasks, run shell commands or dispatch agents. Only the user can leave Plan with /plan off.";
 
 /**

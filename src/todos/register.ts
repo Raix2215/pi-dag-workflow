@@ -51,7 +51,13 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
   pi.registerTool({
     name: "todo", label: "Todos", namespace: workflowNamespace, annotations: sessionMutation,
     description: "Manage the current task list: create/update/list/get/delete/clear. Use blockedBy for prerequisites; set status via update. Check work before completing it; Plan only edits the list.",
-    promptSnippet: "Track optional work steps and dependencies in one visible list.",
+    promptSnippet: "Use todo to plan and track multi-step work in one dependency-aware list",
+    promptGuidelines: [
+      "Use todo for work with three or more steps, when the user lists tasks, or right after new instructions; skip it for single trivial requests.",
+      "Keep one list: create a task instead of keeping a second plan. Mark a task in_progress before starting it and completed as soon as its work is verified; exactly one task is in_progress at a time.",
+      "Never complete a task whose work is unfinished, failing, or blocked; create a task for the blocker instead.",
+      "Express dependencies with blockedBy (#4 blocked by #2 and #3). A task cannot start or complete before its predecessors are completed.",
+    ],
     parameters: TodoParamsSchema,
     executionMode: "sequential",
     async execute(_id, params, _signal, _update, ctx) {
