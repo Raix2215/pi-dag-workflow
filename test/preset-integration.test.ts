@@ -41,17 +41,18 @@ test("actual Pi: fragments apply from one call, advertise in the prompt, and res
   assert.match(applied.content[0]!.text, /已创建片段 release 第 1 轮（2 项）：verify=#1, tag=#2；执行前建议加载 skill：release-checklist/);
   const tasks = (await state()).tasks;
   assert.deepEqual(tasks.map((task) => `${task.id}:${task.subject}:${task.blockedBy.join("/")}:${task.owner ?? "-"}`), ["1:跑全量测试::fast", "2:打标签 v0.9:1:-"]);
-  assert.deepEqual(tasks.map((task) => task.metadata), [{ preset: "release", run: 1, key: "verify" }, { preset: "release", run: 1, key: "tag" }]);
+  assert.deepEqual(tasks.map((task) => task.metadata), [{ preset: "release", run: 1, key: "verify", step: 1 }, { preset: "release", run: 1, key: "tag", step: 2 }]);
 
   // The panel labels fragment tasks with their instance, leftmost in the tail.
   const widget = client.records.filter((item) => item.method === "setWidget").flatMap((item) => (item.widgetLines as string[] | undefined) ?? []).map(stripTerminalSequences).join("\n");
   assert.match(widget, /\[release#1\] \[fast\] \[待执行\]/);
-  assert.match(widget, /\[release#1\] \[主会话\] \[待执行\]/);
+  assert.match(widget, /\[release#2\] \[主会话\] \[待执行\]/);
 
   // The prompt advertises names and descriptions only, like Pi's skill list.
   const prompt = (await client.entries() as { message?: { role?: string; sections?: Record<string, string> } }[])
     .findLast((entry) => entry.message?.role === "system" && entry.message.sections?.dag_workflow_mode)!.message!.sections!;
   assert.match(prompt.dag_workflow_mode!, /Presets \(todo action=apply preset=NAME\): release \(Ship a version\)\./);
+
 
   await call("todo", { action: "update", id: 1, status: "in_progress" });
   await call("todo", { action: "update", id: 1, status: "completed" });
@@ -61,4 +62,10 @@ test("actual Pi: fragments apply from one call, advertise in the prompt, and res
   const missing = await call("todo", { action: "apply", preset: "nope" });
   assert.equal(missing.isError, true);
   assert.match(missing.content[0]!.text, /未找到片段 nope/);
+
+  // A second run keeps its step numbers and marks the run instead of renumbering the steps.
+  await call("todo", { action: "apply", preset: "release", vars: { version: "1.0" } });
+  const secondWidget = client.records.filter((item) => item.method === "setWidget").flatMap((item) => (item.widgetLines as string[] | undefined) ?? []).map(stripTerminalSequences).join("\n");
+  assert.match(secondWidget, /\[release#1·r2\]/);
+  assert.ok((await state()).tasks.slice(-2).every((task) => task.metadata?.run === 2));
 });

@@ -140,7 +140,7 @@ export function expand(preset: Preset, run: number, startId: number, vars?: Read
       ...(step.description === undefined ? {} : { description: fill(step.description, vars, `preset ${preset.name} step ${step.key}`) }),
       ...(step.activeForm === undefined ? {} : { activeForm: step.activeForm }),
       ...(step.owner === undefined ? {} : { owner: step.owner }),
-      metadata: { preset: preset.name, run, key: step.key },
+      metadata: { preset: preset.name, run, key: step.key, step: created.length + 1 },
     });
   }
   return { name: preset.name, ...(preset.skill === undefined ? {} : { skill: preset.skill }), run, tasks: created, ids };

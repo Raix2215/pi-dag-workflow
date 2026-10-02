@@ -79,15 +79,17 @@ test("expanding a fragment creates pending tasks with mapped dependencies and ru
   assert.deepEqual(first.tasks[2]!.blockedBy, [1, 2]);
   assert.deepEqual(first.tasks[3]!.blockedBy, [3]);
   assert.deepEqual(first.tasks.map((task) => task.metadata), [
-    { preset: "release", run: 1, key: "verify" },
-    { preset: "release", run: 1, key: "changelog" },
-    { preset: "release", run: 1, key: "tag" },
-    { preset: "release", run: 1, key: "announce" },
+    { preset: "release", run: 1, key: "verify", step: 1 },
+    { preset: "release", run: 1, key: "changelog", step: 2 },
+    { preset: "release", run: 1, key: "tag", step: 3 },
+    { preset: "release", run: 1, key: "announce", step: 4 },
   ]);
   assert.deepEqual([...first.ids], [["verify", 1], ["changelog", 2], ["tag", 3], ["announce", 4]]);
   // A second application is a new run with fresh ids.
   const second = expand(release as Preset, nextRun(first.tasks, "release"), 5, { version: "0.3" });
   assert.equal(second.run, 2);
+  assert.equal(second.tasks[0]!.metadata!.run, 2);
+  assert.equal(second.tasks[0]!.metadata!.step, 1);
   assert.equal(second.tasks[0]!.id, 5);
   assert.equal(nextRun(first.tasks, "release"), 2);
 });

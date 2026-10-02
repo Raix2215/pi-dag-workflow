@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-10-02
+
+### Changed
+
+- **Fragment labels show the step position** — `[release#2]` now reads as "step 2 of this fragment run" instead of the run number, so the panel counts 1, 2, 3 down the workflow. From the second run on, the label keeps the run visible as `[release#2·r2]`. Tasks written before this change fall back to their run number rather than to a wrong position.
+
 ## [0.1.8] - 2026-10-02
 
 ### Added

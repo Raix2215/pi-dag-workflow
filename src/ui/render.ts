@@ -22,11 +22,17 @@ const bounded = (line: string, width: number, theme?: Theme): string => {
 };
 const reference = (task: Todo, dependencies: readonly number[]): string => `#${task.id}${dependencies.length ? `<-${dependencies.map((id) => `#${id}`).join(",")}` : ""}`;
 const rootMark = (tasks: readonly Todo[]): string => tasks.some((task) => task.status !== "completed") ? "●" : "○";
-/** Fragment instances carry their preset name and run in task metadata. */
+/** Fragment instances carry their preset name, run and step position in task metadata. */
 function fragmentTag(task: Todo): string {
   const preset = task.metadata?.preset;
+  if (typeof preset !== "string") return "";
   const run = task.metadata?.run;
-  return typeof preset === "string" && typeof run === "number" ? `${clean(preset)}#${run}` : "";
+  const step = task.metadata?.step;
+  // Tasks written before step numbers existed fall back to their run, never to a wrong position.
+  const position = typeof step === "number" ? step : typeof run === "number" ? run : undefined;
+  if (position === undefined) return "";
+  const suffix = typeof run === "number" && run > 1 ? `·r${run}` : "";
+  return `${clean(preset)}#${position}${suffix}`;
 }
 
 function projection(tasks: readonly Todo[]): DagStructure { return dagStructure(tasks); }
