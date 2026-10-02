@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-10-02
+
+### Changed
+
+- **The block is named `Standalone Subagents`** — it lists only the children spawned without a `todoId`, so the plain `Subagents` title read as if it covered every child agent (bound ones report on their task row). At very narrow widths the title falls back to `Standalone · N`, which keeps the distinction and the count instead of clipping both away.
+
 ## [0.1.5] - 2026-10-02
 
 ### Changed

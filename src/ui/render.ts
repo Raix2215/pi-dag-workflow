@@ -182,7 +182,11 @@ function agentSection(jobs: readonly AgentView[], width: number, theme?: Theme, 
   if (!unbound.length) return [];
   const ordered = [...unbound].sort((a, b) => agentRank(a) - agentRank(b));
   const shown = ordered.slice(0, AGENT_ROWS);
-  const lines = [bounded(tint(`${agentRootMark(unbound)} \uf0c0 ${msg`Subagents · ${unbound.length}`}`, "accent", theme), width, theme)];
+  const count = unbound.length;
+  const full = `${agentRootMark(unbound)} \uf0c0 ${msg`Standalone Subagents · ${count}`}`;
+  // Narrow terminals keep the distinction and the count instead of clipping both away.
+  const compact = `${agentRootMark(unbound)} \uf0c0 ${msg`Standalone · ${count}`}`;
+  const lines = [bounded(tint(visibleWidth(full) <= width ? full : compact, "accent", theme), width, theme)];
   for (const [index, job] of shown.entries()) {
     const prefix = index === shown.length - 1 && shown.length === ordered.length ? "└─ " : "├─ ";
     const live = job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
