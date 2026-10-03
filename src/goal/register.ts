@@ -19,6 +19,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   let error: string | undefined;
   let userAuthority = false;
   let automaticRound = false;
+  const waitedForChildren = new Set<string>();
   let standaloneReports = true;
   let revision = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -88,7 +89,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const reserved = provisional ? { ...next, run: { ...next.run, pendingWake: { id: randomUUID(), goalId: focusedGoal(state)!.id, usedBefore: state.run.used } } } : next;
     commit(reserved, ctx);
     baseline = workStamp(); lastProgress = state.run.progress ?? '';
-    userAuthority = false;
+    userAuthority = false; waitedForChildren.clear();
     if (!provisional) automaticRound = true;
     return true;
   }
@@ -104,7 +105,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if (error || hooks.protected() || hooks.state().plan) return false;
     const next = { ...state, run: { ...state.run, errorRetries: attempts + 1 } };
     commit(next, ctx);
-    userAuthority = false; automaticRound = true;
+    userAuthority = false; automaticRound = true; waitedForChildren.clear();
     notify(ctx, msg`模型出错，自动重试 ${next.run.errorRetries}/${limit}`, 'warning');
     try {
       hooks.beforeWake?.(ctx);
@@ -137,7 +138,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   function continuation(ctx: ExtensionContext, nextStep: string) {
     if (!reserveWake(ctx, true)) return;
     const goal = focusedGoal(state)!;
-    commit({ ...state, run: { ...state.run, pendingWake: { ...state.run.pendingWake!, nextStep } } }, ctx);
+    const replacesInitial = state.run.pendingWake!.usedBefore === 0 && state.run.nextStep === msg`推进目标：${goal.title}`;
+    commit({ ...state, run: { ...state.run, ...(replacesInitial ? { nextStep } : {}), pendingWake: { ...state.run.pendingWake!, nextStep } } }, ctx);
     // The one-shot step is consumed only after the actual request sees its continuation message.
     return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', details: { wakeId: state.run.pendingWake!.id }, content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
   }
@@ -155,7 +157,9 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   function assessProgress(ctx: ExtensionContext): boolean {
     const progressed = workStamp() !== baseline || Boolean(state.run.progress?.trim() && state.run.progress !== lastProgress);
     // Count a completed automatic round once, including an idle fallback after a skipped boundary.
-    const stalled = progressed ? 0 : automaticRound ? state.run.stalled + 1 : state.run.stalled;
+    const waiting = hooks.jobs().some((job) => waitedForChildren.has(job.id) && ['starting', 'running'].includes(job.status));
+    waitedForChildren.clear();
+    const stalled = progressed ? 0 : automaticRound && !waiting ? state.run.stalled + 1 : state.run.stalled;
     automaticRound = false;
     if (stalled !== state.run.stalled) commit({ ...state, run: { ...state.run, stalled } }, ctx);
     baseline = workStamp(); lastProgress = state.run.progress ?? '';
@@ -172,7 +176,10 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const task = candidates.find((task) => task.status === 'in_progress' && latest.get(task.id)?.status === 'completed' && !latest.get(task.id)?.taskReportStale) ?? candidates[0];
     const initial = state.run.used === 0 && state.run.nextStep === msg`推进目标：${goal.title}`;
     const taskStep = task && todoStep(task);
-    return { active: active.length, initial, step: initial && active.length ? taskStep : state.run.nextStep?.trim() || taskStep, taskStep };
+    const question = active.find((job) => job.status === 'waiting');
+    const questionStep = question && msg`检查子 Agent ${question.id} 的待答复问题（subagent_wait）；在当前 Goal 范围内答复，需要用户决策时 disable`;
+    const attention = !active.length && msg`核对 Goal #${goal.id} 的目标、要求与进展（goal get）；继续未达成的当前范围，达成时 complete，需要用户时 disable`;
+    return { active: active.length, initial, step: questionStep || (initial && active.length ? taskStep : state.run.nextStep?.trim() || taskStep || attention || undefined), taskStep, questionStep };
   }
   function scheduleResume(ctx: ExtensionContext) {
     if (!resumeWanted || resumeTimer || compacting || state.run.paused || !focusedGoal(state)) return;
@@ -191,8 +198,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       if (!available()) return;
       if (automaticRound && !assessProgress(ctx)) return;
       if (state.run.nextStep === '') { pause(msg('等待用户答复'), ctx); return; }
-      const { step, active } = runnableStep(goal);
-      if (!step) { if (!active) pause(msg('没有具体下一步，等待用户'), ctx); return; }
+      const { step } = runnableStep(goal);
+      if (!step) return; // Running children, rather than a missing model-authored checkpoint, defer work.
       hooks.beforeWake?.(ctx);
       const entry = continuation(ctx, step);
       if (!entry) return;
@@ -250,7 +257,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   });
   pi.on('session_compact_failed', (_event, ctx) => { compacting = false; compactionGoalId = undefined; compactionInterrupted = false; if (resumeWanted) pause(msg('上下文压缩未完成，自动续跑已暂停'), ctx); });
   async function restore(ctx: ExtensionContext) {
-    userAuthority = false; automaticRound = false; revision = 0; error = undefined;
+    userAuthority = false; automaticRound = false; waitedForChildren.clear(); revision = 0; error = undefined;
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = undefined; retriedFailure = undefined;
     if (resumeTimer) clearTimeout(resumeTimer);
@@ -284,6 +291,10 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('input', (event, ctx) => { if (event.source !== 'extension') { cancelRetry(ctx); commit(releaseGoalWake(state), ctx); stepAck = undefined; resumeWanted = false; interruptedGoalId = undefined; rejectedWakes = 0; userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
   pi.on('tool_execution_end', (event) => {
     if (event.isError) return;
+    if (event.toolName === 'subagent_wait') {
+      const details = (event.result as { details?: { id?: string; status?: string; timedOut?: boolean } } | undefined)?.details;
+      if (details?.id && details.timedOut && ['starting', 'running'].includes(details.status ?? '') && hooks.jobs().some((job) => job.id === details.id && ['starting', 'running'].includes(job.status))) waitedForChildren.add(details.id);
+    }
     if (['write', 'edit'].includes(event.toolName) || event.toolName === 'subagent_spawn' && !(event.result as { isError?: boolean })?.isError) revision++;
   });
   pi.on('ui_prompt_start', (event, ctx) => { if (event.kind !== 'custom') pause(msg('等待用户答复'), ctx); });
@@ -323,11 +334,10 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if (!assessProgress(ctx)) return;
     // A checkpoint nextStep can name independent main work even while children run.
     if (state.run.nextStep === '') { pause(msg('等待用户答复'), ctx); return; }
-    const { initial, active, step: nextStep } = runnableStep(goal);
+    const { initial, step: nextStep } = runnableStep(goal);
     if (!nextStep) {
       if (initial) { const waiting = { ...state, run: { ...state.run } }; delete waiting.run.nextStep; commit(waiting, ctx); }
-      if (active) return; // Wait for real child reports, no polling model calls.
-      pause(msg('没有具体下一步，等待用户'), ctx); return;
+      return; // Wait for real child reports, no polling model calls.
     }
     const entry = continuation(ctx, nextStep);
     if (entry) return { entries: [...(event.entries ?? []), entry], continue: true };
@@ -349,7 +359,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined;
     }
     commit(result.state, ctx);
-    if (started) { userAuthority = false; automaticRound = false; baseline = workStamp(); lastProgress = ''; }
+    if (started) { userAuthority = false; automaticRound = false; waitedForChildren.clear(); baseline = workStamp(); lastProgress = ''; }
     const stoppingFocus = stops(params.action) && current !== undefined && (params.id ?? current.id) === current.id;
     if (started || explicitWake || stoppingFocus) cancelRetry(ctx);
     if (stoppingFocus && !focusedGoal(state)) standaloneReports = false;
@@ -360,8 +370,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       hooks.beforeWake?.(ctx);
       const goal = focusedGoal(state)!;
       const choice = runnableStep(goal);
-      const nextStep = state.run.nextStep?.trim() || choice.taskStep || msg`推进目标：${goal.title}`;
-      if (explicitWake) commit({ ...state, run: { ...state.run, nextStep } }, ctx);
+      const nextStep = choice.questionStep || state.run.nextStep?.trim() || choice.taskStep || msg`推进目标：${goal.title}`;
+      if (explicitWake && !state.run.nextStep?.trim()) commit({ ...state, run: { ...state.run, nextStep } }, ctx);
       const entry = continuation(ctx, nextStep);
       if (entry) {
         // Full prompt path refreshes before_agent_start (especially after leaving Plan).
@@ -375,6 +385,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     promptSnippet: 'Use goal to track an objective and continue it across turns',
     promptGuidelines: [
       'Create a goal only when the user asks for autonomous multi-turn work or progress tracking; ordinary tasks belong in the todo list. Enable one at a time, and complete it only after verifying the objective.',
+      'While a Goal is enabled, a final answer or completed Todo list does not stop it. Keep working within its scope; use complete after verification or disable when user input is needed. Wait for running children instead of polling.',
     ], parameters: GoalParamsSchema, executionMode: 'sequential',
     async execute(_id, params, _signal, _update, ctx) {
       try { const result = mutate(params, ctx); return { content: [{ type: 'text', text: result.text }], details: { goalState: structuredClone(state) } }; }

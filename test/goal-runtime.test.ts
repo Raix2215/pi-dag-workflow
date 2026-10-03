@@ -354,7 +354,9 @@ test('successful compaction reissues an unstarted step once with its original bu
   assert.equal(h.controller.snapshot().run.used, 1);
   assert.equal(h.controller.snapshot().run.nextStep, undefined);
   await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(h.wakes.length, 1, 'the next settled event must not queue a duplicate');
+  assert.equal(h.wakes.filter((wake) => wake.message.content?.includes('resume exact step')).length, 1, 'the consumed action must not be replayed');
+  assert.match(h.wakes[1].message.content, /Goal #1.*goal get/, 'a subsequent settled round can reassess the still-active objective');
+  await h.fire('session_shutdown');
 });
 
 test('native overflow retry takes priority over an idle fallback wake after compaction', async () => {
@@ -415,15 +417,94 @@ test('a settled active Goal uses the idle fallback if the before-settle continua
   assert.equal(h.wakes.length, 1, 'a stopped goal never enters the fallback');
 });
 
-test('idle fallback waits for real children without polling and visibly stops an actionless Goal', async () => {
+test('idle fallback waits for real children without polling and resumes the objective when none remain', async () => {
   const h = host(); await h.enable(4); await h.settle();
   h.setJobs([{ id: 'a1', status: 'running' }]); h.setIdle(true);
   await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(h.wakes.length, 0); assert.equal(h.controller.snapshot().run.paused, false);
   h.setJobs([]);
   await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(h.wakes.length, 0); assert.equal(h.controller.snapshot().run.paused, true);
-  assert.match(h.controller.snapshot().run.reason!, /没有具体下一步/);
+  assert.equal(h.wakes.length, 1); assert.equal(h.controller.snapshot().run.paused, false);
+  assert.match(h.wakes[0].message.content, /Goal #1.*goal get/);
+  await h.fire('session_shutdown');
+});
+
+test('an enabled Goal continues its objective when Todos are done and the model omits nextStep', async () => {
+  const h = host(); await h.enable(6); await h.settle();
+  h.setTasks([{ id: 1, subject: 'finished phase', status: 'completed', blockedBy: [] }]);
+  await h.call({ action: 'update', progress: 'phase verified, objective still pending' });
+  h.message('stop');
+  const next = await h.propose();
+  assert.equal(next?.continue, true, 'a normal final answer is not a Goal disable or completion');
+  assert.match(next.entries.at(-1).content, /Goal #1.*goal get/);
+  assert.equal(h.controller.snapshot().run.paused, false);
+  assert.equal(h.controller.snapshot().run.used, 2);
+  assert.equal(h.controller.snapshot().focusId, 1);
+  await h.startTurn(next.entries);
+  await h.fire('session_shutdown');
+});
+
+test('a child waiting for an answer gets a Goal decision instead of an indefinite child wait', async () => {
+  const h = host(); await h.enable(6); await h.settle();
+  h.setJobs([{ id: 'a1', status: 'waiting' }]);
+  const next = await h.propose();
+  assert.equal(next?.continue, true);
+  assert.match(next.entries.at(-1).content, /子 Agent a1.*subagent_wait/);
+  await h.startTurn(next.entries); await h.fire('session_shutdown');
+});
+
+test('a substituted initial question consumes the placeholder and then verifies the returned Todo', async () => {
+  const h = host(); await h.enable(6);
+  h.setTasks([{ id: 1, subject: 'returned work', status: 'in_progress', blockedBy: [] }]);
+  h.setJobs([{ id: 'a1', todoId: 1, status: 'waiting' }]);
+  const question = await h.propose();
+  assert.match(question.entries.at(-1).content, /子 Agent a1.*subagent_wait/);
+  await h.startTurn(question.entries);
+  assert.equal(h.controller.snapshot().run.nextStep, undefined, 'the initial generic placeholder is not replayed after a substituted step');
+  h.setJobs([{ id: 'a1', todoId: 1, status: 'completed', reportDelivery: 'delivered' }]);
+  const returned = await h.propose();
+  assert.match(returned.entries.at(-1).content, /核验 Todo #1/);
+  await h.startTurn(returned.entries); await h.fire('session_shutdown');
+});
+
+test('a pending question has priority but preserves the saved independent next step', async () => {
+  const h = host(); await h.enable(6); await h.settle();
+  await h.call({ action: 'update', nextStep: 'saved independent action' });
+  h.setJobs([{ id: 'a1', status: 'waiting' }]);
+  const question = await h.propose();
+  assert.match(question.entries.at(-1).content, /子 Agent a1.*subagent_wait/);
+  await h.startTurn(question.entries);
+  assert.equal(h.controller.snapshot().run.nextStep, 'saved independent action');
+  h.setJobs([{ id: 'a1', status: 'running' }]);
+  const next = await h.propose();
+  assert.match(next.entries.at(-1).content, /saved independent action/);
+  await h.startTurn(next.entries); await h.fire('session_shutdown');
+});
+
+test('the wait timeout exemption belongs only to the child that was actually waited on', async () => {
+  const h = host(); await h.enable(6); await h.settle();
+  h.setJobs([{ id: 'a1', status: 'running' }, { id: 'a2', status: 'running' }]);
+  await h.fire('tool_execution_end', { toolName: 'subagent_wait', isError: false, result: { details: { id: 'a1', status: 'running', timedOut: true } } });
+  h.setJobs([{ id: 'a1', status: 'completed' }, { id: 'a2', status: 'running' }]);
+  assert.equal(await h.propose(), undefined);
+  assert.equal(h.controller.snapshot().run.stalled, 1, 'an unrelated running child cannot suppress a counted round');
+  await h.fire('session_shutdown');
+});
+
+test('real child wait timeouts are not stalled automatic work and results still permit continuation', async () => {
+  const h = host(); await h.enable(10); await h.settle();
+  h.setJobs([{ id: 'a1', status: 'running' }]);
+  for (let index = 0; index < 4; index++) {
+    if (index) { h.controller.reserveWake(h.ctx); await h.startTurn([]); }
+    await h.fire('tool_execution_end', { toolName: 'subagent_wait', isError: false, result: { details: { id: 'a1', status: 'running', timedOut: true } } });
+    assert.equal(await h.propose(), undefined, 'waiting must not poll a model while the child runs');
+    assert.equal(h.controller.snapshot().run.paused, false);
+    assert.equal(h.controller.snapshot().run.stalled, 0, 'an acknowledged wait is not an unproductive execution attempt');
+  }
+  h.setJobs([{ id: 'a1', status: 'completed', reportDelivery: 'delivered' }]);
+  const next = await h.propose();
+  assert.equal(next?.continue, true, 'the completed child reopens the objective decision');
+  await h.startTurn(next.entries); await h.fire('session_shutdown');
 });
 
 test('completed non-stale child work is selected for verification instead of redispatch', async () => {

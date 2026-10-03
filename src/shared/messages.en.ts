@@ -16,6 +16,8 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '上下文压缩未完成，自动续跑已暂停': 'Context compaction did not finish; auto-continuation is paused',
   '续跑请求未被执行，请检查压缩或扩展后明确恢复': 'Continuation requests were not executed; check compaction or extensions and explicitly resume',
   '损坏的待发续跑请求': 'Corrupt pending continuation request',
+  '核对 Goal #{0} 的目标、要求与进展（goal get）；继续未达成的当前范围，达成时 complete，需要用户时 disable': 'Review Goal #{0}, its requirements and verified progress with goal get; continue within the current objective until achieved, complete when verified, and disable when user input is needed',
+  '检查子 Agent {0} 的待答复问题（subagent_wait）；在当前 Goal 范围内答复，需要用户决策时 disable': 'Inspect child {0}\'s pending question with subagent_wait; answer within the current Goal scope or disable if a user decision is required',
 
   // ----- shared status labels -----
   '待执行': 'Pending',

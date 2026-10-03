@@ -153,7 +153,9 @@ Each command family supports `help`; help does not call a model or change modes.
 
 For a Goal that is already active but idle, `/goal enable #1` starts another request with the remaining allowance. It does not refill that budget or redispatch a running child. Repeating enable while the parent is running or a wake is already proposed does not send a duplicate.
 
-Successful compaction preserves the active Goal and remaining allowance; Pi's own overflow retry runs first. If a continuation draft is discarded, its reservation is refunded and its next step retained. An idle fallback avoids leaving an active Goal silently stranded: it continues concrete work, waits for children, or pauses with a reason. Failed/cancelled compaction and explicit user stops remain stopped.
+Successful compaction preserves the active Goal and remaining allowance; Pi's own overflow retry runs first. If a continuation draft is discarded, its reservation is refunded and its next step retained. An idle fallback avoids leaving an active Goal silently stranded: it continues concrete work or reviews the same objective with `goal get` even when the Todo list is complete or the model omitted `nextStep`. A plain final answer does not stop an enabled Goal. Running children can keep the parent idle until their reports arrive; real wait timeouts are not stalled work. Child questions take priority without discarding saved independent work. Failed/cancelled compaction and explicit user stops remain stopped.
+
+Use `complete` after verifying the full objective or `disable` when user input is required. An explicit empty `nextStep` still waits for the user. Objective reviews spend the remaining allowance and remain subject to the no-progress limit; they cannot bypass pauses or create new authorization.
 
 Every operation has exactly one spelling. An unrecognized first word is treated as natural language and forwarded to the model, the same as any other free-form request.
 

@@ -7,6 +7,8 @@ export default function offlineModel(pi: ExtensionAPI): void {
   let flaky = 0;
   let pressureTurns = 0;
   let overflowed = false;
+  let plainGoalPhase = 0;
+  pi.registerFlag('dag-test-plain-goal', { type: 'boolean', description: 'Offline test: finish a Todo then continue the unfinished Goal without a nextStep' });
   pi.registerFlag('dag-test-compaction-pressure', { type: 'boolean', description: 'Offline test-only context pressure on the first Goal turn' });
   pi.registerFlag('dag-test-overflow', { type: 'boolean', description: 'Offline test-only one context overflow on a Goal request' });
   const prefix = Date.now();
@@ -60,7 +62,11 @@ export default function offlineModel(pi: ExtensionAPI): void {
             if (goalWork && prompt.includes('出错重试测试') && flaky < 2) { flaky++; throw new Error(flaky === 1 ? 'scripted provider failure (500)' : 'scripted provider failure (503 auth_unavailable)'); }
             if (goalWork && prompt.includes('出错暂停测试')) throw new Error('scripted provider failure (500)');
             const childRequest = /requestId=([^\]]+)/.exec(prompt);
-            if (prompt.startsWith('子 Agent 报告') && prompt.includes('RECOVERY-CHILD-RESULT')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
+            if (goalWork && pi.getFlag('dag-test-plain-goal') === true && plainGoalPhase < 2) {
+              calls.push(plainGoalPhase === 0 ? { name: 'todo', arguments: { action: 'update', id: 1, status: 'completed' } } : { name: 'goal', arguments: { action: 'get', id: 1 } });
+              plainGoalPhase++;
+            }
+            else if (prompt.startsWith('子 Agent 报告') && prompt.includes('RECOVERY-CHILD-RESULT')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (goalWork && prompt.includes('出错重试测试') && flaky >= 2) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('空闲续跑测试')) {
@@ -77,6 +83,10 @@ export default function offlineModel(pi: ExtensionAPI): void {
             } else if (prompt.includes("第一项标为完成")) calls.push({ name: "todo", arguments: { action: "update", id: 1, status: "completed" } });
             else if (prompt.includes("写入测试文件")) calls.push({ name: "write", arguments: { path: "should-not-exist.txt", content: "forbidden" } });
             else if (prompt.includes("查看待办")) calls.push({ name: "todo", arguments: { action: "list" } });
+          }
+          if (last?.role === 'toolResult' && pi.getFlag('dag-test-plain-goal') === true) {
+            if (plainGoalPhase === 2 && last.toolName === 'goal') { calls.push({ name: 'write', arguments: { path: 'objective-evidence.txt', content: 'GOAL-CONTINUED\n' } }); plainGoalPhase++; }
+            else if (plainGoalPhase === 3 && last.toolName === 'write') { calls.push({ name: 'goal', arguments: { action: 'complete', id: 1 } }); plainGoalPhase++; }
           }
           for (const requested of calls) {
             const index = message.content.length;

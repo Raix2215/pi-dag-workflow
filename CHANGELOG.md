@@ -7,6 +7,16 @@ All notable changes to this project are documented in this file. The format is b
 ### Changed
 
 - Newly ready task hints stay in the Todo tool result; remove the separate UI notification so users do not see the same dependency change twice.
+- An enabled Goal reviews and continues the same objective when the model ends a round without `nextStep` or completes its current Todo list. Only explicit completion/disable and existing safety limits stop it; completed Todos do not imply an achieved Goal.
+- Child questions take priority while preserving a saved independent next step. Substituting a concrete action for the initial Goal placeholder consumes the correct step after actual delivery.
+
+### Fixed
+
+- Real `subagent_wait` timeouts no longer count as stalled work while the exact waited child still runs. The exemption is local to that round and never bypasses the shared allowance, user pauses, or no-progress checks on actual execution.
+
+### Tests
+
+- Add generic reproductions of a final answer after all Todos finish without a next step, objective continuation through real Pi in both locales, question priority and placeholder consumption, and repeated child-wait timeouts. Private project histories and task contents are not copied into public fixtures.
 
 ## [0.2.1] - 2026-10-03
 

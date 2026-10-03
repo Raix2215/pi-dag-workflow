@@ -95,7 +95,9 @@ test("actual Pi English independent Goal: continuation, untranslated description
   const continuations = (entries as { customType?: string; content?: string }[])
     .filter((entry) => entry.customType === "pi-dag-workflow.goal-continue")
     .map((entry) => String(entry.content));
-  assert.equal(continuations.length, 1);
+  assert.equal(continuations.length, 2);
+  assert.match(continuations[1]!, /Review Goal #1.*goal get/);
+  assert.ok(!hasHan(continuations[1]!));
   assert.match(continuations[0]!, /^Goal #1 1\/2: Advance goal: 预算目标\./);
   assert.match(continuations[0]!, /Requirements: 完整描述不要翻译; full requirements via goal get\./);
   assert.match(continuations[0]!, /This is a workflow continuation, not new user authorization\./);
@@ -103,13 +105,13 @@ test("actual Pi English independent Goal: continuation, untranslated description
 
   const state = goalState(entries)!;
   assert.equal(state.run.paused, true);
-  assert.equal(state.run.used, 1);
-  assert.equal(state.run.reason, "No concrete next step; waiting for the user");
+  assert.equal(state.run.used, 2);
+  assert.equal(state.run.reason, "Auto-continuation reached the 2-turn limit");
   assert.equal(state.goals[0]!.title, "预算目标");
   assert.equal(state.goals[0]!.description, "完整描述不要翻译");
 
   const listing = notifications(await client.prompt("/goal list"));
-  assert.ok(listing.some((message) => message.includes("Continuation 1/2 · No concrete next step; waiting for the user")), listing.join(" | "));
+  assert.ok(listing.some((message) => message.includes("Continuation 2/2 · Auto-continuation reached the 2-turn limit")), listing.join(" | "));
   assert.ok(listing.some((message) => message.includes("预算目标")), listing.join(" | "));
   assert.ok(!hasHan(listing.join("\n").replace("预算目标", "")), listing.join(" | "));
 });

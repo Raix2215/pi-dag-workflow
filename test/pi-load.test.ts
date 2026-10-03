@@ -36,7 +36,8 @@ test('Pi actual resource loader loads all five public entries without user setti
     assert.equal(definitions.get('subagent_spawn')!.promptGuidelines?.length, 4);
     assert.ok(definitions.get('subagent_spawn')!.promptGuidelines!.some((rule) => rule.includes('serial chain')));
     assert.ok(definitions.get('subagent_spawn')!.promptGuidelines!.some((rule) => rule.includes('context:true')));
-    assert.equal(definitions.get('goal')!.promptGuidelines?.length, 1);
+    assert.equal(definitions.get('goal')!.promptGuidelines?.length, 2);
+    assert.ok(definitions.get('goal')!.promptGuidelines!.some((rule) => rule.includes('a final answer or completed Todo list does not stop it')));
     assert.ok(definitions.get('todo')!.promptGuidelines!.some((rule) => rule.includes('blockedBy')));
     loaded.runtime.invalidate();
   } finally { await rm(temporary, { recursive: true, force: true }); }
