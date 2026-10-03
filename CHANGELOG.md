@@ -43,7 +43,7 @@ All notable changes to this project are documented in this file. The format is b
 ### Verification
 
 - Add native threshold/overflow tests with no compression extension, rejected-draft/compaction recovery, explicit active-idle enable, passive checkpoints, memory summary projections and filters, stable request prefixes, stale-report invalidation, and long-running timer tests.
-- Verify two-phase real-model continuation both alone and with memory/cache extensions. Document behavior in `docs/CHECKPOINTS.md` and verification in `docs/REVIEW-0.2.1.md`.
+- Verify two-phase real-model continuation both alone and with memory/cache extensions.
 
 ## [0.2.0] - 2026-10-03
 
@@ -62,7 +62,7 @@ All notable changes to this project are documented in this file. The format is b
 
 - **Serial chains bind only ready tasks** — bind the final task when it is already unblocked; otherwise bind the first ready task and advance statuses from verified interim reports. Guidance consistently allows at most one in-progress task per work stream.
 - **Linear dependency scans** — fragment reset closures use successor traversal, and completion hints use status indexes instead of repeated full-list searches.
-- **Release metadata and documentation** — synchronize manifest/lockfile versions, correct both configuration and fragment-tag examples, refresh the release checklist, and document the review and verification in `docs/REVIEW-0.2.0.md`.
+- **Release metadata and documentation** — synchronize manifest/lockfile versions, correct both configuration and fragment-tag examples, and refresh the release checklist.
 
 ### Tests
 

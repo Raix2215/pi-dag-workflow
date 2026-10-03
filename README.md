@@ -206,7 +206,7 @@ is not understood by the other, and each plugin keeps its own settings and profi
 
 The workflow works with **Pi's native compaction**, with no compression extension installed. It also keeps checkpoint messages separate from memory-owned summaries and context projections, including those used by `pi-blackhole`, `pi-cache-optimizer`, and `pi-observational-memory`. There is no dependency on those packages and no summary override or earlier-message rewrite. Their own supported Pi versions and mutual conflicts still apply.
 
-Checkpoints list at most 12 unfinished tasks and 8 active jobs, without replaying full reports. They append at safe boundaries and remain unchanged afterwards. A memory filter may omit them; the workflow does not bypass that filter. This avoids workflow-induced prefix churn, but provider cache hits still depend on the full request and provider rules. See [checkpoint behavior](docs/CHECKPOINTS.md).
+Checkpoints list at most 12 unfinished tasks and 8 active jobs, without replaying full reports. They append at safe boundaries and remain unchanged afterwards. A memory filter may omit them; the workflow does not bypass that filter. This avoids workflow-induced prefix churn, but provider cache hits still depend on the full request and provider rules. Checkpoints never own a compaction summary, never rewrite earlier model messages, and never wake the model on their own.
 
 ### Continuing a session that used rpiv-todo
 

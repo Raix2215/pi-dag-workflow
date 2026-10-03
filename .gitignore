@@ -18,6 +18,12 @@ artifacts/
 /models.json
 /settings.json
 
+# Public docs only. Internal design, review, and reference notes live in the
+# workspace docs/ folder outside this package.
+/docs/*
+!/docs/COMMUNICATION.md
+!/docs/RELEASING.md
+
 # Local workflow config and profiles
 pi-dag-workflow-config.json
 pi-dag-workflow-profile.json
