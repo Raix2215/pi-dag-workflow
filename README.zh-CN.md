@@ -12,7 +12,7 @@
 
 - **一份任务清单，一张派生 DAG**：Todo 通过 `blockedBy` 携带前驱。前置未完成时，下游不能开始或完成；`/dag` 从同一份清单绘制真实依赖图，没有第二份队列或数据库。
 - **先规划再实施**：Plan 是只读模式，用于阅读、搜索、提问和整理 Todo；只读网络工具可通过 `planTools` 启用。实施、shell 命令和派发在退出 Plan 前都会被拦截。
-- **真实子进程**：最多运行八个 Pi 子进程。每个可带任务、可选的 Todo 关联和具名 Profile；支持发消息、回答提问、等待、取消或移除记录。执行结束后先显示“待交付”，报告进入主会话后才显示“已返回”；返回结果不会自动完成 Todo。
+- **真实子进程**：最多运行八个 Pi 子进程。每个可带任务、可选的 Todo 关联和具名 Profile；支持发消息、回答提问、等待、取消或移除记录。执行结束后先显示“待交付”；报告交付后，关联的未完成 Todo 显示“待核验”，验收后才变为“已完成”。返回结果不会自动完成 Todo。
 - **有界目标**：一次聚焦一个 Goal。自动续跑与子报告唤醒共享默认 32 次额度；连续三轮没有新进展也会暂停。模型请求失败会先自动重试（默认 5 次），重试用尽才暂停。中断、会话恢复、进入 Plan、额度耗尽或重试用尽、原地打转时，Goal 都会暂停。
 - **可读进度**：Nerd Font 面板展示任务树、实线 DAG 和真实的思考／工具／输出活动。工具执行超过 99 秒后仍持续刷新，以紧凑的秒／分／时显示。界面活动不会写入模型上下文或持久化的工作流状态。
 - **压缩后保留状态**：压缩、重载或分支导航后，通过尾部追加的短检查点补充关键 Todo／Job 状态；命令修改会合并，普通工具结果自行承载提醒。检查点不唤醒模型，也不替换记忆插件的摘要。
@@ -103,8 +103,8 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 | `goal` | create/update/list/get/delete；enable；disable；complete，每个操作一个名称 |
 | `subagent_spawn` | 启动一个子进程，字段为 `task` 及可选 `todoId`/`profile`/`tools`/`timeout`/`context` |
 | `subagent_send` | 给 `recipient` 编号发消息，或回答 `requestId` |
-| `subagent_wait` | 等待结果或提问；超时、取消等待不会停止子进程 |
-| `subagent_inspect` | Job 摘要与 Profile，不默认回传完整子对话 |
+| `subagent_wait` | 结果或提问及关联 `todoStatus`；超时、取消等待不会停止子进程 |
+| `subagent_inspect` | 执行摘要、关联 `todoStatus` 与 Profile，不回传完整子对话 |
 | `subagent_cancel` | 停止子进程；可选 `remove` 移除记录，不撤销项目修改 |
 
 创建时填写 `status: "pending"` 会正常接受；填写 `status: "in_progress"` 仅在前置已完成且 Plan 已关闭时开始任务。创建为 `completed` 或 `deleted` 会明确拒绝：核验完成后用 `update`，移除任务用 `delete`。
@@ -117,7 +117,7 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 | 任务展示 | `/todos paths`、`/todos flat`、`show`、`hide`、`view list`、`view dag` |
 | `/dag` | 实线依赖图；↑/↓、PgUp/PgDn、Home/End；Esc 返回 |
 | `/plan` | `start`、`off`、`status`；`tools 名称1,名称2` 明确信任额外只读工具，`tools none` 清空 |
-| `/goal` | `new 标题`、`list`、`enable [ #1]`、`disable [ #1]`、`edit #1 标题`、`complete #1`、`delete #1`、`get #1`、`config`、`reset` |
+| `/goal` | `new 标题`、`list`、`enable [ #1]`、`disable [ #1]`、`edit #1 标题`、`complete #1`、`delete #1`、`get #1`、`policy [ #1]`、`config`、`reset` |
 | `/agents` | `wait a1`、`send a1 消息`、`reply requestId 回答`、`cancel a1`、`remove a1`、`pause`、`resume` |
 | 任务片段 | `/todos presets`、`apply 名称 [键=值 …]`、`reset 名称 [步骤键]` |
 | Profile | `/agents profiles`、`profile 名称 provider/model [thinking] [工具逗号列表]`、`unprofile 名称` |
@@ -133,6 +133,14 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 压缩成功后保留当前 Goal 和剩余额度，Pi 自身的超限重试优先执行。续跑草案被丢弃时，退回本次预留额度并保留下一步。空闲兜底会继续具体工作；Todo 全部完成或模型漏写 `nextStep` 时，仍通过 `goal get` 核对并推进同一目标。普通最终答复不会停止已启用 Goal。子任务仍在执行时，主会话可保持空闲，等报告回来后唤醒；真实等待超时不会被算作无进展。子任务提问优先处理，但不会丢失已保存的独立下一步。压缩失败／取消、用户明确停用仍保持停止。
 
 完整目标核验达成后用 `complete`，需要用户答复时用 `disable`。明确的空 `nextStep` 仍表示等待用户。目标检查续跑消耗剩余额度，也受无进展上限限制，不能绕过暂停或获得新的授权。
+
+### 模型暂停策略
+
+使用 `/goal policy #1` 选择**允许模型暂停**（默认）或**禁止模型暂停**；省略编号时作用于当前 Goal。策略属于这个 Goal，随会话快照保存，启用、重载或分支恢复后保留，不改变其他 Goal 或全局配置。打开或取消菜单不会启动、暂停目标，也不重置预算。
+
+禁止时，拒绝模型 `disable`、`delete`，以及空文本或纯空白 `nextStep` 的 `update`；核验达成后仍允许 `complete`。用户 `/goal disable`、`/goal delete` 仍有效；预算／无进展上限、真实用户对话框、Plan 与压缩失败仍可安全暂停。策略只约束 Goal 工具请求，不是操作系统权限隔离，也不能替代真实验收。
+
+模型无法通过 Goal 工具修改 `modelPause`。`goal get` 会显示策略，续跑提示按策略给出指导，被拒绝的停用请求不改变 Goal 状态。`/goal policy` 是用户命令，支持交互终端与 RPC 选择菜单。
 
 每个操作只有一个写法；首个词不属于命令动作时按自然语言处理，与其他自由描述走同一条路径。
 

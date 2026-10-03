@@ -4,8 +4,14 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- `/goal policy [ #id]` opens a user-only model pause menu. The per-Goal `modelPause` choice defaults to allow; deny rejects model disable/delete and blank nextStep, while verified completion, user commands, and safety pauses remain available. The menu neither starts nor pauses work nor resets its allowance.
+- Child inspect/wait results include the current linked `todoStatus`, derived at query time without changing retained Job state.
+
 ### Changed
 
+- Linked task rows now distinguish pending delivery, pending verification, and accepted completion. A completed Todo shows completed even though its Job stays execution-completed; standalone delivery semantics remain unchanged.
 - Newly ready task hints stay in the Todo tool result; remove the separate UI notification so users do not see the same dependency change twice.
 - An enabled Goal reviews and continues the same objective when the model ends a round without `nextStep` or completes its current Todo list. Only explicit completion/disable and existing safety limits stop it; completed Todos do not imply an achieved Goal.
 - Child questions take priority while preserving a saved independent next step. Substituting a concrete action for the initial Goal placeholder consumes the correct step after actual delivery.
@@ -16,6 +22,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Tests
 
+- Cover task-acceptance display across list/DAG/locales/themes/widths and real inspect/wait status projection; test the policy menu on an active Goal, cancellation, per-Goal persistence, stale sessions, model mutation rejection, and preserved user/safety controls.
 - Add generic reproductions of a final answer after all Todos finish without a next step, objective continuation through real Pi in both locales, question priority and placeholder consumption, and repeated child-wait timeouts. Private project histories and task contents are not copied into public fixtures.
 
 ## [0.2.1] - 2026-10-03

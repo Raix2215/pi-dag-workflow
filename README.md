@@ -12,7 +12,7 @@ A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with 
 
 - **One task list, one derived DAG.** Todos carry prerequisites through `blockedBy`. Unfinished prerequisites block starting and completing downstream work, and `/dag` draws the real graph from that same list. There is no second queue or database.
 - **Plan before you build.** Plan is a read-only mode for reading, searching, asking, and rearranging Todos; read-only network tools can be enabled through `planTools`. Implementation, shell commands, and dispatch are blocked until you leave it.
-- **Real child jobs.** Run up to eight Pi subprocesses. Give each one a task, an optional Todo link, and an optional named profile; send direction, answer questions, wait, cancel, or remove records. A finished child stays **Pending delivery** until its report reaches the main conversation. Returned work never completes a Todo by itself.
+- **Real child jobs.** Run up to eight Pi subprocesses. Give each one a task, an optional Todo link, and an optional named profile; send direction, answer questions, wait, cancel, or remove records. A finished child stays **Pending delivery** until its report reaches the main conversation. A linked unfinished Todo then shows **Pending verification**, and changes to **Completed** only after acceptance. Returned work never completes a Todo by itself.
 - **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance; a Goal also pauses after three consecutive rounds without new progress. A failed model request retries automatically (5 attempts by default) before the Goal pauses. Pause happens on interruption, restore, Plan, an exhausted allowance or retry budget, or a stalled run.
 - **Readable progress.** A Nerd Font panel shows the task tree, a solid-line DAG, and live thinking/tool/output activity. Tool elapsed time keeps updating beyond 99 seconds, using compact seconds/minutes/hours. Interface activity is not written into model context or persistent workflow state.
 - **State survives context loss.** Short, append-only checkpoints restore key Todo/Job state after compaction, reload, or branch navigation. Commands coalesce changes, and normal tool results carry their own notifications. Checkpoints never wake the model or replace memory-plugin summaries.
@@ -126,8 +126,8 @@ never exposes it.
 | `goal` | create/update/list/get/delete; enable; disable; complete — one spelling per operation |
 | `subagent_spawn` | start one child with `task` and optional `todoId`/`profile`/`tools`/`timeout`/`context` |
 | `subagent_send` | message a `recipient` job ID, or answer a `requestId` |
-| `subagent_wait` | wait for a result or question; a timeout or abort stops the wait, not the child |
-| `subagent_inspect` | job summaries and profiles, not full child conversations |
+| `subagent_wait` | result or question with linked `todoStatus`; a timeout or abort stops the wait, not the child |
+| `subagent_inspect` | execution summaries, linked `todoStatus`, and profiles, not full child conversations |
 | `subagent_cancel` | stop a child; optional `remove` discards its record, not project edits |
 
 Creating a Todo with `status: "pending"` is accepted, and `status: "in_progress"` starts it only when its prerequisites are complete and Plan is off. Creating a task directly as `completed` or `deleted` is rejected; use `update` after verifying work or `delete` to remove it.
@@ -140,7 +140,7 @@ Creating a Todo with `status: "pending"` is accepted, and `status: "in_progress"
 | Task display | `/todos paths`, `/todos flat`, `show`, `hide`, `view list`, `view dag` |
 | `/dag` | solid-line graph; ↑/↓, PgUp/PgDn, Home/End; Esc returns |
 | `/plan` | `start`, `off`, `status`, `tools name1,name2` to trust extra read-only tools; `tools none` clears |
-| `/goal` | `new Title`, `list`, `enable [ #1]`, `disable [ #1]`, `edit #1 Title`, `complete #1`, `delete #1`, `get #1`, `config`, `reset` |
+| `/goal` | `new Title`, `list`, `enable [ #1]`, `disable [ #1]`, `edit #1 Title`, `complete #1`, `delete #1`, `get #1`, `policy [ #1]`, `config`, `reset` |
 | `/agents` | `wait a1`, `send a1 Message`, `reply requestId Answer`, `cancel a1`, `remove a1`, `pause`, `resume` |
 | Profiles | `/agents profiles`, `profile name provider/model [thinking] [comma-tools]`, `unprofile name` |
 | Task fragments | `/todos presets`, `apply name [key=value …]`, `reset name [step]` |
@@ -156,6 +156,14 @@ For a Goal that is already active but idle, `/goal enable #1` starts another req
 Successful compaction preserves the active Goal and remaining allowance; Pi's own overflow retry runs first. If a continuation draft is discarded, its reservation is refunded and its next step retained. An idle fallback avoids leaving an active Goal silently stranded: it continues concrete work or reviews the same objective with `goal get` even when the Todo list is complete or the model omitted `nextStep`. A plain final answer does not stop an enabled Goal. Running children can keep the parent idle until their reports arrive; real wait timeouts are not stalled work. Child questions take priority without discarding saved independent work. Failed/cancelled compaction and explicit user stops remain stopped.
 
 Use `complete` after verifying the full objective or `disable` when user input is required. An explicit empty `nextStep` still waits for the user. Objective reviews spend the remaining allowance and remain subject to the no-progress limit; they cannot bypass pauses or create new authorization.
+
+### Model pause policy
+
+Run `/goal policy #1` to choose **Allow model pause** (the default) or **Block model pause**. Omit the id for the current Goal. The choice belongs to that Goal, is stored in its session snapshot, survives enable/reload/branch restore, and leaves other Goals and global configuration unchanged. Opening or cancelling the menu does not start, pause, or refill the Goal.
+
+Blocking rejects model `disable`, `delete`, and `update` with an empty or whitespace-only `nextStep`. It still allows `complete` after verification. User `/goal disable` and `/goal delete` remain available; budget/no-progress limits, real user dialogs, Plan, and failed compaction can still pause safely. The policy only governs Goal tool requests, not operating-system permissions or whether the model's verification is correct.
+
+The model cannot change `modelPause` through the Goal tool. `goal get` exposes it, continuation hints respect it, and rejected stop requests leave Goal state unchanged. `/goal policy` is a user command, supported by the interactive and RPC selection UI.
 
 Every operation has exactly one spelling. An unrecognized first word is treated as natural language and forwarded to the model, the same as any other free-form request.
 

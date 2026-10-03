@@ -22,7 +22,7 @@ test("tool names are shortened and capped at ten columns while the elapsed time 
 });
 
 test("stable statuses never show live activity and restore never fakes one", () => {
-  assert.match(lines([job(undefined, "completed")]), /󰄬 已返回/);
+  assert.match(lines([job(undefined, "completed")]), /󰥔 待核验/);
   assert.match(lines([job(undefined, "waiting")]), /󰋗 等待回复/);
   assert.match(lines([job(undefined, "interrupted")]), /󰙦 已中断/);
   assert.match(lines([job(undefined, "failed")]), /󰅙 失败/);

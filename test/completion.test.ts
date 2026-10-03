@@ -153,8 +153,10 @@ test('registered /todos, /plan and /goal expose argument completions over live s
   const goal = commands.get('goal').getArgumentCompletions;
   assert.equal(typeof goal, 'function');
   // One spelling per operation: no alias candidates exist.
-  assert.deepEqual(values(await goal('')), ['new', 'list', 'enable', 'disable', 'complete', 'delete', 'edit', 'get', 'config', 'reset', 'help']);
+  assert.deepEqual(values(await goal('')), ['new', 'list', 'enable', 'disable', 'complete', 'delete', 'edit', 'get', 'policy', 'config', 'reset', 'help']);
   assert.deepEqual(values(await goal('enable ')), ['enable #1']);
+  assert.deepEqual(values(await goal('policy ')), ['policy #1']);
+  assert.equal(await goal('policy #1'), null, 'a complete policy command submits without a second Enter');
   assert.deepEqual(values(await goal('delete ')), ['delete #1', 'delete #2']);
   assert.equal(await goal('new '), null);
 

@@ -7,6 +7,9 @@
  * variable values, command/tool names and Nerd Font glyphs are never included here.
  */
 export const englishMessages: Readonly<Record<string, string>> = {
+  '󰄬 已完成': '󰄬 Completed',
+  '󰥔 待核验': '󰥔 Pending verification',
+
   // ----- runtime state reminders -----
   '（历史输出，仅作参考）': ' (historical output, for reference only)',
   '\nTodo #{0} 已完成，本报告仅供参考。': '\nTodo #{0} is completed; this report is for reference only.',
@@ -18,6 +21,27 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '损坏的待发续跑请求': 'Corrupt pending continuation request',
   '核对 Goal #{0} 的目标、要求与进展（goal get）；继续未达成的当前范围，达成时 complete，需要用户时 disable': 'Review Goal #{0}, its requirements and verified progress with goal get; continue within the current objective until achieved, complete when verified, and disable when user input is needed',
   '检查子 Agent {0} 的待答复问题（subagent_wait）；在当前 Goal 范围内答复，需要用户决策时 disable': 'Inspect child {0}\'s pending question with subagent_wait; answer within the current Goal scope or disable if a user decision is required',
+
+  // ----- user-owned Goal pause policy -----
+  '损坏的模型暂停策略': 'Corrupt model pause policy',
+  '需要用户时提问；模型停用已禁止': 'ask when user input is needed; model stopping is blocked',
+  '；自动续跑上限 {0}，研究可 update progress/nextStep，{1}': '; auto-continuation limit {0}; for research use update progress/nextStep, {1}',
+  '模型暂停策略：policy [ #编号]': 'Model pause policy: policy [ #id]',
+  '需要用户时提问，用户可 /goal disable': 'ask when user input is needed; the user can run /goal disable',
+  '需要用户时 disable': 'use disable when user input is needed',
+  '模型暂停策略菜单需要交互界面': 'The model pause policy menu requires an interactive UI',
+  '模型暂停策略菜单已打开': 'The model pause policy menu is already open',
+  '允许模型暂停': 'Allow model pause',
+  '禁止模型暂停': 'Block model pause',
+  'Goal #{0} · 模型暂停策略（当前：{1}）': 'Goal #{0} · Model pause policy (current: {1})',
+  'Goal #{0} 模型暂停策略：{1}': 'Goal #{0} model pause policy: {1}',
+  'Goal #{0} 禁止模型停用／删除或设置空 nextStep；需要用户决策时提问，用户可 /goal disable': 'Goal #{0} blocks model disable/delete and empty nextStep; ask when a user decision is needed. The user can run /goal disable',
+  '目标 new/list/enable/disable/complete/delete/edit/get/policy/config/reset，或自然语言': 'Goal new/list/enable/disable/complete/delete/edit/get/policy/config/reset, or natural language',
+  '/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · policy [ #编号] · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。': '/goal new title · list · enable [ #id] (current Goal when omitted) · disable [ #id] · complete/delete #id · edit #id title · get #id · policy [ #id] · config · reset; create does not start, inspection does not refill the budget, and resuming requires explicit enable.',
+  '上一次请求失败（模型出错）。这是 Goal #{0} 的第 {1}/{2} 次自动重试：继续推进「{3}」，并按需 goal update progress／nextStep；{4}，达成时 complete。': 'The previous request failed (model error). Goal #{0} retry {1}/{2}: continue "{3}", update progress/nextStep as needed; {4}, and complete when achieved.',
+  'Goal #{0} {1}/{2}: {3}。{4}核验结果；研究可 goal update progress/nextStep，{5}，达成时 complete。这是工作流续跑，不是用户新授权。': 'Goal #{0} {1}/{2}: {3}. {4}Verify results; for research use goal update progress/nextStep, {5}, and complete when achieved. This is a workflow continuation, not new user authorization.',
+  '检查子 Agent {0} 的待答复问题（subagent_wait）；在当前 Goal 范围内答复，{1}': 'Inspect child {0}\'s pending question with subagent_wait; answer within the current Goal scope, {1}',
+  '核对 Goal #{0} 的目标、要求与进展（goal get）；继续未达成的当前范围，达成时 complete，{1}': 'Review Goal #{0}, its requirements and verified progress with goal get; continue within the current objective until achieved, complete when verified, {1}',
 
   // ----- shared status labels -----
   '待执行': 'Pending',

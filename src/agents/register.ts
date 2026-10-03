@@ -59,6 +59,12 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const jobStatusLabel: Record<JobSummary['status'], string> = { starting: '启动中', running: '运行中', waiting: '等待回复', completed: '已返回', failed: '失败', cancelled: '已取消', interrupted: '已中断' };
   const statusLabel = (job: { status: JobSummary['status']; reportDelivery?: JobSummary['reportDelivery'] }) => job.status === 'completed' && job.reportDelivery === 'pending' ? msg('待交付') : msg(jobStatusLabel[job.status]);
   const activeStatuses = new Set<JobSummary['status']>(['starting', 'running', 'waiting']);
+  /** Display-only projection for tool results: the linked Todo's current state, never persisted. */
+  const todoStatusOf = (todoId?: number) => {
+    if (todoId === undefined) return undefined;
+    const task = hooks.state().tasks.find((item) => item.id === todoId);
+    return task && task.status !== "deleted" ? task.status : undefined;
+  };
   const completion: CompletionSpec = {
     actions: [
       { action: 'list', description: msg('查看 Job 与暂停状态') },
@@ -296,9 +302,9 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       } catch (cause) { return fail(cause); }
     },
   });
-  pi.registerTool({ name: "subagent_inspect", label: "Agents", namespace: workflowNamespace, annotations: readOnly, description: "List private-safe job summaries and named profiles; no full child conversations.",
+  pi.registerTool({ name: "subagent_inspect", label: "Agents", namespace: workflowNamespace, annotations: readOnly, description: "List private-safe job execution summaries, current linked todoStatus, and named profiles; no full child conversations.",
     promptSnippet: "Use subagent_inspect to list child jobs, status, and saved profiles", parameters: Type.Object({ jobId: Type.Optional(idSchema) }, { additionalProperties: false }), renderResult,
-    async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); await profiles!.load(); return reply({ jobs: agent.inspect(params.jobId), profiles: profiles!.list(), profilePath: configPaths().profile, paused }); } catch (cause) { return fail(cause); } },
+    async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); await profiles!.load(); const jobs = agent.inspect(params.jobId).map((job) => { const todoStatus = todoStatusOf(job.todoId); return todoStatus === undefined ? job : { ...job, todoStatus }; }); return reply({ jobs, profiles: profiles!.list(), profilePath: configPaths().profile, paused }); } catch (cause) { return fail(cause); } },
   });
   pi.registerTool({ name: "subagent_send", label: "Agent message", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Send direction to recipient jobId, or answer a pending requestId; provide exactly one target. Keep messages focused and include the detail needed for the task.",
     promptSnippet: "Use subagent_send to direct a child job or answer its question", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text }, { additionalProperties: false }), executionMode: "sequential", renderResult,
@@ -310,7 +316,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       return reply({ delivered: true });
     } catch (cause) { return fail(cause); } },
   });
-  pi.registerTool({ name: "subagent_wait", label: "Wait for Agent", namespace: workflowNamespace, annotations: readOnly, description: "Wait for a result or question. Timeout/abort stops only this wait, not the child. Returned work is not automatic Todo completion.",
+  pi.registerTool({ name: "subagent_wait", label: "Wait for Agent", namespace: workflowNamespace, annotations: readOnly, description: "Wait for a result or question, including current linked todoStatus. Job status completed means execution ended; verify before completing its Todo. Timeout/abort stops only this wait, not the child.",
     promptSnippet: "Use subagent_wait to collect a child result or question", parameters: Type.Object({ jobId: idSchema, timeout: Type.Optional(Type.Number({ minimum: 0, maximum: 300 })) }, { additionalProperties: false }), executionMode: "parallel", renderResult,
     async execute(_id, params, signal, _update, ctx) { try {
       const agent = ready(ctx, false);
@@ -318,7 +324,8 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       // The tool result itself carries current content into the model context: no duplicate auto notice.
       notices.drop(params.jobId);
       if ((result.status === "completed" || result.status === "failed") && result.reportDelivery === "pending" && agent.markReportDelivered(params.jobId)) result.reportDelivery = "delivered";
-      return reply(result);
+      const todoStatus = todoStatusOf(result.todoId);
+      return reply(todoStatus === undefined ? result : { ...result, todoStatus });
     } catch (cause) { return fail(cause); } },
   });
   pi.registerTool({ name: "subagent_cancel", label: "Stop Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }, description: "Stop a child. Optional remove discards its retained record and pending notices; never completes/deletes the Todo or reverts files.",

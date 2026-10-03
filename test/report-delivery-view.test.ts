@@ -8,19 +8,19 @@ import { createTranslator } from '../src/shared/i18n.ts';
 const state = { ...emptyState(), nextId: 2, tasks: [{ id: 1, subject: 'Implementation', status: 'in_progress' as const, blockedBy: [] }] };
 const job: AgentView = { id: 'a1', todoId: 1, profile: 'worker', status: 'completed', reportDelivery: 'pending' };
 
-test('a finished child is pending delivery until the report handoff, in both locales and views', () => {
+test('a finished child is pending delivery or verification until the Todo itself is accepted, in both locales and views', () => {
   for (const locale of ['en', 'zh-CN'] as const) {
     const msg = createTranslator(locale);
     const pending = locale === 'en' ? 'Pending delivery' : '待交付';
-    const returned = locale === 'en' ? 'Returned' : '已返回';
+    const verification = locale === 'en' ? undefined : '待核验';
     for (const width of [80, 120]) {
       const list = renderTasks(state, width, { jobs: [job], msg });
       assert.ok(list.join('\n').includes(pending));
-      assert.ok(!list.join('\n').includes(returned));
       for (const line of list) assert.ok(visibleWidth(line) <= width);
-      const accepted = renderTasks(state, width, { jobs: [{ ...job, reportDelivery: 'delivered' }], msg });
-      assert.ok(accepted.join('\n').includes(returned));
-      assert.ok(!accepted.join('\n').includes(pending));
+      const accepted = renderTasks(state, width, { jobs: [{ ...job, reportDelivery: 'delivered' }], msg }).join('\n');
+      assert.ok(!accepted.includes(pending));
+      if (verification) assert.ok(accepted.includes(verification));
+      else assert.ok(!/\p{Script=Han}/u.test(accepted), accepted);
     }
     const graph = renderDag(state, 120, undefined, undefined, [job], { msg });
     assert.ok(graph.join('\n').includes(pending));
@@ -37,5 +37,5 @@ test('pending delivery remains width-safe and does not override running, waiting
     assert.ok(!output.includes('Pending delivery'));
   }
   const legacy = { ...job }; delete legacy.reportDelivery;
-  assert.match(renderTasks(state, 120, { jobs: [legacy] }).join('\n'), /已返回/, 'legacy records retain their previous display');
+  assert.match(renderTasks(state, 120, { jobs: [legacy] }).join('\n'), /待核验/, 'a legacy bound record waits for verification instead of claiming a fresh handoff');
 });

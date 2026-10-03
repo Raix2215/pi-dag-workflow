@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
-import { activates, applyGoal, emptyGoalState, focusedGoal, GOAL_TYPE, GoalParamsSchema, pauseGoal, releaseGoalWake, reserveGoalWake, restoreGoalState, stops, type GoalParams, type GoalState } from './state.ts';
+import { activates, applyGoal, emptyGoalState, focusedGoal, GOAL_TYPE, GoalParamsSchema, pauseGoal, releaseGoalWake, reserveGoalWake, restoreGoalState, setModelPausePolicy, stops, type GoalParams, type GoalState } from './state.ts';
 import { configPaths, loadConfig, type WorkflowConfig } from '../shared/config.ts';
 import { clean, notify, type AgentView } from '../ui/render.ts';
 import { deriveDag } from '../dag/graph.ts';
@@ -35,10 +35,12 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   let compactionInterrupted = false;
   let compactionGoalId: number | undefined;
   let interruptedGoalId: number | undefined;
+  let sessionEpoch = 0;
+  let policyPrompt: { title: string; epoch: number } | undefined;
   const workStamp = () => JSON.stringify([revision, hooks.state().tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, task.status])]);
   const paint = (ctx: ExtensionContext) => hooks.paint(ctx);
   const goalStatusLabel: Record<GoalState['goals'][number]['status'], string> = { active: '活动', paused: '暂停', completed: '已完成', deleted: '已删除' };
-  const activatable = new Set(['enable']);
+  const activatable = new Set(['enable', 'policy']);
   const completion: CompletionSpec = {
     actions: [
       { action: 'new', description: msg('创建目标（不启动）：new 标题') },
@@ -49,12 +51,13 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       { action: 'delete', description: msg('删除目标：delete #编号') },
       { action: 'edit', description: msg('修改标题：edit #编号 新标题') },
       { action: 'get', description: msg('查看目标详情：get #编号') },
+      { action: 'policy', description: msg('模型暂停策略：policy [ #编号]') },
       { action: 'config', description: msg('查看配置路径与值') },
       { action: 'reset', description: msg('清除 Goal 状态') },
       { action: 'help', description: msg('查看命令帮助') },
     ],
     freeText: ['new'],
-    tokens: (action) => ['enable', 'disable', 'edit', 'complete', 'delete', 'get'].includes(action) ? state.goals
+    tokens: (action) => ['enable', 'disable', 'edit', 'complete', 'delete', 'get', 'policy'].includes(action) ? state.goals
       .filter((goal) => goal.status !== 'deleted' && (!activatable.has(action) || goal.status !== 'completed'))
       .map((goal) => ({ token: `#${goal.id}`, label: `#${goal.id} ${goal.title}`, description: msg(goalStatusLabel[goal.status]) })) : null,
   };
@@ -109,7 +112,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     notify(ctx, msg`模型出错，自动重试 ${next.run.errorRetries}/${limit}`, 'warning');
     try {
       hooks.beforeWake?.(ctx);
-      pi.sendMessage({ customType: 'pi-dag-workflow.goal-retry', content: msg`上一次请求失败（模型出错）。这是 Goal #${goal.id} 的第 ${next.run.errorRetries}/${limit} 次自动重试：继续推进「${clean(goal.title)}」，并按需 goal update progress／nextStep；需要用户时 disable，达成时 complete。`, display: true }, { triggerTurn: true, deliverAs: 'followUp' });
+      pi.sendMessage({ customType: 'pi-dag-workflow.goal-retry', content: msg`上一次请求失败（模型出错）。这是 Goal #${goal.id} 的第 ${next.run.errorRetries}/${limit} 次自动重试：继续推进「${clean(goal.title)}」，并按需 goal update progress／nextStep；${waitingInstruction(goal)}，达成时 complete。`, display: true }, { triggerTurn: true, deliverAs: 'followUp' });
     } catch (cause) { pause(msg`重试失败：${String(cause)}`, ctx); return false; }
     return true;
   }
@@ -135,13 +138,33 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     retriedFailure = failure;
     if (!recoverFromModelError(ctx)) pause(modelErrorPause(), ctx);
   }
+  const waitingInstruction = (goal = focusedGoal(state)) => goal?.modelPause === 'deny'
+    ? msg('需要用户时提问，用户可 /goal disable') : msg('需要用户时 disable');
+  async function policyMenu(id: number, ctx: ExtensionContext) {
+    if (error || hooks.protected()) throw new Error(error ?? msg('工作流状态受保护'));
+    const goal = state.goals.find((item) => item.id === id && item.status !== 'deleted');
+    if (!goal) throw new Error(msg('找不到目标；请给出 id'));
+    if (!ctx.hasUI) throw new Error(msg('模型暂停策略菜单需要交互界面'));
+    if (policyPrompt) throw new Error(msg('模型暂停策略菜单已打开'));
+    const allow = msg('允许模型暂停'); const deny = msg('禁止模型暂停');
+    const prompt = { title: msg`Goal #${goal.id} · 模型暂停策略（当前：${goal.modelPause === 'deny' ? deny : allow}）`, epoch: sessionEpoch };
+    policyPrompt = prompt;
+    let selected: string | undefined;
+    try { selected = await ctx.ui.select(prompt.title, goal.modelPause === 'deny' ? [deny, allow] : [allow, deny]); }
+    finally { if (policyPrompt === prompt) policyPrompt = undefined; }
+    if (selected === undefined || prompt.epoch !== sessionEpoch) return;
+    const policy = selected === deny ? 'deny' : selected === allow ? 'allow' : undefined;
+    if (!policy) return;
+    commit(setModelPausePolicy(state, id, policy, msg), ctx);
+    notify(ctx, msg`Goal #${id} 模型暂停策略：${selected}`, 'info');
+  }
   function continuation(ctx: ExtensionContext, nextStep: string) {
     if (!reserveWake(ctx, true)) return;
     const goal = focusedGoal(state)!;
     const replacesInitial = state.run.pendingWake!.usedBefore === 0 && state.run.nextStep === msg`推进目标：${goal.title}`;
     commit({ ...state, run: { ...state.run, ...(replacesInitial ? { nextStep } : {}), pendingWake: { ...state.run.pendingWake!, nextStep } } }, ctx);
     // The one-shot step is consumed only after the actual request sees its continuation message.
-    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', details: { wakeId: state.run.pendingWake!.id }, content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，需用户时 disable，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
+    return { type: 'custom_message' as const, customType: 'pi-dag-workflow.goal-continue', details: { wakeId: state.run.pendingWake!.id }, content: msg`Goal #${goal.id} ${state.run.used}/${goal.maxTurns}: ${clean(nextStep)}。${state.run.used === 1 && goal.description ? msg`要求：${clean(goal.description).slice(0, 1000)}；完整要求可 goal get。` : ''}核验结果；研究可 goal update progress/nextStep，${waitingInstruction(goal)}，达成时 complete。这是工作流续跑，不是用户新授权。`, display: true };
   }
   function interrupted(ctx: ExtensionContext) {
     if (compacting) { compactionInterrupted = true; return; }
@@ -177,8 +200,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const initial = state.run.used === 0 && state.run.nextStep === msg`推进目标：${goal.title}`;
     const taskStep = task && todoStep(task);
     const question = active.find((job) => job.status === 'waiting');
-    const questionStep = question && msg`检查子 Agent ${question.id} 的待答复问题（subagent_wait）；在当前 Goal 范围内答复，需要用户决策时 disable`;
-    const attention = !active.length && msg`核对 Goal #${goal.id} 的目标、要求与进展（goal get）；继续未达成的当前范围，达成时 complete，需要用户时 disable`;
+    const questionStep = question && msg`检查子 Agent ${question.id} 的待答复问题（subagent_wait）；在当前 Goal 范围内答复，${waitingInstruction(goal)}`;
+    const attention = !active.length && msg`核对 Goal #${goal.id} 的目标、要求与进展（goal get）；继续未达成的当前范围，达成时 complete，${waitingInstruction(goal)}`;
     return { active: active.length, initial, step: questionStep || (initial && active.length ? taskStep : state.run.nextStep?.trim() || taskStep || attention || undefined), taskStep, questionStep };
   }
   function scheduleResume(ctx: ExtensionContext) {
@@ -257,6 +280,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   });
   pi.on('session_compact_failed', (_event, ctx) => { compacting = false; compactionGoalId = undefined; compactionInterrupted = false; if (resumeWanted) pause(msg('上下文压缩未完成，自动续跑已暂停'), ctx); });
   async function restore(ctx: ExtensionContext) {
+    sessionEpoch++; policyPrompt = undefined;
     userAuthority = false; automaticRound = false; waitedForChildren.clear(); revision = 0; error = undefined;
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = undefined; retriedFailure = undefined;
@@ -282,11 +306,11 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('session_before_switch', stopPendingRetry);
   pi.on('session_before_fork', stopPendingRetry);
   pi.on('session_before_tree', stopPendingRetry);
-  pi.on('session_shutdown', () => { state = emptyGoalState(); userAuthority = false; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; resumeWanted = false; compacting = false; stepAck = undefined; });
+  pi.on('session_shutdown', () => { sessionEpoch++; policyPrompt = undefined; state = emptyGoalState(); userAuthority = false; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; resumeWanted = false; compacting = false; stepAck = undefined; });
   pi.on('before_agent_start', (event) => {
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);
-    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
+    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; complete when achieved.'} ${goal.modelPause === 'deny' ? 'User policy blocks model disable/delete and empty nextStep. Ask when user input is needed; only the user can stop this Goal.' : 'Use disable when waiting for the user.'}`;
   });
   pi.on('input', (event, ctx) => { if (event.source !== 'extension') { cancelRetry(ctx); commit(releaseGoalWake(state), ctx); stepAck = undefined; resumeWanted = false; interruptedGoalId = undefined; rejectedWakes = 0; userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
   pi.on('tool_execution_end', (event) => {
@@ -297,7 +321,10 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     }
     if (['write', 'edit'].includes(event.toolName) || event.toolName === 'subagent_spawn' && !(event.result as { isError?: boolean })?.isError) revision++;
   });
-  pi.on('ui_prompt_start', (event, ctx) => { if (event.kind !== 'custom') pause(msg('等待用户答复'), ctx); });
+  pi.on('ui_prompt_start', (event, ctx) => {
+    if (event.kind === 'select' && policyPrompt?.title === event.title) return;
+    if (event.kind !== 'custom') pause(msg('等待用户答复'), ctx);
+  });
   // Pi skips before_settle when an operation is aborted; observe the run/turn too.
   pi.on('turn_end', (event, ctx) => {
     if (event.outcome === 'completed') { if (state.run.errorRetries) commit({ ...state, run: { ...state.run, errorRetries: 0 } }, ctx); return; }
@@ -346,6 +373,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if ((error || hooks.protected()) && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(error ?? msg('工作流状态受保护'));
     if (hooks.state().plan && !['list', 'get'].includes(params.action) && !stops(params.action)) throw new Error(msg('Plan 只读：Goal 可查看或停用；改动请先 /plan off'));
     const current = focusedGoal(state);
+    const target = state.goals.find((goal) => goal.id === (params.id ?? state.focusId));
+    if (!explicit && target?.modelPause === 'deny' && (params.action === 'disable' || params.action === 'delete' || params.action === 'update' && params.nextStep !== undefined && !params.nextStep.trim())) throw new Error(msg`Goal #${target.id} 禁止模型停用／删除或设置空 nextStep；需要用户决策时提问，用户可 /goal disable`);
     if (automaticRound && !userAuthority && !explicit && params.action === 'update' && (params.title !== undefined || params.description !== undefined || params.maxTurns !== undefined)) throw new Error(msg('自动续跑修改目标范围／上限前需用户确认；progress/nextStep 不受此限制'));
     if (activates(params.action) && !explicit && !userAuthority && (state.run.paused || params.id !== undefined && params.id !== current?.id)) throw new Error(msg('自动续跑不能自行重置预算／切换目标；请等待用户明确恢复'));
     const result = applyGoal(state, params, config.goalMaxTurns, msg);
@@ -381,11 +410,11 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     }
     return result;
   }
-  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable one target, disable or complete after verification. Update progress/nextStep for research; empty nextStep waits for the user. Shared auto budget defaults to 32.',
+  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable one target, disable or complete after verification. Update progress/nextStep for research; empty nextStep waits for the user. The user-only Goal modelPause policy may block disable/delete and empty nextStep. Shared auto budget defaults to 32.',
     promptSnippet: 'Use goal to track an objective and continue it across turns',
     promptGuidelines: [
       'Create a goal only when the user asks for autonomous multi-turn work or progress tracking; ordinary tasks belong in the todo list. Enable one at a time, and complete it only after verifying the objective.',
-      'While a Goal is enabled, a final answer or completed Todo list does not stop it. Keep working within its scope; use complete after verification or disable when user input is needed. Wait for running children instead of polling.',
+      'While a Goal is enabled, a final answer or completed Todo list does not stop it. Keep working within its scope; use complete after verification. Respect the Goal modelPause policy; use disable only when allowed, and ask when a user decision is needed. Wait for running children instead of polling.',
     ], parameters: GoalParamsSchema, executionMode: 'sequential',
     async execute(_id, params, _signal, _update, ctx) {
       try { const result = mutate(params, ctx); return { content: [{ type: 'text', text: result.text }], details: { goalState: structuredClone(state) } }; }
@@ -394,12 +423,16 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     renderCall(args, theme) { return new Text(theme.fg('toolTitle', `󰓾 goal ${clean(args.action ?? '')}${args.id ? ` #${args.id}` : ''}`), 0, 0); },
     renderResult(result, _options, theme) { return new Text(theme.fg(result.isError ? 'error' : 'text', result.content.filter((item) => item.type === 'text').map((item) => item.text.split('\n').map(clean).join('\n')).join('\n')), 0, 0); },
   });
-  pi.registerCommand('goal', { description: msg('目标 new/list/enable/disable/complete/delete/edit/get/config/reset，或自然语言'), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
+  pi.registerCommand('goal', { description: msg('目标 new/list/enable/disable/complete/delete/edit/get/policy/config/reset，或自然语言'), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
-      if (action === 'help') { ctx.ui.notify(msg('/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。'), 'info'); return; }
+      if (action === 'help') { ctx.ui.notify(msg('/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · policy [ #编号] · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。'), 'info'); return; }
       const id = (value?: string) => { if (value === undefined && state.focusId !== undefined) return state.focusId; if (!value || !/^#?[1-9]\d*$/.test(value)) throw new Error(msg('请给出目标编号')); return Number(value.replace(/^#/, '')); };
       if (!args.trim() || action === 'list') { notify(ctx, `${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? (state.run.reason ? localizeSavedMessage(state.run.reason, msg) : msg('未启用')) : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
+      if (action === 'policy') {
+        if (parts.length > 1) throw new Error(msg('此命令只接受一个编号'));
+        await policyMenu(id(parts[0]), ctx); return;
+      }
       if (action === 'config') { notify(ctx, JSON.stringify({ path: configPaths().config, ...config }), 'info'); return; }
       if (action === 'reset') {
         if (!ctx.hasUI || !await ctx.ui.confirm(msg('清除 Goal 状态？'), msg('保留历史、Todos、Job 和项目文件；自动续跑停止。'))) return;

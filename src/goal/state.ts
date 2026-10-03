@@ -11,7 +11,8 @@ export const GoalParamsSchema = Type.Object({
   nextStep: Type.Optional(Type.String({ description: 'Update: concrete next action; empty means wait for the user' })),
 }, { additionalProperties: false });
 export type GoalParams = Static<typeof GoalParamsSchema>;
-export interface Goal { id: number; title: string; description?: string; status: 'active' | 'paused' | 'completed' | 'deleted'; maxTurns: number; createdAt: number; completedAt?: number }
+export type ModelPausePolicy = 'allow' | 'deny';
+export interface Goal { id: number; title: string; description?: string; status: 'active' | 'paused' | 'completed' | 'deleted'; maxTurns: number; createdAt: number; completedAt?: number; modelPause?: ModelPausePolicy }
 export interface GoalRun { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string; errorRetries?: number; pendingWake?: { id: string; goalId: number; usedBefore: number; nextStep?: string } }
 export interface GoalState { version: 1; goals: Goal[]; nextId: number; focusId?: number; run: GoalRun }
 export const GOAL_TYPE = 'pi-dag-workflow.goal';
@@ -33,6 +34,7 @@ export function validateGoalState(state: GoalState, msg: Translator = chinese): 
     if (Array.from(goal.title).length > 80) throw new Error(msg('目标标题最多 80 个字符'));
     if (goal.description !== undefined) text(goal.description, 'description', 8192, false, msg);
     if (!['active', 'paused', 'completed', 'deleted'].includes(goal.status) || !Number.isSafeInteger(goal.maxTurns) || goal.maxTurns < 1 || goal.maxTurns > 200 || !Number.isFinite(goal.createdAt)) throw new Error(msg('损坏的目标状态／预算'));
+    if (goal.modelPause !== undefined && !['allow', 'deny'].includes(goal.modelPause)) throw new Error(msg('损坏的模型暂停策略'));
     if (goal.completedAt !== undefined && !Number.isFinite(goal.completedAt)) throw new Error(msg('损坏的完成时间'));
     if (goal.status === 'active') { active++; if (state.focusId !== goal.id) throw new Error(msg('只有 focus 目标可以启用')); }
   }
@@ -70,7 +72,7 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
   const next = structuredClone(state);
   if (params.action === 'create') {
     text(params.title, 'title', 1024, true, msg);
-    next.goals.push({ id: next.nextId++, title: params.title.trim(), status: 'paused', maxTurns: params.maxTurns ?? defaultTurns, createdAt: Date.now(), ...(params.description !== undefined ? { description: params.description } : {}) });
+    next.goals.push({ id: next.nextId++, title: params.title.trim(), status: 'paused', modelPause: 'allow', maxTurns: params.maxTurns ?? defaultTurns, createdAt: Date.now(), ...(params.description !== undefined ? { description: params.description } : {}) });
   } else {
     const goal = next.goals.find((item) => item.id === current!.id)!;
     if (params.action === 'update') {
@@ -103,8 +105,19 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
   validateGoalState(next, msg);
   if (JSON.stringify(next) === JSON.stringify(state)) return { state, text: msg('Goal 无变化') };
   const goal = params.action === 'create' ? next.goals.at(-1)! : next.goals.find((item) => item.id === current!.id)!;
-  const hint = activates(params.action) ? msg`；自动续跑上限 ${goal.maxTurns}，研究可 update progress/nextStep，需要用户时 disable` : '';
+  const waitHint = goal.modelPause === 'deny' ? msg('需要用户时提问；模型停用已禁止') : msg('需要用户时 disable');
+  const hint = activates(params.action) ? msg`；自动续跑上限 ${goal.maxTurns}，研究可 update progress/nextStep，${waitHint}` : '';
   return { state: next, text: msg`Goal #${goal.id} ${params.action}：${goal.title}${hint}` };
+}
+/** User command only: policy belongs to a Goal, survives enable, and never edits its run. */
+export function setModelPausePolicy(state: GoalState, id: number, policy: ModelPausePolicy, msg: Translator = chinese): GoalState {
+  const goal = state.goals.find((item) => item.id === id);
+  if (!goal || goal.status === 'deleted') throw new Error(msg('找不到目标；请给出 id'));
+  if (!['allow', 'deny'].includes(policy)) throw new Error(msg('损坏的模型暂停策略'));
+  if ((goal.modelPause ?? 'allow') === policy) return state;
+  const next = { ...state, goals: state.goals.map((item) => item.id === id ? { ...item, modelPause: policy } : item) };
+  validateGoalState(next, msg);
+  return next;
 }
 export function pauseGoal(state: GoalState, reason: string): GoalState {
   if (state.run.paused && state.run.reason === reason) return state;

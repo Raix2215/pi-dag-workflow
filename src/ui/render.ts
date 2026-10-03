@@ -196,6 +196,26 @@ function activityLabel(activity: NonNullable<AgentView["activity"]>, now: number
   return msg("󰆍 工具");
 }
 const ACTIVE_LIVE = new Set(["starting", "running"]);
+/**
+ * Acceptance projection for a job bound to a Todo row. The canonical Todo state wins the moment
+ * the task is completed, and a reopened (stale) report falls back to it too instead of implying a
+ * fresh handoff. Unfinished non-stale jobs keep live/failure labels; only terminal completion maps
+ * to the handoff (待交付) or the waiting-to-verify (待核验) stage. Unbound jobs keep agentLabel.
+ */
+const boundLabel = (task: Todo, job: AgentView, msg: Translator): string => {
+  if (task.status === "completed") return msg("󰄬 已完成");
+  if (ACTIVE_LIVE.has(job.status) || job.status === "waiting") return msg(agentLabels[job.status]);
+  if (job.taskReportStale) return msg(statusLabel[task.status]);
+  if (job.status === "completed") return msg(job.reportDelivery === "pending" ? "󰥔 待交付" : "󰥔 待核验");
+  return msg(agentLabels[job.status]);
+};
+const boundColor = (task: Todo, job: AgentView): ThemeColor => {
+  if (task.status === "completed") return agentColors.completed;
+  if (ACTIVE_LIVE.has(job.status) || job.status === "waiting") return agentColors[job.status];
+  if (job.taskReportStale) return colors[task.status];
+  if (job.status === "completed") return "warning";
+  return agentColors[job.status];
+};
 /** Rows of the standalone section that carries jobs without a Todo of their own. */
 const AGENT_ROWS = 4;
 
@@ -265,8 +285,9 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
     const owner = job ? `${clean(job.id)} · ${clean(job.profile)}` : clean(task.owner ?? "") || msg("主会话");
     const fragment = fragmentTag(task);
     const fragmentText = fragment ? `[${fragment}]` : "";
-    const live = job?.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
-    const label = job ? live ? activityLabel(live, Date.now(), msg) : agentLabel(job, msg) : msg(statusLabel[task.status]);
+    // A completed Todo owns the label: late live or terminal job states must not contradict the task.
+    const live = job && task.status !== "completed" && job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
+    const label = job ? live ? activityLabel(live, Date.now(), msg) : boundLabel(task, job, msg) : msg(statusLabel[task.status]);
     const minTitle = Math.min(6, visibleWidth(title));
     const statusBudget = available - minTitle - 1;
     const variants = live?.kind === "tool" ? [label, label.replace(/ (?:\d+[hms])+$/, ""), "󰆍"] : [label];
@@ -292,7 +313,7 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
     const activeBudget = titleBudget - visibleWidth(title) - visibleWidth(" · ");
     if (active && activeBudget >= 1) body = `${title} · ${clip(active, activeBudget)}`;
     const gap = suffix ? align ? " ".repeat(Math.max(1, available - visibleWidth(body) - visibleWidth(suffix))) : " " : "";
-    return bounded(left + " " + tint(body, "accent", theme) + gap + tint(head, "muted", theme) + tint(status, job ? agentColor(job) : 'muted', theme), width, theme);
+    return bounded(left + " " + tint(body, "accent", theme) + gap + tint(head, "muted", theme) + tint(status, job ? boundColor(task, job) : 'muted', theme), width, theme);
   });
 }
 
@@ -375,8 +396,9 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
     const title = clip(clean(task.subject), Math.max(0, budget - visibleWidth(prefix)));
     const first = tint(icons[task.status], colors[task.status], theme) + tint(` #${task.id} `, "dim", theme) + tint(title, "accent", theme);
     const owner = job ? `${clean(job.id)} · ${clean(job.profile)}` : clean(task.owner ?? "") || msg("主会话");
-    const label = job ? job.activity && ACTIVE_LIVE.has(job.status) ? activityLabel(job.activity, Date.now(), msg) : agentLabel(job, msg) : msg(statusLabel[task.status]);
-    const content = [first, tint(clip(`[${owner}]`, budget), "muted", theme), tint(clip(`[${label}]`, budget), job ? agentColor(job) : colors[task.status], theme)];
+    const live = job && task.status !== "completed" && job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
+    const label = job ? live ? activityLabel(live, Date.now(), msg) : boundLabel(task, job, msg) : msg(statusLabel[task.status]);
+    const content = [first, tint(clip(`[${owner}]`, budget), "muted", theme), tint(clip(`[${label}]`, budget), job ? boundColor(task, job) : colors[task.status], theme)];
     content.forEach((text, index) => {
       const y = box.top + index + 1;
       const group = bodies.get(y) ?? [];
