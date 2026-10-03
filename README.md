@@ -140,7 +140,7 @@ Creating a Todo with `status: "pending"` is accepted, and `status: "in_progress"
 | Task display | `/todos paths`, `/todos flat`, `show`, `hide`, `view list`, `view dag` |
 | `/dag` | solid-line graph; ↑/↓, PgUp/PgDn, Home/End; Esc returns |
 | `/plan` | `start`, `off`, `status`, `tools name1,name2` to trust extra read-only tools; `tools none` clears |
-| `/goal` | `new Title`, `list`, `enable [ #1]`, `disable [ #1]`, `edit #1 Title`, `complete #1`, `delete #1`, `get #1`, `policy [ #1]`, `config`, `reset` |
+| `/goal` | `new Title`, `list`, `enable [ #1]`, `disable [ #1]`, `edit #1 Title`, `complete #1`, `delete #1`, `get #1`, `nopause [ #1]`, `config`, `reset` |
 | `/agents` | `wait a1`, `send a1 Message`, `reply requestId Answer`, `cancel a1`, `remove a1`, `pause`, `resume` |
 | Profiles | `/agents profiles`, `profile name provider/model [thinking] [comma-tools]`, `unprofile name` |
 | Task fragments | `/todos presets`, `apply name [key=value …]`, `reset name [step]` |
@@ -157,13 +157,13 @@ Successful compaction preserves the active Goal and remaining allowance; Pi's ow
 
 Use `complete` after verifying the full objective or `disable` when user input is required. An explicit empty `nextStep` still waits for the user. Objective reviews spend the remaining allowance and remain subject to the no-progress limit; they cannot bypass pauses or create new authorization.
 
-### Model pause policy
+### `nopause` control
 
-Run `/goal policy #1` to choose **Allow model pause** (the default) or **Block model pause**. Omit the id for the current Goal. The choice belongs to that Goal, is stored in its session snapshot, survives enable/reload/branch restore, and leaves other Goals and global configuration unchanged. Opening or cancelling the menu does not start, pause, or refill the Goal.
+Run `/goal nopause #1` to choose **Allow model pause** (the default) or **Block model pause**. Omit the id for the current Goal. The choice belongs to that Goal, is stored in its session snapshot, survives enable/reload/branch restore, and leaves other Goals and global configuration unchanged. Opening or cancelling the menu does not start, pause, or refill the Goal.
 
 Blocking rejects model `disable`, `delete`, and `update` with an empty or whitespace-only `nextStep`. It still allows `complete` after verification. User `/goal disable` and `/goal delete` remain available; budget/no-progress limits, real user dialogs, Plan, and failed compaction can still pause safely. The policy only governs Goal tool requests, not operating-system permissions or whether the model's verification is correct.
 
-The model cannot change `modelPause` through the Goal tool. `goal get` exposes it, continuation hints respect it, and rejected stop requests leave Goal state unchanged. `/goal policy` is a user command, supported by the interactive and RPC selection UI.
+The model cannot change `modelPause` through the Goal tool. `goal get` exposes it, continuation hints respect it, and rejected stop requests leave Goal state unchanged. `/goal nopause` is a user command, supported by the interactive and RPC selection UI.
 
 Every operation has exactly one spelling. An unrecognized first word is treated as natural language and forwarded to the model, the same as any other free-form request.
 

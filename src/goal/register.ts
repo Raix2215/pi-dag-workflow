@@ -40,7 +40,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const workStamp = () => JSON.stringify([revision, hooks.state().tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, task.status])]);
   const paint = (ctx: ExtensionContext) => hooks.paint(ctx);
   const goalStatusLabel: Record<GoalState['goals'][number]['status'], string> = { active: '活动', paused: '暂停', completed: '已完成', deleted: '已删除' };
-  const activatable = new Set(['enable', 'policy']);
+  const activatable = new Set(['enable', 'nopause']);
   const completion: CompletionSpec = {
     actions: [
       { action: 'new', description: msg('创建目标（不启动）：new 标题') },
@@ -51,13 +51,13 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       { action: 'delete', description: msg('删除目标：delete #编号') },
       { action: 'edit', description: msg('修改标题：edit #编号 新标题') },
       { action: 'get', description: msg('查看目标详情：get #编号') },
-      { action: 'policy', description: msg('模型暂停策略：policy [ #编号]') },
+      { action: 'nopause', description: msg('模型暂停控制：nopause [ #编号]') },
       { action: 'config', description: msg('查看配置路径与值') },
       { action: 'reset', description: msg('清除 Goal 状态') },
       { action: 'help', description: msg('查看命令帮助') },
     ],
     freeText: ['new'],
-    tokens: (action) => ['enable', 'disable', 'edit', 'complete', 'delete', 'get', 'policy'].includes(action) ? state.goals
+    tokens: (action) => ['enable', 'disable', 'edit', 'complete', 'delete', 'get', 'nopause'].includes(action) ? state.goals
       .filter((goal) => goal.status !== 'deleted' && (!activatable.has(action) || goal.status !== 'completed'))
       .map((goal) => ({ token: `#${goal.id}`, label: `#${goal.id} ${goal.title}`, description: msg(goalStatusLabel[goal.status]) })) : null,
   };
@@ -140,14 +140,14 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   }
   const waitingInstruction = (goal = focusedGoal(state)) => goal?.modelPause === 'deny'
     ? msg('需要用户时提问，用户可 /goal disable') : msg('需要用户时 disable');
-  async function policyMenu(id: number, ctx: ExtensionContext) {
+  async function noPauseMenu(id: number, ctx: ExtensionContext) {
     if (error || hooks.protected()) throw new Error(error ?? msg('工作流状态受保护'));
     const goal = state.goals.find((item) => item.id === id && item.status !== 'deleted');
     if (!goal) throw new Error(msg('找不到目标；请给出 id'));
-    if (!ctx.hasUI) throw new Error(msg('模型暂停策略菜单需要交互界面'));
-    if (policyPrompt) throw new Error(msg('模型暂停策略菜单已打开'));
+    if (!ctx.hasUI) throw new Error(msg('nopause 菜单需要交互界面'));
+    if (policyPrompt) throw new Error(msg('nopause 菜单已打开'));
     const allow = msg('允许模型暂停'); const deny = msg('禁止模型暂停');
-    const prompt = { title: msg`Goal #${goal.id} · 模型暂停策略（当前：${goal.modelPause === 'deny' ? deny : allow}）`, epoch: sessionEpoch };
+    const prompt = { title: msg`Goal #${goal.id} · nopause（当前：${goal.modelPause === 'deny' ? deny : allow}）`, epoch: sessionEpoch };
     policyPrompt = prompt;
     let selected: string | undefined;
     try { selected = await ctx.ui.select(prompt.title, goal.modelPause === 'deny' ? [deny, allow] : [allow, deny]); }
@@ -156,7 +156,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const policy = selected === deny ? 'deny' : selected === allow ? 'allow' : undefined;
     if (!policy) return;
     commit(setModelPausePolicy(state, id, policy, msg), ctx);
-    notify(ctx, msg`Goal #${id} 模型暂停策略：${selected}`, 'info');
+    notify(ctx, msg`Goal #${id} nopause：${selected}`, 'info');
   }
   function continuation(ctx: ExtensionContext, nextStep: string) {
     if (!reserveWake(ctx, true)) return;
@@ -423,15 +423,15 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     renderCall(args, theme) { return new Text(theme.fg('toolTitle', `󰓾 goal ${clean(args.action ?? '')}${args.id ? ` #${args.id}` : ''}`), 0, 0); },
     renderResult(result, _options, theme) { return new Text(theme.fg(result.isError ? 'error' : 'text', result.content.filter((item) => item.type === 'text').map((item) => item.text.split('\n').map(clean).join('\n')).join('\n')), 0, 0); },
   });
-  pi.registerCommand('goal', { description: msg('目标 new/list/enable/disable/complete/delete/edit/get/policy/config/reset，或自然语言'), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
+  pi.registerCommand('goal', { description: msg('目标 new/list/enable/disable/complete/delete/edit/get/nopause/config/reset，或自然语言'), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
-      if (action === 'help') { ctx.ui.notify(msg('/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · policy [ #编号] · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。'), 'info'); return; }
+      if (action === 'help') { ctx.ui.notify(msg('/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · nopause [ #编号] · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。'), 'info'); return; }
       const id = (value?: string) => { if (value === undefined && state.focusId !== undefined) return state.focusId; if (!value || !/^#?[1-9]\d*$/.test(value)) throw new Error(msg('请给出目标编号')); return Number(value.replace(/^#/, '')); };
       if (!args.trim() || action === 'list') { notify(ctx, `${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? (state.run.reason ? localizeSavedMessage(state.run.reason, msg) : msg('未启用')) : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
-      if (action === 'policy') {
+      if (action === 'nopause') {
         if (parts.length > 1) throw new Error(msg('此命令只接受一个编号'));
-        await policyMenu(id(parts[0]), ctx); return;
+        await noPauseMenu(id(parts[0]), ctx); return;
       }
       if (action === 'config') { notify(ctx, JSON.stringify({ path: configPaths().config, ...config }), 'info'); return; }
       if (action === 'reset') {

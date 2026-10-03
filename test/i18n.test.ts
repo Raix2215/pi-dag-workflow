@@ -322,7 +322,7 @@ test("registerTodos/Plan/Goal/Agents localize command descriptions and completio
   assert.equal(goal["new"], "Create a goal (does not start): new title");
   assert.equal(goal["enable"], "Enable and advance a goal: enable [ #id]");
   assert.equal(goal["disable"], "Disable or pause a goal: disable [ #id]");
-  assert.deepEqual(Object.keys(goal), ["new", "list", "enable", "disable", "complete", "delete", "edit", "get", "policy", "config", "reset", "help"]);
+  assert.deepEqual(Object.keys(goal), ["new", "list", "enable", "disable", "complete", "delete", "edit", "get", "nopause", "config", "reset", "help"]);
   const agents = roots("agents");
   assert.equal(agents["list"], "View Jobs and pause state");
   assert.equal(agents["profile"], "Save a Profile: profile name provider/model [thinking] [tools]");
