@@ -9,7 +9,7 @@ This reference distinguishes execution, report delivery, and model consumption. 
 | Child `subagent_send` | Report or question, with the originating job and optional `requestId` | Buffered for the next safe main-session boundary; an idle session can be woken |
 | Child completion | Completion report and retained child output | Same automatic report channel |
 | Parent `subagent_spawn` | Job ID and startup state, with linked Todo ID/current status when bound | Ordinary result of the current tool call |
-| Todo completion | Newly ready task hints appended to the same Todo tool result | Following request; the UI keeps its notification |
+| Todo completion | Newly ready task hints appended to the same Todo tool result | Following request; no duplicate UI notification |
 | Workflow checkpoint | Key task/Job state after compaction, restore, or command changes | Passive append before a normal request or safe boundary; no independent wake |
 | Parent `subagent_inspect` | Job summaries and profiles, not full output | Ordinary result of the current tool call |
 | Parent `subagent_wait` | Full retained output, status, usage, and pending questions | Ordinary result of the current tool call |

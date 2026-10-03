@@ -126,7 +126,6 @@ export function createWorkflow(pi: ExtensionAPI) {
     if (ready.length) {
       const hint = msg`前置已完成，可开始：${ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、')}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`;
       result.text += `\n${hint}`;
-      notify(ctx, hint, 'info');
     }
     return result;
   }

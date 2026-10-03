@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Newly ready task hints stay in the Todo tool result; remove the separate UI notification so users do not see the same dependency change twice.
+
 ## [0.2.1] - 2026-10-03
 
 ### Added
