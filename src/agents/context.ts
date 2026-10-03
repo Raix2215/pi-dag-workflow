@@ -27,7 +27,7 @@ export function fragmentContext(taskId: number, tasks: readonly Todo[], jobs: re
   ];
   const earlier = instance.filter((item) => item.id < task.id);
   const reports = earlier.flatMap((item) => {
-    const job = jobs.find((record) => record.todoId === item.id);
+    const job = jobs.findLast((record) => record.todoId === item.id);
     const head = job?.output?.replace(/\s+/g, " ").trim().slice(0, REPORT_HEAD);
     return head ? [`- ${item.metadata?.key ?? `#${item.id}`} (${state(item)}): ${head}${(job?.output?.length ?? 0) > REPORT_HEAD ? "…" : ""}`] : [];
   });

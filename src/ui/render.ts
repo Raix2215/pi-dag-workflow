@@ -1,4 +1,4 @@
-import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { dagStructure, type DagStructure } from "../dag/cache.ts";
 import { dagLayout } from "../dag/layout.ts";
@@ -12,6 +12,17 @@ const colors: Record<Todo["status"], ThemeColor> = { pending: "muted", in_progre
 export function clean(text: string): string {
   const escaped = text.replace(/\u009b/g, "\x1b[").replace(/\u009d/g, "\x1b]").replace(/\u009c/g, "\x1b\\");
   return stripTerminalSequences(escaped).replace(/[\r\n\t\u2028\u2029]+/g, " ").replace(/[\p{Cc}\p{Bidi_Control}\u206a-\u206f]/gu, "").trim();
+}
+/** Display text keeps intended line breaks while removing terminal controls from each line. */
+export function displayText(text: string): string {
+  return text.split("\n").map((line) => {
+    const indent = (line.match(/^[ \t]*/)![0]).replace(/\t/g, "    ");
+    const content = clean(line);
+    return content ? indent + content : "";
+  }).join("\n");
+}
+export function notify(ctx: ExtensionContext, text: string, type: "info" | "warning" | "error" = "info"): void {
+  ctx.ui.notify(displayText(text), type);
 }
 const columns = (width: number): number => Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
 const clip = (text: string, width: number): string => stripTerminalSequences(truncateToWidth(text, Math.max(0, width), "…"));

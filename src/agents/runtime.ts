@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from '@earendil-works/pi-coding-agent';
 import { CHILD_NOTICE_PREFIX, CHILD_QUESTION_PREFIX } from "./child.ts";
-import { ProfileStore, type ModelRef, type ThinkingLevel } from "./profiles.ts";
+import { ProfileStore, THINKING_LEVELS, type ModelRef, type ThinkingLevel } from "./profiles.ts";
 
 export type JobStatus = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface JobSummary {
@@ -98,7 +98,10 @@ class RpcPipe {
             clearTimeout(pending.timer); this.pending.delete(record.id);
             if (record.success) pending.resolve(record); else pending.reject(new Error(String(record.error ?? "Pi command failed")));
           }
-        } else onRecord(record);
+        } else {
+          try { onRecord(record); }
+          catch { fail(new Error("Invalid Pi RPC event")); return; }
+        }
       }
     });
   }
@@ -166,7 +169,7 @@ function message(value: string): string {
  * arbitrarily long, and it is shown next to jobs that are not bound to any Todo.
  */
 function jobLabel(task: string): string {
-  return task
+  const line = task
     // Escape sequences first: without this, removing the control bytes would leave "[31m" behind.
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b[@-Z\\-_]|\x1b\[[0-?]*[ -/]*[@-~]/g, "")
@@ -174,6 +177,7 @@ function jobLabel(task: string): string {
     .replace(/[\p{Cc}\p{Cf}]/gu, "")
     .trim()
     .slice(0, 80);
+  return line.replace(/[\uD800-\uDBFF]$/, "");
 }
 
 /** In-memory live processes, with compact plain summaries exported for native Pi entries. */
@@ -205,6 +209,7 @@ export class AgentRuntime {
   }
   /** Interim reports this job sent so far; 0 means it has not reported on its work yet. */
   reports(jobId: string): number { return this.jobs.get(jobId)?.messages ?? 0; }
+  hasRequest(jobId: string, requestId: string): boolean { return this.jobs.get(jobId)?.requests.has(requestId) ?? false; }
   private job(id: string): LiveJob { const job = this.jobs.get(id); if (!job) throw new Error(`Unknown agent: ${id}`); return job; }
   private changed(job?: LiveJob): void {
     if (job) { job.summary.pendingRequests = job.requests.size; for (const listener of job.listeners) listener(); }
@@ -413,6 +418,7 @@ export class AgentRuntime {
     if (!Array.isArray(summaries) || summaries.length > 128) throw new Error("Invalid agent summaries");
     const restored = summaries.map((item) => {
       if (!item || !/^a[1-9]\d{0,8}$/.test(item.id) || ![...ACTIVE, "completed", "failed", "cancelled", "interrupted"].includes(item.status) || !Number.isFinite(item.startedAt) || typeof item.profile !== "string" || !Array.isArray(item.tools) || !item.model || typeof item.model.provider !== "string" || typeof item.model.id !== "string") throw new Error("Invalid agent summary");
+      if (!THINKING_LEVELS.includes(item.thinking) || item.endedAt !== undefined && !Number.isFinite(item.endedAt) || item.todoId !== undefined && (!Number.isSafeInteger(item.todoId) || item.todoId < 1)) throw new Error("Invalid agent summary");
       const delivery = (item as { reportDelivery?: unknown }).reportDelivery;
       if (delivery !== undefined && delivery !== "pending" && delivery !== "delivered") throw new Error("Invalid agent summary");
       const terminal = item.status === "completed" || item.status === "failed";

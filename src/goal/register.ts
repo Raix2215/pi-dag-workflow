@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { Text } from '@earendil-works/pi-tui';
 import { activates, applyGoal, emptyGoalState, focusedGoal, GOAL_TYPE, GoalParamsSchema, pauseGoal, reserveGoalWake, restoreGoalState, stops, type GoalParams, type GoalState } from './state.ts';
 import { configPaths, loadConfig, type WorkflowConfig } from '../shared/config.ts';
-import { clean, type AgentView } from '../ui/render.ts';
+import { clean, notify, type AgentView } from '../ui/render.ts';
 import { deriveDag } from '../dag/graph.ts';
 import type { WorkflowState } from '../todos/state.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
@@ -54,11 +54,17 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     hooks.onSaved?.(ctx);
     paint(ctx);
   }
+  function cancelRetry(ctx: ExtensionContext) {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = undefined;
+    retriedFailure = lastFailure(ctx); // User intervention retires the old failed request.
+  }
   function pause(reason: string, ctx: ExtensionContext) {
+    cancelRetry(ctx);
     if (!focusedGoal(state) || state.run.paused) return;
     commit(pauseGoal(state, reason), ctx);
     hooks.pauseAgents();
-    ctx.ui.notify(msg`Goal 已暂停：${reason}；/goal enable 明确恢复`, 'warning');
+    notify(ctx, msg`Goal 已暂停：${reason}；/goal enable 明确恢复`, 'warning');
   }
   const available = () => !error && !hooks.protected() && !hooks.state().plan && (!focusedGoal(state) ? standaloneReports : !state.run.paused && state.run.used < focusedGoal(state)!.maxTurns);
   function reserveWake(ctx: ExtensionContext): boolean {
@@ -83,8 +89,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if (error || hooks.protected() || hooks.state().plan) return false;
     const next = { ...state, run: { ...state.run, errorRetries: attempts + 1 } };
     commit(next, ctx);
-    automaticRound = true;
-    ctx.ui.notify(msg`模型出错，自动重试 ${next.run.errorRetries}/${limit}`, 'warning');
+    userAuthority = false; automaticRound = true;
+    notify(ctx, msg`模型出错，自动重试 ${next.run.errorRetries}/${limit}`, 'warning');
     try {
       pi.sendMessage({ customType: 'pi-dag-workflow.goal-retry', content: msg`上一次请求失败（模型出错）。这是 Goal #${goal.id} 的第 ${next.run.errorRetries}/${limit} 次自动重试：继续推进「${clean(goal.title)}」，并按需 goal update progress／nextStep；需要用户时 disable，达成时 complete。`, display: true }, { triggerTurn: true, deliverAs: 'followUp' });
     } catch (cause) { pause(msg`重试失败：${String(cause)}`, ctx); return false; }
@@ -105,11 +111,10 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     return undefined;
   }
   /** Answer a failure Pi gave up on with one bounded retry turn; pause once the budget is spent. */
-  function recoverFailure(ctx: ExtensionContext) {
+  function recoverFailure(ctx: ExtensionContext, failure: string, goalId: number) {
     retryTimer = undefined;
-    if (!ctx.isIdle() || hooks.protected() || hooks.state().plan) return;
-    const failure = lastFailure(ctx);
-    if (!failure || failure === retriedFailure) return;
+    if (!ctx.isIdle() || hooks.protected() || hooks.state().plan || state.run.paused || focusedGoal(state)?.id !== goalId) return;
+    if (lastFailure(ctx) !== failure || failure === retriedFailure) return;
     retriedFailure = failure;
     if (!recoverFromModelError(ctx)) pause(modelErrorPause(), ctx);
   }
@@ -130,20 +135,24 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       state = pauseGoal(state, focusedGoal(state) ? msg('会话恢复') : state.run.reason ?? '');
       if (!focusedGoal(state) && !state.run.reason) delete state.run.reason;
       config = await loadConfig(msg);
-    } catch (cause) { error = String(cause); state = emptyGoalState(); ctx.ui.notify(msg`Goal／配置恢复失败：${error}；保留历史，/goal reset 明确清除 Goal，配置错误请修复后重载`, 'error'); }
+    } catch (cause) { error = String(cause); state = emptyGoalState(); notify(ctx, msg`Goal／配置恢复失败：${error}；保留历史，/goal reset 明确清除 Goal，配置错误请修复后重载`, 'error'); }
     standaloneReports = !state.run.reason;
     baseline = workStamp(); lastProgress = state.run.progress ?? '';
     paint(ctx);
   }
   pi.on('session_start', (_event, ctx) => restore(ctx));
   pi.on('session_tree', (_event, ctx) => restore(ctx));
+  const stopPendingRetry = (_event: unknown, ctx: ExtensionContext) => cancelRetry(ctx);
+  pi.on('session_before_switch', stopPendingRetry);
+  pi.on('session_before_fork', stopPendingRetry);
+  pi.on('session_before_tree', stopPendingRetry);
   pi.on('session_shutdown', () => { state = emptyGoalState(); userAuthority = false; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; });
   pi.on('before_agent_start', (event) => {
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);
     if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; use disable when waiting for the user, complete when achieved.'}`;
   });
-  pi.on('input', (event) => { if (event.source !== 'extension') { userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
+  pi.on('input', (event, ctx) => { if (event.source !== 'extension') { cancelRetry(ctx); userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
   pi.on('tool_execution_end', (event) => {
     if (event.isError) return;
     if (['write', 'edit'].includes(event.toolName) || event.toolName === 'subagent_spawn' && !(event.result as { isError?: boolean })?.isError) revision++;
@@ -161,10 +170,12 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   // One failure reports at several boundaries, and Pi drains queued messages inside the same run,
   // so retries are decided once the run settled and Pi's own recovery had its chance.
   pi.on('agent_settled', (_event, ctx) => {
-    if (retryTimer || hooks.protected() || hooks.state().plan || !focusedGoal(state) || state.run.paused) return;
+    if (hooks.protected() || hooks.state().plan || !focusedGoal(state) || state.run.paused) return;
     const failure = lastFailure(ctx);
     if (!failure || failure === retriedFailure) return;
-    retryTimer = setTimeout(() => recoverFailure(ctx), hooks.retryDelayMs ?? 1000);
+    const goalId = focusedGoal(state)!.id;
+    if (retryTimer) clearTimeout(retryTimer); // A new settled failure replaces the stale delayed work.
+    retryTimer = setTimeout(() => recoverFailure(ctx, failure, goalId), hooks.retryDelayMs ?? 1000);
   });
   pi.on('agent_before_settle', (event, ctx) => {
     if (event.outcome !== 'completed') { if (event.outcome === 'aborted') pause(msg('用户中断'), ctx); return; }
@@ -208,6 +219,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     commit(result.state, ctx);
     if (started) { userAuthority = false; automaticRound = false; baseline = workStamp(); lastProgress = ''; }
     const stoppingFocus = stops(params.action) && current !== undefined && (params.id ?? current.id) === current.id;
+    if (started || stoppingFocus) cancelRetry(ctx);
     if (stoppingFocus && !focusedGoal(state)) standaloneReports = false;
     if (changedFocus || stoppingFocus) hooks.pauseAgents(); // Drop old queued notices; output remains in Job records.
     if (started) hooks.resumeAgents();
@@ -238,11 +250,14 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       const [action, ...parts] = args.trim().split(/\s+/);
       if (action === 'help') { ctx.ui.notify(msg('/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。'), 'info'); return; }
       const id = (value?: string) => { if (value === undefined && state.focusId !== undefined) return state.focusId; if (!value || !/^#?[1-9]\d*$/.test(value)) throw new Error(msg('请给出目标编号')); return Number(value.replace(/^#/, '')); };
-      if (!args.trim() || action === 'list') { ctx.ui.notify(`${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? (state.run.reason ? localizeSavedMessage(state.run.reason, msg) : msg('未启用')) : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
-      if (action === 'config') { ctx.ui.notify(JSON.stringify({ path: configPaths().config, ...config }), 'info'); return; }
+      if (!args.trim() || action === 'list') { notify(ctx, `${applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text}\n${msg`续跑 ${state.run.used}/${focusedGoal(state)?.maxTurns ?? '-'} · ${state.run.paused ? (state.run.reason ? localizeSavedMessage(state.run.reason, msg) : msg('未启用')) : msg('运行')}${error ? msg`\n错误：${error}` : ''}`}`, 'info'); return; }
+      if (action === 'config') { notify(ctx, JSON.stringify({ path: configPaths().config, ...config }), 'info'); return; }
       if (action === 'reset') {
         if (!ctx.hasUI || !await ctx.ui.confirm(msg('清除 Goal 状态？'), msg('保留历史、Todos、Job 和项目文件；自动续跑停止。'))) return;
-        hooks.pauseAgents(); commit(emptyGoalState(), ctx); config = await loadConfig(msg); error = undefined; return;
+        cancelRetry(ctx); hooks.pauseAgents();
+        userAuthority = false; automaticRound = false; standaloneReports = false; revision = 0;
+        commit(emptyGoalState(), ctx); baseline = workStamp(); lastProgress = '';
+        config = await loadConfig(msg); error = undefined; return;
       }
       let params: GoalParams | undefined;
       if (action === 'new') params = { action: 'create', title: parts.join(' ') };
@@ -251,9 +266,9 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
         if (parts.length > 1) throw new Error(msg('此命令只接受一个编号'));
         params = { action: action as GoalParams['action'], id: id(parts[0]) };
       }
-      if (params) { ctx.ui.notify(mutate(params, ctx, true).text, 'info'); return; }
+      if (params) { notify(ctx, mutate(params, ctx, true).text, 'info'); return; }
       pi.sendUserMessage(msg`请管理当前 Goal：${args}`, ctx.isIdle() ? undefined : { deliverAs: 'followUp' });
-    } catch (cause) { ctx.ui.notify(String(cause), 'error'); }
+    } catch (cause) { notify(ctx, String(cause), 'error'); }
   } });
   return {
     title: () => { const goal = focusedGoal(state); return goal ? `#${goal.id} ${goal.title}${state.run.paused ? msg('（暂停）') : ''}` : undefined; },

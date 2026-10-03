@@ -102,9 +102,12 @@ task that still depends on running work belongs to the parent until that work se
 is capped at eight children; children never spawn children.
 
 Ask the child to send a short interim message as each step of a chain finishes, then advance the
-task statuses from those messages; the final report is still what you verify. Bind the chain to the
-task it must finish last: a child that has already reported stops blocking that task's completion,
-while every other edit, delete, or clear still waits for the child to stop. Completing a task also
+task statuses from those messages; the final report is still what you verify. Bind the last task
+only when it is already unblocked; otherwise bind the first ready task. For `A → B → C`, with
+only `A` ready, bind `A` and verify each interim report before advancing `A`, then `B`, then `C`.
+A child that has reported allows its bound task's status-only completion while it keeps running;
+content edits still require explicit direction, and reopening, deleting, clearing, or fragment resets
+that touch its task wait for it to stop. Keep at most one task in progress per work stream. Completing a task also
 prints a one-line hint naming the tasks it just unblocked, and the plugin never starts them on its
 own.
 
@@ -118,7 +121,7 @@ never exposes it.
 
 | Tool | Purpose |
 |---|---|
-| `todo` | create/update/list/get/delete/clear; numeric IDs and `blockedBy` prerequisites |
+| `todo` | create/update/list/get/delete/clear; apply/reset for fragments; numeric IDs and `blockedBy` prerequisites |
 | `goal` | create/update/list/get/delete; enable; disable; complete — one spelling per operation |
 | `subagent_spawn` | start one child with `task` and optional `todoId`/`profile`/`tools`/`timeout`/`context` |
 | `subagent_send` | message a `recipient` job ID, or answer a `requestId` |
@@ -201,7 +204,7 @@ Configuration only holds plugin settings and is stored separately from Pi's sess
 
 ### `pi-dag-workflow-config.json`
 
-Optional. These three keys are the complete configuration; anything absent falls back to the value shown. Choose
+Optional. These five keys are the complete configuration; anything absent falls back to the value shown. Choose
 modules with `pi config`, not in this file, and apply changes with `/reload`.
 
 ```json
@@ -217,7 +220,7 @@ modules with `pi config`, not in this file, and apply changes with `/reload`.
 - `language` — `"auto"` (default), `"en"`, or `"zh-CN"`. `auto` selects `zh-CN` when the terminal locale is Chinese and `en` otherwise. Plugin labels, help, notifications, and workflow messages are localized. User-authored content, command names, and structured tool fields stay unchanged.
 - `goalMaxTurns` — default allowance for newly created Goals, 1–200 (default `32`), shared by automatic continuation and child-report wakes.
 - `goalNoProgressLimit` — consecutive rounds without new progress before a Goal pauses, 1–10 (default `3`).
-- `goalErrorRetries` — automatic retries after a failed model request while a Goal is running, 0–20 (default `5`). Each failed request earns one retry, queued once Pi's own retry has given up and the run has settled; the counter resets after a successful turn, and `0` pauses on the first error. A retry does not consume the continuation allowance.
+- `goalErrorRetries` — automatic retries after a failed model request while a Goal is running, 0–20 (default `5`). Each failed request earns one retry, queued once Pi's own retry has given up and the run has settled; the counter resets after a successful turn, and `0` pauses on the first error. A retry does not consume the continuation allowance. User input, a stop, a Goal switch, reset, or session navigation cancels a pending retry.
 - `planTools` — machine-wide extra read-only tools for Plan mode, up to 16 unique names (default `[]`). Use it to let planning search the web, for example `["web_search", "fetch_content", "get_search_content", "source_check"]`; the names must match the tools your Pi has installed. Writes, shell commands, and dispatch stay blocked whatever this lists, and `/plan tools name1,name2` adds tools for one session on top.
 
 Unknown keys and out-of-range values are configuration errors. Module selection lives in `pi config`, not in this
@@ -283,9 +286,10 @@ call; reset reopens a finished instance so the same fragment can run again:
 - `description` — one line, up to 200 characters. It is advertised in the system prompt like a skill description, so the model knows the fragment exists without reading its steps.
 - `skill` — optional name of a Pi skill to load before running the fragment.
 - `steps` — 1–32 steps. `key` is the step's stable name inside the fragment, `subject` is the task title, and `{placeholders}` are filled from the `vars` of an apply call. `after` lists the keys that must finish first, `owner` pre-assigns a profile or session, and `description`/`activeForm` carry the same meaning as on a task.
-- Applying always starts a **new run** (`release#2`, `release#3`, …) and never reuses ids, so finished runs stay as history. Each fragment task shows `[release#2]` before its owner and status in the panel.
-- `reset` reopens the newest run, or one step plus every task that depends on it, with `reset name step`. A `run` field picks an older instance; a task that depends on a reopened step is reopened too, so the graph never claims finished work behind a reopened prerequisite.
-- Fragments live in one user-level file (64 KiB, 64 presets, owner-only permissions when written), and no fragment is defined by default.
+- Acyclic dependencies can refer to keys before or after the current step in the file; display step numbers keep the definition's order.
+- Applying always starts a **new run** and never reuses ids, so finished runs stay as history. Panel tags show the step, such as `[release#1]` and `[release#2]`; later runs add a suffix, such as `[release#1·r2]`, before owner and status.
+- `reset` reopens the newest run, or one step with `reset name step`. The tool's `run` field picks an older instance. Both forms also reopen every live downstream task, including tasks outside the fragment. Deleted rows stay deleted; an active child bound anywhere in that closure blocks the reset.
+- Fragments live in one user-level file (64 KiB, 64 presets), and no fragment is defined by default. Keep the file readable and writable only by its owner.
 
 ## Security and privacy
 
@@ -297,6 +301,8 @@ call; reset reopens a finished instance so the same fragment can run again:
   Child agents run through Pi with the model and credentials you already configured.
 - **Child credentials.** Model bootstrap data reaches a child through an environment variable that the child
   parses and deletes at startup, so it is not written to disk or exposed in command-line arguments.
+  Children also inherit process environment and any environment required by the selected provider;
+  the bootstrap cleanup does not make them a credential sandbox.
 - **Same operating-system permissions.** The main session, Plan mode, and every child run as you. Plan and
   tool selection are execution guards; cancelling a child stops the process without rolling back its edits.
 - **Reports and output.** Child reports, questions, and tool output are stripped of terminal control
@@ -306,7 +312,7 @@ call; reset reopens a finished instance so the same fragment can run again:
 ## Important boundaries
 
 - The allowance is a budget for **plugin-requested continuation and wakes**, not a limit on Pi or API calls. Native tool-result follow-ups and retries are counted separately, and reported progress should be verified rather than trusted.
-- Completed Todos cannot be silently reopened; create a new task for rework. `clear` does not reuse IDs. Switching or deleting a Goal neither clears Todos nor reverts project files.
+- Completed fragment tasks reopen through an explicit `reset`; other completed Todos require a new task for rework. `clear` does not reuse IDs. Switching or deleting a Goal neither clears Todos nor reverts project files.
 - Goal completion is never automatic just because all Todos are done; mark it complete after verifying the result.
 - Plan and tool selection are execution guards, **not an OS sandbox**. Extensions and writable children run with your operating-system permissions, and branch navigation does not roll back project edits.
 - Restoring a session pauses the Goal and re-arms nothing. Entering Plan requires an idle main run and no active managed children.

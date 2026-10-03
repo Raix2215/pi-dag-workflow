@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-03
+
+### Fixed
+
+- **Goal retries respect intervention** — pending retries are tied to the failed request and Goal, canceled on user input, stops, resets, and session navigation, and cannot inherit scope-changing authority from an earlier user turn. A newer settled failure replaces stale delayed work. Goal reset also stops automatic child-report wakes.
+- **Recovery does not strand child reports** — a model error holds queued reports until the successful recovery turn rather than permanently pausing or discarding them; reports do not race an independent idle wake against model recovery. Explicit stops, aborts, and exhausted retries still suppress automatic work.
+- **Fragment resets preserve the DAG** — whole-run and single-step resets reopen all live downstream tasks, including external successors, keep deleted rows deleted, validate topology before saving, and reject any closure claimed by an active child.
+- **Completion cannot carry an unannounced edit** — completing a reported child's bound task while it runs accepts a status-only update; extra content or dependency changes still go through the edit guard.
+- **Plan tool and command behavior agree** — status-filtered Todo queries remain read-only, and applying or resetting a fragment is allowed while implementation, shell commands, dispatch, and task starts/completions remain blocked.
+- **Fragment definitions and context are reliable** — forward references in acyclic definitions resolve correctly, placeholder values must be explicitly supplied own string properties, malformed run metadata cannot poison counters, and redispatched prerequisites contribute their latest report.
+- **Child delivery and recovery are hardened** — same-batch completed output absorbs its interim notice, already-answered questions do not reappear, malformed RPC events fail the child rather than crashing the parent, restored fields are validated before live jobs change, and labels cannot end on a split Unicode character.
+- **Display and localization** — user-controlled notifications and Agent tool results strip terminal controls while preserving intended indentation and canonical data. Missing English messages are covered by a source-to-catalog check. Profile save/delete reloads external edits before writing.
+
+### Changed
+
+- **Serial chains bind only ready tasks** — bind the final task when it is already unblocked; otherwise bind the first ready task and advance statuses from verified interim reports. Guidance consistently allows at most one in-progress task per work stream.
+- **Linear dependency scans** — fragment reset closures use successor traversal, and completion hints use status indexes instead of repeated full-list searches.
+- **Release metadata and documentation** — synchronize manifest/lockfile versions, correct both configuration and fragment-tag examples, refresh the release checklist, and document the review and verification in `docs/REVIEW-0.2.0.md`.
+
+### Tests
+
+- Add regressions for lifecycle cancellation, reset guards, malformed child events/state, Plan parity, stale fragment reports, explicit variables, terminal display, external profile edits, and English catalog coverage.
+- Exercise real Pi retry lifecycle with injected `500 → 503` errors, default five retries, zero retries, success reset, and native-retry coexistence. Add an opt-in real-model two-round continuation check alongside Goal and joint-workflow acceptance.
+
 ## [0.1.13] - 2026-10-02
 
 ### Fixed

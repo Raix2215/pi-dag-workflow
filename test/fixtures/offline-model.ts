@@ -36,10 +36,13 @@ export default function offlineModel(pi: ExtensionAPI): void {
             // Goal error-recovery tests: one Goal fails the first two requests, another fails until
             // its retry budget is spent. Only Goal turns fail; the test's own tool calls stay intact.
             const goalWork = prompt.startsWith('Goal #') || prompt.includes('自动重试');
-            if (goalWork && prompt.includes('出错重试测试') && flaky < 2) { flaky++; throw new Error('scripted provider failure (500)'); }
+            if (prompt === '报告重试触发失败' && flaky < 1) { flaky++; throw new Error('scripted provider failure (500)'); }
+            if (goalWork && prompt.includes('出错重试测试') && flaky < 2) { flaky++; throw new Error(flaky === 1 ? 'scripted provider failure (500)' : 'scripted provider failure (503 auth_unavailable)'); }
             if (goalWork && prompt.includes('出错暂停测试')) throw new Error('scripted provider failure (500)');
             const childRequest = /requestId=([^\]]+)/.exec(prompt);
-            if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
+            if (prompt.startsWith('子 Agent 报告') && prompt.includes('RECOVERY-CHILD-RESULT')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
+            else if (goalWork && prompt.includes('出错重试测试') && flaky >= 2) calls.push({ name: 'goal', arguments: { action: 'complete' } });
+            else if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('委派测试')) calls.push({ name: 'subagent_spawn', arguments: { task: 'TEST CALL subagent_send {"message":"M3预算提问","question":true}' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('预算测试')) calls.push({ name: 'goal', arguments: { action: 'update', progress: `离线预算进展-${sequence}`, nextStep: '预算测试下一步' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('研究测试')) calls.push({ name: 'goal', arguments: { action: 'update', progress: '同一份研究结论', nextStep: '研究测试下一步' } });

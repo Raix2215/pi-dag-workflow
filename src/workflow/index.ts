@@ -4,7 +4,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { applyTodo, emptyState, newlyReady, restoreState, STATE_TYPE, type TodoParams, type WorkflowState } from "../todos/state.ts";
 import { PresetStore, type Preset } from "../todos/presets.ts";
 import { NORMAL_GUIDANCE, PLAN_GUIDANCE } from "../plan/policy.ts";
-import { clean, renderDag, renderTasks } from "../ui/render.ts";
+import { clean, notify, renderDag, renderTasks } from "../ui/render.ts";
 import { registerAgents } from "../agents/register.ts";
 import { registerGoal } from "../goal/register.ts";
 import { detailView } from "../ui/detail.ts";
@@ -55,7 +55,7 @@ export function createWorkflow(pi: ExtensionAPI) {
     }
     const lines = (width: number) => {
       const rendered = !state.visible && state.plan ? renderTasks(displayedState, width, { maxRows: 0, theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle, msg }) : state.view === "dag" ? renderDag(displayedState, width, ctx.ui.theme, goalTitle, snapshotJobs, { maxLines: 11, msg }) : renderTasks(displayedState, width, { theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle, msg });
-      if (restoreError) rendered.push(truncateToWidth(msg`恢复失败：${restoreError}；工作流修改已禁用`, width));
+      if (restoreError) rendered.push(truncateToWidth(clean(msg`恢复失败：${restoreError}；工作流修改已禁用`), width));
       return rendered;
     };
     if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET, () => {
@@ -92,7 +92,7 @@ export function createWorkflow(pi: ExtensionAPI) {
   function restore(ctx: ExtensionContext): void {
     warnedEphemeral = false;
     // A broken fragment file must not block the workflow: report it and keep the last good list.
-    void refreshPresets().then(() => paint(ctx)).catch((error) => ctx.ui.notify(msg`Todo 片段（preset）配置无效：${error instanceof Error ? error.message : String(error)}`, 'error'));
+    void refreshPresets().then(() => paint(ctx)).catch((error) => notify(ctx, msg`Todo 片段（preset）配置无效：${error instanceof Error ? error.message : String(error)}`, 'error'));
     try {
       state = modules.todos || modules.plan ? restoreState(ctx.sessionManager.getBranch(), msg) : emptyState();
       if (!modules.plan) state = { ...state, plan: false }; // Disabled Plan cannot strand a read-only session.
@@ -100,7 +100,7 @@ export function createWorkflow(pi: ExtensionAPI) {
     } catch (error) {
       state = { ...emptyState(), plan: true };
       restoreError = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(msg`工作流状态恢复失败：${restoreError}。保留原记录，修改已禁用；/todos clear 可明确重置。`, 'error');
+      notify(ctx, msg`工作流状态恢复失败：${restoreError}。保留原记录，修改已禁用；/todos clear 可明确重置。`, 'error');
     }
     paint(ctx);
   }
@@ -112,7 +112,7 @@ export function createWorkflow(pi: ExtensionAPI) {
     const ready = newlyReady(state, result.state);
     commit(result.state, ctx);
     agents?.afterTodoMutation(params);
-    if (ready.length) ctx.ui.notify(msg`前置已完成，可开始：${ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、')}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`, 'info');
+    if (ready.length) notify(ctx, msg`前置已完成，可开始：${ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、')}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`, 'info');
     return result;
   }
 

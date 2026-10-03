@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { Text } from '@earendil-works/pi-tui';
 import { statusLabel, TodoParamsSchema, type TodoParams, type WorkflowState } from './state.ts';
 import type { Preset } from './presets.ts';
-import { clean } from '../ui/render.ts';
+import { clean, notify } from '../ui/render.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
@@ -59,7 +59,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
     promptSnippet: "Use todo to plan and track multi-step work in one dependency-aware list",
     promptGuidelines: [
       "Use todo for work with three or more steps, when the user lists tasks, or right after new instructions; skip it for single trivial requests.",
-      "Keep one list: create a task instead of keeping a second plan. Mark a task in_progress before starting it and completed as soon as its work is verified; exactly one task is in_progress at a time.",
+      "Keep one list: create a task instead of keeping a second plan. Mark a task in_progress before starting it and completed as soon as its work is verified; at most one task is in_progress per work stream.",
       "Never complete a task whose work is unfinished, failing, or blocked; create a task for the blocker instead.",
       "Express dependencies with blockedBy (#4 blocked by #2 and #3). A task cannot start or complete before its predecessors are completed.",
     ],
@@ -102,15 +102,18 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
           if (!name) throw new Error(msg`用法：/todos ${action} 名称${action === 'apply' ? ' [键=值 ...]' : ' [步骤键]'}`);
           let params: TodoParams;
           if (action === 'apply') {
-            const vars: Record<string, string> = {};
+            const vars: Record<string, string> = Object.create(null);
             for (const pair of parts.slice(1)) {
               const at = pair.indexOf('=');
               if (at < 1) throw new Error(msg`变量需要 键=值：${pair}`);
               vars[pair.slice(0, at)] = pair.slice(at + 1);
             }
             params = { action: 'apply', preset: name, ...(Object.keys(vars).length ? { vars } : {}) };
-          } else params = { action: 'reset', preset: name, ...(parts[1] ? { step: parts[1] } : {}) };
-          ctx.ui.notify(mutate(params, ctx).text, 'info');
+          } else {
+            if (parts.length > 2) throw new Error(msg`用法：/todos ${action} 名称${' [步骤键]'}`);
+            params = { action: 'reset', preset: name, ...(parts[1] ? { step: parts[1] } : {}) };
+          }
+          notify(ctx, mutate(params, ctx).text, 'info');
           return;
         }
         if (!trimmed || action === "list") return await show(ctx, "list");
@@ -141,9 +144,9 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
           if (parts.length !== 1) throw new Error(msg`用法：/todos ${action} #编号`);
           params = action === "delete" ? { action: "delete", id: asId(parts[0], msg) } : { action: "update", id: asId(parts[0], msg), status: action === "start" ? "in_progress" : action === "done" ? "completed" : "pending" };
         } else if (action === "edit") params = { action: "update", id: asId(parts[0], msg), subject: parts.slice(1).join(" ") };
-        if (params) { ctx.ui.notify(mutate(params, ctx).text, "info"); return; }
+        if (params) { notify(ctx, mutate(params, ctx).text, "info"); return; }
         pi.sendUserMessage(msg`请管理当前 Todos：${trimmed}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
-      } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+      } catch (error) { notify(ctx, error instanceof Error ? error.message : String(error), "error"); }
     },
   });
   pi.registerCommand("dag", { description: msg('查看当前 Todos 的依赖图'), handler: async (_args, ctx) => show(ctx, "dag") });

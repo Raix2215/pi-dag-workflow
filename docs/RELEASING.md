@@ -1,41 +1,58 @@
 # Releasing pi-dag-workflow
 
-Maintainer checklist for a public release. Run every command from the repository root on Node.js 22 or 24.
+Maintainer checklist for a public release. Run checks on Node.js 22 and 24.
 
 ## 1. Prepare metadata
 
-- Keep `version` at the intended release (`0.1.0` for the first public preview) and `license: MIT`.
-- The repository URL lives in `package.json` (`repository`, `homepage`, `bugs`) and in the install snippets of both READMEs; keep them in sync when the project moves.
-- Keep `files` limited to `src`, both READMEs, `LICENSE`, `CHANGELOG.md`, and `docs`. Tests, fixtures, scripts, `.github`, and local artifacts must never ship.
-- Move the `0.1.0` section of `CHANGELOG.md` from `Unreleased` to the release date.
+- Set the intended version in both `package.json` and `package-lock.json`, for example with `npm version 0.2.0 --no-git-tag-version`. Keep `license: MIT`.
+- Add a dated `CHANGELOG.md` section matching that version, and update both READMEs for behavior and configuration changes.
+- Keep repository URLs in the manifest and README install examples consistent.
+- Keep distributed files limited to `src`, both READMEs, `LICENSE`, `CHANGELOG.md`, and the explicitly approved documents in `docs`. Update the release check's document allowlist when adding a public document. Tests, fixtures, scripts, development dependencies, `.github`, and local artifacts must not ship.
 
-## 2. Run the checks
+## 2. Verify
 
 ```bash
 npm ci --ignore-scripts
-npm run check          # typecheck + tests + pack dry run + release hygiene
-npm run check:release  # metadata, package contents, and machine-trace scan
-node scripts/check-release.mjs --history   # also scan commit metadata and historical content
+npm run check                         # typecheck, offline tests, pack inspection, hygiene
+node scripts/check-release.mjs --history
+npm run test:performance
 ```
 
-`check:release` fails on a `0.0.0` version, a non-MIT license, a missing whitelisted file, a forbidden path in the tarball, a tracked `AGENTS.md`, or a detected home path, private model reference, personal email, or real credential format. It prints only the file and rule, never the matched value.
+`check:release` verifies metadata, package contents, and machine-trace hygiene. It rejects personal home paths, private model literals, personal emails, real credential formats, `.env` files, session records, or a tracked `AGENTS.md`. Findings show only the file and rule, never the matched secret.
 
-Never commit secrets, API keys, personal file paths, private provider names, `.env` files, or `artifacts/`. If a trace was committed earlier, sanitize the history before publishing.
+The default test suite requires no credentials or network model. Its integration tests launch isolated Pi processes with scripted providers, including transient failures and native/Goal retry coexistence. The packed-install test loads all five entry points and launches a child without bundled Pi dependencies.
 
-## 3. Publish (only with explicit maintainer approval)
-
-Tagging, pushing, and creating a GitHub Release require explicit maintainer approval. Use only the repository URL and remote approved for this project.
+With a caller-selected registered model, also run the bounded opt-in acceptance scripts:
 
 ```bash
-npm pack --dry-run   # inspect the tarball one last time
-git tag v0.1.0
-git push <remote> main
-git push <remote> v0.1.0
+# Set PI_DAG_TEST_MODEL=provider/model outside repository files.
+npm run test:goal-flash
+npm run test:continue-flash
+npm run test:joint-flash
 ```
 
-Then create the GitHub Release for `v0.1.0`.
+These exercise Goal startup and verification, two separately budgeted automatic rounds, and parallel children with a dependency join. Review every result; opt-in scripts never run in default CI. Their generated artifacts must remain outside the release package.
 
-## 4. Repository settings
+## 3. Publish with maintainer approval
 
-- Enable private vulnerability reporting (Security → Advisories) so `SECURITY.md` stays accurate.
-- Keep the default checks credential-free. The live acceptance scripts require `PI_DAG_TEST_MODEL` and are never part of `npm run check`.
+Pushing, tagging, and creating a GitHub Release require explicit approval. Use the approved repository and remote; never embed credentials in a URL, commit, file, or persistent Git configuration.
+
+```bash
+VERSION=$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')
+npm pack --dry-run --ignore-scripts
+git status --short                     # confirm only intended changes
+git add <reviewed-files>
+git commit -m "Release v${VERSION}"
+node scripts/check-release.mjs --history
+git tag "v${VERSION}"
+git push origin main
+git push origin "v${VERSION}"
+```
+
+Create the GitHub Release for the tag using its CHANGELOG section. Confirm the tag resolves to the reviewed commit and the Node 22/24 CI jobs succeed. These steps publish to GitHub; npm publication is a separate approval and operation.
+
+## 4. Confirm installation
+
+Update only the approved package with `pi update <package-source>`, then compare its installed manifest version and commit with the release. Running sessions need `/reload` or a restart. Reload pauses restored Goals; use `/goal enable` explicitly when ready to resume.
+
+Keep private vulnerability reporting enabled as described in `SECURITY.md`. Preserve session history, user configuration, and unrelated packages during installation updates.

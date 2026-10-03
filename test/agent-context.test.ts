@@ -35,6 +35,16 @@ test("a later run only briefs its own instance and keeps step numbering per run"
   assert.doesNotMatch(brief, /第一轮/);
 });
 
+test("a redispatched prerequisite contributes its latest report instead of a failed attempt", () => {
+  const tasks = [step(1, "first", "First", "completed", 1), step(2, "second", "Second", "pending", 2)];
+  const brief = fragmentContext(2, tasks, [
+    { todoId: 1, status: "failed", output: "obsolete partial output" },
+    { todoId: 1, status: "completed", output: "verified replacement result" },
+  ])!;
+  assert.match(brief, /verified replacement result/);
+  assert.doesNotMatch(brief, /obsolete partial/);
+});
+
 test("the child reads the brief once and removes it from its environment", () => {
   const env: NodeJS.ProcessEnv = { PI_DAG_AGENT_CONTEXT: "Fragment brief" };
   assert.equal(takeChildContext(env), "Fragment brief");
@@ -51,6 +61,8 @@ test("a child that already reported no longer blocks completing its task", () =>
   // Every other change still waits for the child: reopening, editing, deleting, clearing.
   assert.equal(claimedBy(job, { action: "update", id: 5, status: "pending" }, { adjusted: none, reported: true }), true);
   assert.equal(claimedBy(job, { action: "update", id: 5, subject: "改名" }, { adjusted: none, reported: true }), true);
+  assert.equal(claimedBy(job, { action: "update", id: 5, status: "completed", subject: "改名" }, { adjusted: none, reported: true }), true, 'completion cannot smuggle a content edit past the guard');
+  assert.equal(claimedBy(job, { action: "update", id: 5, status: "completed", addBlockedBy: [3] }, { adjusted: none, reported: true }), true);
   assert.equal(claimedBy(job, { action: "update", id: 5, subject: "改名" }, { adjusted: new Set(["a1"]), reported: false }), false);
   assert.equal(claimedBy(job, { action: "delete", id: 5 }, { adjusted: none, reported: true }), true);
   assert.equal(claimedBy(job, { action: "clear" }, { adjusted: none, reported: true }), true);

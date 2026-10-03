@@ -5,8 +5,9 @@ import { Text } from "@earendil-works/pi-tui";
 import { AgentRuntime, type JobSummary, type JobResult } from "./runtime.ts";
 import { ProfileStore, type Profile } from "./profiles.ts";
 import { fragmentContext } from "./context.ts";
+import { resetClosure } from "../todos/presets.ts";
 import { AgentNotices, type Notice } from "./notices.ts";
-import { clean } from "../ui/render.ts";
+import { clean, displayText, notify } from "../ui/render.ts";
 import { applyTodo, type TodoParams, type WorkflowState } from "../todos/state.ts";
 import { workflowNamespace, readOnly } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
@@ -31,7 +32,7 @@ const text = Type.String({ minLength: 1 });
  */
 export function claimedBy(job: { id: string; todoId?: number }, params: TodoParams, options: { adjusted: ReadonlySet<string>; reported: boolean }): boolean {
   if (params.action === "update") {
-    if (params.status === "completed" && options.reported) return false;
+    if (params.status === "completed" && options.reported && Object.keys(params).every((key) => ["action", "id", "status"].includes(key))) return false;
     if (params.status === undefined && options.adjusted.has(job.id)) return false;
   }
   return true;
@@ -44,6 +45,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   let context: ExtensionContext | undefined;
   let restoring = false;
   let paused = false;
+  let failedRound = false;
   let error: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let generation = 0;
@@ -81,7 +83,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   };
   pi.registerFlag("dag-workflow-test-child-provider", { type: "string", description: "Test-only: explicit trusted offline child provider extension" });
 
-  const clearDelivery = () => { if (timer) clearTimeout(timer); timer = undefined; notices.clear(); };
+  const clearDelivery = () => { if (timer) clearTimeout(timer); timer = undefined; failedRound = false; notices.clear(); };
   const drain = () => {
     const jobs = new Map((runtime?.inspect() ?? []).map((job) => [job.id, job]));
     const state = hooks.state();
@@ -90,6 +92,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     const content = notices.drain((notice) => {
       const job = jobs.get(notice.jobId);
       if (!job) return;
+      if (notice.kind === 'question' && notice.requestId && !runtime?.hasRequest(job.id, notice.requestId)) return;
       const task = job.todoId === undefined ? undefined : tasks.get(job.todoId);
       if (job.todoId !== undefined && (!task || task.status === "deleted")) return;
       const stale = original.has(job.id) && original.get(job.id) !== fingerprint(state, job.todoId);
@@ -102,17 +105,17 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const acknowledge = (jobIds: readonly string[]) => { for (const jobId of jobIds) runtime?.markReportDelivered(jobId); };
   const deliverIdle = () => {
     timer = undefined;
-    if (!context || restoring || paused || hooks.state().plan || hooks.canWake?.() === false || !context.isIdle()) return;
+    if (!context || restoring || paused || failedRound || hooks.state().plan || hooks.canWake?.() === false || !context.isIdle()) return;
     const { content, terminalJobIds } = drain();
     if (content && hooks.reserveWake?.(context) !== false) {
       try { pi.sendMessage({ customType: "pi-dag-workflow.agent-report", content, display: true }, { triggerTurn: true, deliverAs: "followUp" }); acknowledge(terminalJobIds); }
-      catch (cause) { paused = true; context.ui.notify(msg`Agent 自动唤醒失败：${String(cause)}`, "warning"); } // Durable output remains available; never retry an old wake.
+      catch (cause) { paused = true; notify(context, msg`Agent 自动唤醒失败：${String(cause)}`, "warning"); } // Durable output remains available; never retry an old wake.
     }
   };
   const onNotice = (notice: Notice) => {
     if (restoring || paused || hooks.state().plan || hooks.canWake?.() === false) return;
     notices.add(notice);
-    if (context?.isIdle() && !timer) timer = setTimeout(deliverIdle, 25);
+    if (!failedRound && context?.isIdle() && !timer) timer = setTimeout(deliverIdle, 25);
   };
   /** Live activity refreshes only the widget; throttled and never appended to the session. */
   let activityTimer: ReturnType<typeof setTimeout> | undefined;
@@ -134,7 +137,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const onChanged = () => {
     if (restoring || !runtime || !context) return;
     try { pi.appendEntry(AGENTS_TYPE, { version: 1, jobs: runtime.exportRecords() }); }
-    catch (cause) { error = msg`运行状态无法保存：${String(cause)}`; paused = true; clearDelivery(); context.ui.notify(error, "error"); }
+    catch (cause) { error = msg`运行状态无法保存：${String(cause)}`; paused = true; clearDelivery(); notify(context, error, "error"); }
     hooks.paint(context);
     onActivity();
   };
@@ -168,7 +171,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         if (data?.version !== 1 || !Array.isArray(data.jobs)) throw new Error(msg("不支持或损坏的 Agent 状态"));
         await runtime.importSummaries(data.jobs as JobResult[]);
       }
-    } catch (cause) { error = String(cause); ctx.ui.notify(msg`Agent 恢复／配置失败：${error}；/agents reset 可明确清除运行记录`, "error"); }
+    } catch (cause) { error = String(cause); notify(ctx, msg`Agent 恢复／配置失败：${error}；/agents reset 可明确清除运行记录`, "error"); }
     finally { restoring = false; hooks.paint(ctx); }
   }
   pi.on("session_start", (_event, ctx) => restore(ctx));
@@ -193,9 +196,13 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     context = ctx;
     event.systemPromptOptions.sections["dag_workflow_agents"] = "Child agents are single-tier: no grandchildren. Verify returned work yourself before completing a Todo.";
   });
-  pi.on("input", (event, ctx) => { context = ctx; if (event.source !== "extension" && !hooks.state().plan && !event.text.trim().startsWith("/")) paused = false; });
+  pi.on("input", (event, ctx) => { context = ctx; if (event.source !== "extension" && !hooks.state().plan && !event.text.trim().startsWith("/")) { paused = false; failedRound = false; } });
   const reportBoundary = (outcome: string, ctx: ExtensionContext) => {
+    // A model error may recover natively or through Goal. Hold reports for the successful turn
+    // instead of dropping them or racing a separate idle wake. Explicit aborts still pause.
+    if (outcome === "error") { failedRound = true; return; }
     if (outcome !== "completed") { paused = true; clearDelivery(); return; }
+    failedRound = false;
     if (restoring || paused || hooks.state().plan || hooks.canWake?.() === false) return;
     const { content, terminalJobIds } = drain();
     if (content && hooks.reserveWake?.(ctx) !== false) {
@@ -205,7 +212,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   };
   pi.on("turn_end", (event, ctx) => reportBoundary(event.outcome, ctx));
   pi.on("agent_before_settle", (event, ctx) => reportBoundary(event.outcome, ctx));
-  pi.on("agent_settled", (_event, ctx) => { context = ctx; if (!paused && !timer) timer = setTimeout(deliverIdle, 25); });
+  pi.on("agent_settled", (_event, ctx) => { context = ctx; if (!paused && !failedRound && !timer) timer = setTimeout(deliverIdle, 25); });
 
   function ready(ctx: ExtensionContext, execution = true): AgentRuntime {
     context = ctx;
@@ -213,7 +220,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     if (execution && hooks.state().plan) throw new Error(msg("Plan 中不实施／派发／发送执行信息；先 /plan off"));
     return runtime;
   }
-  const renderResult = (result: { content: { type: string; text?: string }[]; isError?: boolean }, _options: unknown, theme: ExtensionContext["ui"]["theme"]) => new Text(theme.fg(result.isError ? "error" : "text", result.content.map((item) => item.text ?? "").join("\n")), 0, 0);
+  const renderResult = (result: { content: { type: string; text?: string }[]; isError?: boolean }, _options: unknown, theme: ExtensionContext["ui"]["theme"]) => new Text(theme.fg(result.isError ? "error" : "text", displayText(result.content.map((item) => item.text ?? "").join("\n"))), 0, 0);
   const reply = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data });
   const fail = (cause: unknown) => ({ isError: true, content: [{ type: "text" as const, text: String(cause) }], details: { error: String(cause) } });
 
@@ -222,7 +229,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     promptGuidelines: [
       "Delegate work that is independent and verifiable, such as research or isolated edits; keep the critical path and final verification in the main session.",
       "Pass todoId to bind a job to its task and choose the profile that fits the job. A returned report never completes the task by itself: verify the work first.",
-      "Give one child a serial chain (A then B then C) when its steps share context, bind the chain to the task it must finish last so the earlier steps stay free to advance, and ask it to send a short interim message as each step finishes. Start parallel children for independent branches, and dispatch a task only when its prerequisites are completed: never ask a child to wait on work another child is doing.",
+      "Give one child a serial chain (A then B then C) when its steps share context, bind its last task only if it is already unblocked; otherwise bind the first ready task, and ask it to send a short interim message as each step finishes. Start parallel children for independent branches, and dispatch a task only when its prerequisites are completed: never ask a child to wait on work another child is doing.",
       "Set context:true when the task belongs to a task fragment, so the child receives its step position, the whole fragment with statuses, and the report heads of earlier steps instead of rediscovering them.",
     ],
     parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach the task's fragment state and earlier step report heads" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
@@ -239,7 +246,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         // Opt-in: the parent decides per dispatch, and only a bound task can carry a fragment brief.
         const context = params.context === true && task ? fragmentContext(task.id, before.tasks, agent.exportRecords()) : undefined;
         const ownGeneration = generation;
-        paused = false;
+        paused = false; failedRound = false;
         const job = await agent.spawn({
           task: params.task,
           ...(params.todoId === undefined ? {} : { todoId: params.todoId }),
@@ -301,33 +308,35 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         await restore(ctx); return;
       }
       const agent = ready(ctx, false);
-      if (!args.trim() || action === "list") { ctx.ui.notify(JSON.stringify({ jobs: agent.inspect(), paused }, null, 2), "info"); return; }
+      if (!args.trim() || action === "list") { notify(ctx, JSON.stringify({ jobs: agent.inspect(), paused }, null, 2), "info"); return; }
       if (action === "pause") { paused = true; clearDelivery(); hooks.pauseAuto?.(ctx); ctx.ui.notify(msg("已暂停结果自动唤醒；子 Agent 仍可能运行，停止请用 /agents cancel"), "info"); return; }
-      if (action === "resume") { ready(ctx); if (hooks.resumeAuto ? !hooks.resumeAuto() : hooks.canWake?.() === false) throw new Error(msg("Goal 续跑仍暂停；先明确 /goal enable")); paused = false; ctx.ui.notify(msg("后续新结果可自动唤醒；暂停期间旧报告仍可 /agents wait 查看"), "info"); return; }
+      if (action === "resume") { ready(ctx); if (hooks.resumeAuto ? !hooks.resumeAuto() : hooks.canWake?.() === false) throw new Error(msg("Goal 续跑仍暂停；先明确 /goal enable")); paused = false; failedRound = false; ctx.ui.notify(msg("后续新结果可自动唤醒；暂停期间旧报告仍可 /agents wait 查看"), "info"); return; }
       if (action === "cancel" || action === "remove") { if (parts.length !== 1) throw new Error(msg`/agents ${action} jobId`); if (action === 'remove' || active(agent.inspect(parts[0]!)[0]!)) notices.drop(parts[0]!); await agent.cancel(parts[0]!, { remove: action === "remove" }); return; }
-      if (action === "wait") { ctx.ui.notify(JSON.stringify(await agent.wait(parts[0]!, { timeout: 0 })), "info"); return; }
+      if (action === "wait") { notify(ctx, JSON.stringify(await agent.wait(parts[0]!, { timeout: 0 })), "info"); return; }
       if (action === "send" || action === "reply") { ready(ctx); const target = parts.shift(); if (!target || !parts.length) throw new Error(msg`/agents ${action} 编号 消息`); await agent.send({ ...(action === "send" ? { recipient: target } : { requestId: target }), message: parts.join(" ") }); if (action === "send") adjusted.add(target); return; }
-      if (action === "profiles") { await profiles!.load(); ctx.ui.notify(JSON.stringify(profiles!.list(), null, 2), "info"); return; }
+      if (action === "profiles") { await profiles!.load(); notify(ctx, JSON.stringify(profiles!.list(), null, 2), "info"); return; }
       if (action === "profile") {
         ready(ctx);
         const [name, model, thinking, tools] = parts;
         if (!name || !model || parts.length > 4 || !model.includes("/")) throw new Error(msg("/agents profile 名称 provider/model [thinking] [工具逗号列表]"));
         const split = model.indexOf("/");
+        await profiles!.load();
         profiles!.set({ name, model: { provider: model.slice(0, split), id: model.slice(split + 1) }, ...(thinking ? { thinking: thinking as NonNullable<Profile["thinking"]> } : {}), ...(tools ? { tools: tools.split(",") } : {}), ...(profiles!.get(name)?.instructions ? { instructions: profiles!.get(name)!.instructions } : {}) });
         await profiles!.save(); ctx.ui.notify(msg`已保存 Profile ${name}`, "info"); return;
       }
-      if (action === "unprofile") { ready(ctx); if (parts.length !== 1) throw new Error(msg("/agents unprofile 名称")); profiles!.delete(parts[0]!); await profiles!.save(); return; }
+      if (action === "unprofile") { ready(ctx); if (parts.length !== 1) throw new Error(msg("/agents unprofile 名称")); await profiles!.load(); profiles!.delete(parts[0]!); await profiles!.save(); return; }
       pi.sendUserMessage(msg`请管理当前子 Agent／Profile：${args}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
-    } catch (cause) { ctx.ui.notify(String(cause), "error"); }
+    } catch (cause) { notify(ctx, String(cause), "error"); }
   } });
   return {
     pauseAutomatic() { paused = true; clearDelivery(); },
-    resumeAutomatic() { paused = false; },
+    resumeAutomatic() { paused = false; failedRound = false; },
     summaries: () => runtime?.viewSummaries() ?? [],
     assertPlanEntry() { if (restoring || error) throw new Error(error ?? msg("Agent 状态正在恢复")); if (runtime?.activeCount()) throw new Error(msg("子 Agent 仍在执行／等待；请先等待结束或明确取消，再进入 Plan")); clearDelivery(); paused = true; },
     assertTodoMutation(params: TodoParams) {
       if (params.action === "list" || params.action === "get" || params.action === "create" || claiming !== undefined && params.action === "update" && params.id === claiming) return;
-      const jobs = (runtime?.inspect() ?? []).filter(active).filter((job) => params.action === "clear" || job.todoId === params.id);
+      const resetIds = params.action === "reset" ? new Set(resetClosure(hooks.state().tasks, params.preset ?? "", params.step, params.run)) : undefined;
+      const jobs = (runtime?.inspect() ?? []).filter(active).filter((job) => params.action === "clear" || job.todoId !== undefined && (resetIds ? resetIds.has(job.todoId) : job.todoId === params.id));
       for (const job of jobs) {
         const reported = (runtime?.reports(job.id) ?? 0) > 0;
         if (claimedBy(job, params, { adjusted, reported })) throw new Error(msg`任务 #${job.todoId} 关联活动 ${job.id}；内容修改先发送明确调整信息；未收到它的汇报前不能完成，删除／清空请先停止该 Agent`);

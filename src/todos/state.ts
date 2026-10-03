@@ -65,7 +65,7 @@ export const statusLabel: Record<TodoStatus, string> = { pending: "待执行", i
 const textFields = ["subject", "description", "activeForm", "owner"] as const;
 
 function validateTask(task: Todo, msg: Translator = chinese): void {
-  if (!task.subject.trim() || Array.from(task.subject).length > 60) throw new Error(msg("标题需为 1–60 个字符；详细指示请写 description"));
+  if (!task || typeof task.subject !== "string" || !task.subject.trim() || Array.from(task.subject).length > 60) throw new Error(msg("标题需为 1–60 个字符；详细指示请写 description"));
   for (const field of textFields) {
     const value = task[field];
     if (value !== undefined && (typeof value !== "string" || Buffer.byteLength(value) > 8192)) throw new Error(msg`${field} 需为不超过 8 KiB 的文本`);
@@ -77,7 +77,7 @@ function validateTask(task: Todo, msg: Translator = chinese): void {
   }
 }
 export function validateState(state: WorkflowState, msg: Translator = chinese): void {
-  if (state.version !== 1 || !Array.isArray(state.tasks) || !Number.isSafeInteger(state.nextId) || state.nextId < 1) throw new Error(msg("不支持或损坏的工作流状态"));
+  if (!state || state.version !== 1 || !Array.isArray(state.tasks) || !Number.isSafeInteger(state.nextId) || state.nextId < 1) throw new Error(msg("不支持或损坏的工作流状态"));
   if (typeof state.plan !== "boolean" || typeof state.visible !== "boolean" || !["list", "dag"].includes(state.view)) throw new Error(msg("损坏的模式／视图状态"));
   if (state.treeStyle !== undefined && !["paths", "flat"].includes(state.treeStyle)) throw new Error(msg("损坏的任务树样式"));
   if (!Array.isArray(state.planTools) || state.planTools.some((name) => typeof name !== "string" || !/^[\w-]+$/.test(name))) throw new Error(msg("损坏的 Plan 工具列表"));
@@ -115,6 +115,7 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
       const { activeForm: _dropped, ...rest } = task;
       return { ...rest, status: "pending" as const };
     });
+    if (!reuseDagStructure(state.tasks, tasks)) dagStructure(tasks);
     return { state: { ...state, tasks }, text: msg`已重置片段 ${name} 的 ${ids.length} 项为待执行：${ids.map((id) => `#${id}`).join(", ")}` };
   }
   if (params.action === "list") {
@@ -132,6 +133,7 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
   let task: Todo;
   if (params.action === "create") {
     if (!params.subject?.trim()) throw new Error(msg("create 需要 subject"));
+    if (!Number.isSafeInteger(state.nextId + 1)) throw new Error(msg("任务计数器不能复用已有编号"));
     task = { id: state.nextId, subject: params.subject.trim(), status: "pending", blockedBy: [...new Set(params.blockedBy ?? [])] };
   } else {
     task = { ...current!, blockedBy: [...current!.blockedBy] };
@@ -175,9 +177,10 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
  * "prerequisites are done" hint; it never starts anything on its own.
  */
 export function newlyReady(before: WorkflowState, after: WorkflowState): Todo[] {
-  const wasDone = (state: WorkflowState, id: number): boolean => state.tasks.find((task) => task.id === id)?.status === "completed";
-  if (!after.tasks.some((task, index) => task.status === "completed" && before.tasks[index]?.status !== "completed")) return [];
-  return after.tasks.filter((task) => task.status === "pending" && task.blockedBy.length > 0 && task.blockedBy.every((id) => wasDone(after, id)) && !task.blockedBy.every((id) => wasDone(before, id)));
+  const was = new Map(before.tasks.map((task) => [task.id, task.status]));
+  if (!after.tasks.some((task) => task.status === "completed" && was.get(task.id) !== "completed")) return [];
+  const now = new Map(after.tasks.map((task) => [task.id, task.status]));
+  return after.tasks.filter((task) => task.status === "pending" && task.blockedBy.length > 0 && task.blockedBy.every((id) => now.get(id) === "completed") && !task.blockedBy.every((id) => was.get(id) === "completed"));
 }
 
 export function restoreState(branch: readonly { type: string; customType?: string; data?: unknown; message?: unknown }[], msg: Translator = chinese): WorkflowState {

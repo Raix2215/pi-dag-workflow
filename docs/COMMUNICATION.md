@@ -46,9 +46,11 @@ Parent `subagent_send({ recipient, message })` submits direction with `streaming
 
 Automatic report wakes and Goal continuations share the active Goal's allowance. Plan mode, a paused Goal, paused Agent delivery, or exhausted allowance prevent automatic wakes.
 
+A model error temporarily holds queued reports without discarding them or starting a competing idle wake. Once native Pi or Goal recovery produces a successful turn, the report channel reopens and delivers the retained batch. If retries are exhausted, or the user explicitly pauses/aborts, normal pause suppression applies.
+
 Reports suppressed while paused are not replayed on resume. Their full output remains in Job records and can be retrieved with `subagent_wait`; pending delivery stays visible until a real handoff. `/agents resume` permits future arrivals rather than replaying old messages. Restoring a session never revives child processes or starts an automatic report loop.
 
-Notices are coalesced by job and notice kind or question ID. At most 32 notices are retained, with questions preferred. These are count limits, not character limits.
+Notices are coalesced by job and notice kind or question ID. Completed output replaces a same-batch interim notice because it already contains that report; failure diagnostics retain interim reports. Already-answered questions are filtered at delivery. At most 32 notices are retained, with questions preferred. These are count limits, not character limits.
 
 ## Size and context
 

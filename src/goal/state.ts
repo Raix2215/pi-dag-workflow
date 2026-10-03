@@ -98,7 +98,7 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
   validateGoalState(next, msg);
   if (JSON.stringify(next) === JSON.stringify(state)) return { state, text: msg('Goal 无变化') };
   const goal = params.action === 'create' ? next.goals.at(-1)! : next.goals.find((item) => item.id === current!.id)!;
-  const hint = activates(params.action) ? msg`；自动续跑上限 ${goal.maxTurns}，研究可 update progress/nextStep，需要用户时 pause` : '';
+  const hint = activates(params.action) ? msg`；自动续跑上限 ${goal.maxTurns}，研究可 update progress/nextStep，需要用户时 disable` : '';
   return { state: next, text: msg`Goal #${goal.id} ${params.action}：${goal.title}${hint}` };
 }
 export function pauseGoal(state: GoalState, reason: string): GoalState {

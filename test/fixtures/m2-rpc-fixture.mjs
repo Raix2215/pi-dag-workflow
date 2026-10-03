@@ -36,7 +36,8 @@ process.stdin.on('data', chunk => {
       } else if (command.message === 'DESCENDANT') {
         const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});
         end(`descendant=${child.pid}`);
-      } else if (command.message === 'BAD JSON') process.stdout.write('not json\n');
+      } else if (command.message === 'BAD EVENT') emit({type:'message_end',message:{role:'assistant',content:{invalid:true}}});
+      else if (command.message === 'BAD JSON') process.stdout.write('not json\n');
       else if (command.message === 'OVERSIZED') process.stdout.write('x'.repeat(1100000));
       else if (command.message === 'ACTIVITY') {
         emit({type:'message_update',assistantMessageEvent:{type:'thinking_delta',delta:'reason'}});

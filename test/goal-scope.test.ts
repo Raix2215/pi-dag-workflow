@@ -5,7 +5,7 @@ import { emptyState } from '../src/todos/state.ts';
 
 test('automatic model cannot enlarge its allowance or silently switch objectives', async () => {
   const handlers = new Map<string, Function>(); let tool: any;
-  const ctx: any = { isIdle: () => false, ui: { notify() {} } };
+  const ctx: any = { sessionManager: { getBranch: () => [] }, isIdle: () => false, ui: { notify() {} } };
   const pi: any = { on(event: string, handler: Function) { handlers.set(event, handler); }, registerTool(value: any) { tool = value; }, registerCommand() {}, appendEntry() {}, sendUserMessage() {} };
   const control = registerGoal(pi, { state: emptyState, jobs: () => [], paint() {}, protected: () => false, pauseAgents() {}, resumeAgents() {} });
   const call = (args: any) => tool.execute('id', args, undefined, undefined, ctx);

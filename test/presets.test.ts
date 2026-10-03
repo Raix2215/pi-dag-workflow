@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expand, fill, instances, nextRun, PresetStore, resetClosure, type Preset } from "../src/todos/presets.ts";
-import { applyTodo, emptyState, newlyReady, type WorkflowState } from "../src/todos/state.ts";
+import { applyTodo, emptyState, newlyReady, validateState, type WorkflowState } from "../src/todos/state.ts";
 
 async function storeWith(presets: unknown): Promise<{ store: PresetStore; close: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), "pi-dag-presets-"));
@@ -71,6 +71,45 @@ test("placeholders must be filled from caller variables", () => {
   assert.equal(fill("无需变量", undefined, "step"), "无需变量");
 });
 
+test("placeholder values must be own string properties, including prototype-shaped names", () => {
+  assert.throws(() => fill("{constructor}", {}, "step"), /needs a value/);
+  assert.throws(() => fill("{toString}", {}, "step"), /needs a value/);
+  assert.throws(() => fill("{version}", Object.create({ version: "inherited" }), "step"), /needs a value/);
+  assert.equal(fill("{constructor}", { constructor: "supplied" } as unknown as Record<string, string>, "step"), "supplied");
+});
+
+test("a valid fragment can refer to steps defined later without changing display ordinals", async () => {
+  const preset = { name: "forward", steps: [{ key: "last", subject: "Last", after: ["first"] }, { key: "first", subject: "First" }] };
+  const { store, close } = await storeWith([preset]);
+  try {
+    const expanded = expand(store.get("forward")!, 1, 10);
+    assert.deepEqual(expanded.tasks.map((task) => task.blockedBy), [[11], []]);
+    assert.deepEqual(expanded.tasks.map((task) => task.metadata!.step), [1, 2]);
+  } finally { await close(); }
+});
+
+test("run selection ignores user metadata that is not a positive safe integer", () => {
+  const base = expand(release as Preset, 1, 1, { version: "0.2" }).tasks;
+  const malformed = [NaN, Infinity, -1, 0, 1.5].map((run, index) => ({ id: index + 10, subject: "Other", status: "pending" as const, blockedBy: [], metadata: { preset: "release", run } }));
+  assert.equal(nextRun([...base, ...malformed], "release"), 2);
+  assert.deepEqual(instances([...base, ...malformed], "release"), [1, 2, 3, 4]);
+});
+
+test("reset does not resurrect deleted tasks while reopening live descendants", () => {
+  const tasks = expand(release as Preset, 1, 1, { version: "0.2" }).tasks;
+  tasks[3]!.status = "deleted";
+  tasks.push({ id: 5, subject: "Deleted unrelated history", status: "deleted", blockedBy: [3] });
+  assert.deepEqual(resetClosure(tasks, "release", undefined, 1), [1, 2, 3]);
+  assert.deepEqual(resetClosure(tasks, "release", "tag", 1), [3]);
+});
+
+test("a live successor of a deleted middle step is rejected before it can enter a reset", () => {
+  let state: WorkflowState = { ...emptyState(), tasks: expand(release as Preset, 1, 1, { version: "0.2" }).tasks, nextId: 5 };
+  assert.throws(() => applyTodo(state, { action: "delete", id: 3 }), /deleted|删除/);
+  state = { ...state, tasks: state.tasks.map((task) => task.id === 3 ? { ...task, status: "deleted" as const } : task) };
+  assert.throws(() => validateState(state), /deleted|删除/);
+});
+
 test("expanding a fragment creates pending tasks with mapped dependencies and run metadata", () => {
   const first = expand(release as Preset, 1, 1, { version: "0.2" });
   assert.deepEqual(names(first.tasks), [1, 2, 3, 4]);
@@ -116,7 +155,7 @@ test("resetting reopens the requested fragment, and a single step reopens its de
   assert.deepEqual(resetClosure(state.tasks, "release", "tag"), []);
   // Without a step the newest run reopens; naming a run selects that one.
   assert.deepEqual(resetClosure(state.tasks, "release"), [7]);
-  assert.deepEqual(resetClosure(state.tasks, "release", undefined, 1), [1, 2, 3, 4]);
+  assert.deepEqual(resetClosure(state.tasks, "release", undefined, 1), [1, 2, 3, 4, 5]);
   assert.deepEqual(resetClosure(state.tasks, "release", undefined, 2), [7]);
   assert.deepEqual(resetClosure(state.tasks, "other"), []);
 });

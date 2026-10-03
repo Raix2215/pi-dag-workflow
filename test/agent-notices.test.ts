@@ -16,6 +16,18 @@ test("pure notices: merge latest job/kind report while retaining distinct reques
   assert.equal(notices.drain(line), undefined);
 });
 
+test("pure notices: completed output absorbs a same-batch interim report, failures keep it", () => {
+  const notices = new AgentNotices();
+  notices.add({ jobId: "a1", kind: "message", message: "interim" });
+  notices.add({ jobId: "a1", kind: "completed", message: "[Report] interim final" });
+  assert.equal(notices.drain(line), reportHeader + "a1/completed: [Report] interim final");
+  notices.add({ jobId: "a2", kind: "message", message: "useful partial" });
+  notices.add({ jobId: "a2", kind: "failed", message: "provider failed" });
+  const failed = notices.drain(line)!;
+  assert.match(failed, /useful partial/);
+  assert.match(failed, /provider failed/);
+});
+
 test("pure notices: terminal/control/bidi text is sanitized while whole reports are preserved", () => {
   const notices = new AgentNotices();
   notices.add({ jobId: "a1", kind: "message", message: "\x1b[31mred\x1b[0m\n\tline\r\u202e\0\x1b]52;c;ZXZpbA==\x07" });

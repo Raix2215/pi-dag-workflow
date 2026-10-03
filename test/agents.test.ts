@@ -135,7 +135,7 @@ test("agent_end alone and even settled with pending followups cannot complete a 
 test("unexpected exit, model errors and malformed protocol all fail and clean up", async () => {
   const ctx = await setup(true);
   try {
-    for (const task of ["EXIT", "ERROR", "BAD JSON"]) {
+    for (const task of ["EXIT", "ERROR", "BAD JSON", "BAD EVENT"]) {
       const job = await ctx.runtime.spawn({ task });
       const result = await ctx.runtime.wait(job.id, { timeout: 3 });
       assert.equal(result.status, "failed", task);
@@ -273,6 +273,30 @@ test("restore preserves pending delivery without auto replay; manual wait acknow
       assert.equal(old.markReportDelivered(job.id), false);
       assert.doesNotMatch(JSON.stringify(old.viewSummaries()), /reportDelivery/);
     } finally { await old.shutdown(); }
+  } finally { await ctx.close(); }
+});
+
+test("invalid restored fields are rejected atomically without stopping an existing child", async () => {
+  const ctx = await setup(true);
+  try {
+    const job = await ctx.runtime.spawn({ task: "HOLD" });
+    const record = ctx.runtime.exportRecords()[0]!;
+    for (const patch of [{ thinking: {} }, { thinking: "unsupported" }, { endedAt: Infinity }, { todoId: 0 }]) {
+      await assert.rejects(ctx.runtime.importSummaries([{ ...record, ...patch } as never]), /Invalid agent summary/);
+      assert.equal(ctx.runtime.inspect(job.id)[0]!.status, "running");
+      assert.equal(ctx.runtime.activeCount(), 1);
+    }
+  } finally { await ctx.close(); }
+});
+
+test("panel labels never end on a split supplementary Unicode character", async () => {
+  const ctx = await setup(true);
+  try {
+    const job = await ctx.runtime.spawn({ task: "x".repeat(79) + "\u{1D11E}" + " more text" });
+    await ctx.runtime.wait(job.id, { timeout: 3 });
+    const label = ctx.runtime.viewSummaries()[0]!.label!;
+    assert.equal(label, "x".repeat(79));
+    assert.doesNotMatch(label, /[\uD800-\uDBFF]$/);
   } finally { await ctx.close(); }
 });
 

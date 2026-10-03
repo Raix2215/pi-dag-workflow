@@ -4,7 +4,7 @@ import { registerGoal } from '../src/goal/register.ts';
 import { emptyState } from '../src/todos/state.ts';
 import { GOAL_TYPE, type GoalParams } from '../src/goal/state.ts';
 
-function host() {
+function host(retryDelayMs = 0) {
   const events = new Map<string, Function[]>();
   const tools = new Map<string, any>(); const commands = new Map<string, any>();
   let workflow = emptyState(); let jobs: any[] = []; let protectedState = false; let idle = false;
@@ -12,7 +12,7 @@ function host() {
   let messageSeq = 0;
   const ctx: any = { cwd: '/tmp', mode: 'rpc', hasUI: true, isIdle: () => idle, sessionManager: { getBranch: () => entries }, ui: { notify: (text: string) => notifications.push(text), confirm: async () => true } };
   const pi: any = { on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); return () => {}; }, registerTool(tool: any) { tools.set(tool.name, tool); }, registerCommand(name: string, cmd: any) { commands.set(name, cmd); }, appendEntry(customType: string, data: any) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any, options: any) { wakes.push({ message, options }); }, sendUserMessage(message: string) { wakes.push({ message, options: { source: 'extension' } }); } };
-  const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, retryDelayMs: 0 });
+  const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, retryDelayMs });
   const fire = async (name: string, event: any = {}) => { let result: any; for (const handler of events.get(name) ?? []) result = await handler(event, ctx) ?? result; return result; };
   const call = async (params: GoalParams) => tools.get('goal').execute('test', params, undefined, undefined, ctx);
   const settle = (event: any = {}) => fire('agent_before_settle', { outcome: 'completed', continue: false, ...event });
@@ -175,6 +175,61 @@ test('mock host: explicit idle enable reserves and starts once; unknown extra ar
   assert.equal(h.wakes.length, 1);
   assert.equal(h.controller.snapshot().run.used, 1);
   assert.match(h.wakes[0].message, /Goal #1.*不是用户新授权/);
+});
+
+test('mock host: a newer settled failure during the delay replaces the pending retry', async () => {
+  const h = host(30); await h.enable(); h.setIdle(true);
+  h.message('error'); await h.fire('agent_settled');
+  h.message('error'); await h.fire('agent_settled');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(h.retries(), 1, 'one retry must address the newest failure instead of silently dropping both');
+  assert.equal(h.controller.snapshot().run.errorRetries, 1);
+});
+
+test('mock host: a pending retry belongs to the failed goal, not a newly enabled goal', async () => {
+  const h = host(30); await h.enable(); h.setIdle(true);
+  h.message('error'); await h.fire('agent_settled');
+  await h.call({ action: 'create', title: '第二个目标' });
+  await h.commands.get('goal').handler('disable #1', h.ctx);
+  await h.commands.get('goal').handler('enable #2', h.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(h.retries(), 0, 'the failed request must not be retried for another goal');
+  assert.equal(h.controller.snapshot().run.errorRetries, undefined);
+});
+
+test('mock host: user input and cancelled navigation retire pending retries', async () => {
+  for (const event of ['input', 'session_before_tree', 'session_before_fork', 'session_before_switch']) {
+    const h = host(30); await h.enable(); h.setIdle(true);
+    h.message('error'); await h.fire('agent_settled');
+    await h.fire(event, { source: 'rpc', text: '我来处理' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(h.retries(), 0, `${event} takes ownership away from the pending retry`);
+  }
+});
+
+test('mock host: a user dialog or aborted turn cancels a retry that has not fired', async () => {
+  for (const [event, detail] of [['ui_prompt_start', { kind: 'input' }], ['turn_end', { outcome: 'aborted' }]] as const) {
+    const h = host(30); await h.enable(); h.setIdle(true);
+    h.message('error'); await h.fire('agent_settled');
+    await h.fire(event, detail);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(h.retries(), 0);
+    assert.equal(h.controller.snapshot().run.paused, true);
+  }
+});
+
+test('mock host: an automatic retry does not inherit scope-changing authority from user input', async () => {
+  const h = host(); await h.enable(); h.setIdle(true);
+  await h.fire('input', { source: 'rpc', text: '继续当前范围' });
+  h.message('error'); await h.settled();
+  assert.equal((await h.call({ action: 'update', title: '扩大范围' })).isError, true);
+});
+
+test('mock host: Goal reset stops automatic child-report wakes', async () => {
+  const h = host(); await h.enable();
+  await h.commands.get('goal').handler('reset', h.ctx);
+  assert.equal(h.controller.canWake(), false);
+  assert.deepEqual(h.controller.snapshot().goals, []);
 });
 
 test('mock host: explicit goal edit is user-authorized after an automatic round, without refilling budget', async () => {

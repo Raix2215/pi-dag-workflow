@@ -11,6 +11,9 @@ import { FEATURE_NAMES } from '../src/workflow/features.ts';
 test('manifest exposes five independently selectable Pi resources and release metadata', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
+  const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'));
+  assert.equal(lock.version, manifest.version);
+  assert.equal(lock.packages[''].version, manifest.version);
   assert.deepEqual(manifest.pi.extensions, FEATURE_NAMES.map((name) => `./src/${name}/index.ts`));
   assert.notEqual(manifest.private, true, 'package must be publishable');
   // The version carries a dated changelog heading, so a release always documents itself.

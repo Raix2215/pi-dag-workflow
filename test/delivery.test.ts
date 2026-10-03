@@ -70,6 +70,25 @@ test("a failed automatic wake never acknowledges the pending report", { timeout:
   } finally { await h.close(); }
 });
 
+test("a model error suspends report delivery until recovery succeeds without discarding results", { timeout: 30000 }, async () => {
+  const options = { idle: false };
+  const h = await harness(options);
+  try {
+    const boundary = (outcome: string) => (h.handlers.get('turn_end') ?? [])[0]!({ outcome }, h.ctx);
+    assert.equal(await boundary('error'), undefined);
+    assert.equal(h.job().reportDelivery, 'pending');
+    options.idle = true;
+    await (h.handlers.get('agent_settled') ?? [])[0]!({}, h.ctx);
+    await delay(80);
+    assert.equal(h.wakeAttempts(), 0, 'child reports must not race the failed-request recovery');
+    options.idle = false;
+    const recovered = await boundary('completed');
+    assert.ok(recovered?.continue, 'a successful retry must reopen the report channel');
+    assert.equal(h.job().reportDelivery, 'delivered');
+    assert.equal(await boundary('completed'), undefined, 'recovery delivers each batch once');
+  } finally { await h.close(); }
+});
+
 test("a successful turn-boundary delivery acknowledges the report once", { timeout: 30000 }, async () => {
   const h = await harness({ idle: false });
   try {

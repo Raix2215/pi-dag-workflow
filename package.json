@@ -1,6 +1,6 @@
 {
   "name": "pi-dag-workflow",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "description": "A lightweight, session-local Todo DAG workflow for Pi",
   "repository": {
     "type": "git",
@@ -46,6 +46,7 @@
     "test:tui": "node test/tmux-smoke.mjs",
     "test:flash": "node test/flash-smoke.ts",
     "test:goal-flash": "node test/goal-flash-smoke.ts",
+    "test:continue-flash": "node test/continuation-flash-smoke.ts",
     "test:joint-flash": "node test/m4-flash-smoke.ts",
     "test:performance": "node test/m4-performance.ts",
     "check:pack": "npm pack --dry-run --ignore-scripts",
@@ -58,11 +59,12 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@babel/parser": "7.29.9",
+    "@earendil-works/pi-ai": "1.0.0",
     "@earendil-works/pi-coding-agent": "1.0.0",
     "@earendil-works/pi-tui": "1.0.0",
-    "@earendil-works/pi-ai": "1.0.0",
-    "typebox": "1.3.27",
     "@types/node": "26.6.3",
+    "typebox": "1.3.27",
     "typescript": "7.0.2"
   }
 }

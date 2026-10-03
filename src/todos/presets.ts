@@ -109,32 +109,39 @@ const PLACEHOLDER = /\{([a-zA-Z0-9_]+)\}/g;
 /** Fill `{name}` placeholders from the caller's variables; a missing value is an error, never a guess. */
 export function fill(text: string, vars: Readonly<Record<string, string>> | undefined, where: string): string {
   return text.replace(PLACEHOLDER, (_match, name: string) => {
-    const value = vars?.[name];
-    if (value === undefined) throw new Error(`${where} needs a value for {${name}}`);
+    const value = vars && Object.hasOwn(vars, name) ? vars[name] : undefined;
+    if (typeof value !== "string") throw new Error(`${where} needs a value for {${name}}`);
     return value;
   });
 }
 
 /** The next run number for a preset: instances never reuse ids, so runs only ever grow. */
+function validRun(task: Todo, name: string): number | undefined {
+  const run = task.metadata?.run;
+  return task.metadata?.preset === name && typeof run === "number" && Number.isSafeInteger(run) && run > 0 ? run : undefined;
+}
 export function nextRun(tasks: readonly Todo[], name: string): number {
-  return tasks.reduce((max, task) => task.metadata?.preset === name && typeof task.metadata.run === "number" ? Math.max(max, task.metadata.run) : max, 0) + 1;
+  const next = tasks.reduce((max, task) => Math.max(max, validRun(task, name) ?? 0), 0) + 1;
+  if (!Number.isSafeInteger(next)) throw new Error("Preset run counter exhausted");
+  return next;
 }
 
 /** Turn a definition into concrete Todos; dependencies resolve to the ids this run creates. */
 export function expand(preset: Preset, run: number, startId: number, vars?: Readonly<Record<string, string>>): ExpandedPreset {
   const ids = new Map<string, number>();
   const created: Todo[] = [];
-  let nextId = startId;
+  if (!Number.isSafeInteger(startId + preset.steps.length)) throw new Error("Todo id counter exhausted");
+  // Resolve the complete run first: acyclic definitions may refer to a later-listed step.
+  for (const [index, step] of preset.steps.entries()) ids.set(step.key, startId + index);
   for (const step of preset.steps) {
-    const id = nextId++;
-    ids.set(step.key, id);
+    const id = ids.get(step.key)!;
     created.push({
       id,
       subject: fill(step.subject, vars, `preset ${preset.name} step ${step.key}`),
       status: "pending",
       blockedBy: (step.after ?? []).map((key) => {
         const dependency = ids.get(key);
-        if (dependency === undefined) throw new Error(`preset ${preset.name} step ${step.key} depends on ${key} before it is created`);
+        if (dependency === undefined) throw new Error(`preset ${preset.name} step ${step.key} depends on unknown key ${key}`);
         return dependency;
       }),
       ...(step.description === undefined ? {} : { description: fill(step.description, vars, `preset ${preset.name} step ${step.key}`) }),
@@ -148,10 +155,10 @@ export function expand(preset: Preset, run: number, startId: number, vars?: Read
 
 /** One instantiated fragment on the current list, newest run first. */
 export function instances(tasks: readonly Todo[], name: string, run?: number): number[] {
-  const runs = tasks.filter((task) => task.metadata?.preset === name && typeof task.metadata.run === "number").map((task) => task.metadata!.run as number);
-  if (!runs.length) return [];
-  const wanted = run ?? Math.max(...runs);
-  return tasks.filter((task) => task.metadata?.preset === name && task.metadata.run === wanted).map((task) => task.id);
+  const newest = tasks.reduce((max, task) => Math.max(max, validRun(task, name) ?? 0), 0);
+  if (!newest) return [];
+  const wanted = run ?? newest;
+  return tasks.filter((task) => task.status !== "deleted" && validRun(task, name) === wanted).map((task) => task.id);
 }
 
 /**
@@ -164,17 +171,24 @@ export function resetClosure(tasks: readonly Todo[], name: string, step?: string
   if (step !== undefined) {
     const start = tasks.find((task) => target.has(task.id) && task.metadata?.key === step);
     if (!start) return [];
-    const wanted = new Set([start.id]);
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const task of tasks) {
-        if (wanted.has(task.id) || !task.blockedBy.some((id) => wanted.has(id))) continue;
-        wanted.add(task.id);
-        grew = true;
-      }
-    }
-    return [...wanted];
+    target.clear(); target.add(start.id);
   }
-  return [...target];
+  // Both whole-run and single-step resets include live external successors. Deleted rows stay
+  // deleted. A successor adjacency map makes the closure linear even for reverse-listed chains.
+  const successors = new Map<number, number[]>();
+  for (const task of tasks) {
+    if (task.status === "deleted") continue;
+    for (const id of task.blockedBy) {
+      const children = successors.get(id) ?? [];
+      children.push(task.id); successors.set(id, children);
+    }
+  }
+  const queue = [...target];
+  for (let index = 0; index < queue.length; index++) {
+    for (const id of successors.get(queue[index]!) ?? []) {
+      if (target.has(id)) continue;
+      target.add(id); queue.push(id);
+    }
+  }
+  return tasks.filter((task) => target.has(task.id)).map((task) => task.id);
 }
