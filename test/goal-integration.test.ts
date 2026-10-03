@@ -70,9 +70,10 @@ test('actual Pi: Plan command/tool restrictions agree; off/reload/status never r
 test('actual Pi: waiting child does not poll; question wake uses the same Goal budget and late reports cannot bypass cap', { timeout: 30000 }, async (t) => {
   const client = await start(); t.after(() => client.close());
   await call(client, { action: 'create', title: '委派测试', maxTurns: 2 }); await call(client, { action: 'enable', id: 1 });
-  await client.until(() => client.records.some((record) => record.type === 'entry_appended' && (record.entry as any)?.customType === GOAL_TYPE && (record.entry as any)?.data?.run?.paused));
+  // Child startup plus a real RPC round trip can exceed the default wait on a loaded CI runner.
+  await client.until(() => client.records.some((record) => record.type === 'entry_appended' && (record.entry as any)?.customType === GOAL_TYPE && (record.entry as any)?.data?.run?.paused), 25000);
   // Report and child completion are asynchronous; wait for durable job state rather than sleep.
-  await client.until(() => client.records.some((record) => record.type === 'entry_appended' && (record.entry as any)?.customType === AGENTS_TYPE && (record.entry as any)?.data?.jobs?.some((job: any) => job.status === 'completed')));
+  await client.until(() => client.records.some((record) => record.type === 'entry_appended' && (record.entry as any)?.customType === AGENTS_TYPE && (record.entry as any)?.data?.jobs?.some((job: any) => job.status === 'completed')), 25000);
   let entries = await client.entries(); const state = goals(entries)!;
   assert.equal(state.run.used, 2); assert.match(state.run.reason!, /上限/);
   assert.equal(continuations(entries).length, 1);

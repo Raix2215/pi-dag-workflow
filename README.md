@@ -159,9 +159,9 @@ Use `complete` after verifying the full objective or `disable` when user input i
 
 ### `nopause` control
 
-Run `/goal nopause #1` to choose **Allow model pause** (the default) or **Block model pause**. Omit the id for the current Goal. The choice belongs to that Goal, is stored in its session snapshot, survives enable/reload/branch restore, and leaves other Goals and global configuration unchanged. Opening or cancelling the menu does not start, pause, or refill the Goal.
+Run `/goal nopause #1` to toggle, while a Goal runs, whether the model may interrupt it: **Allow model interruption** (the default) or **Block model interruption**. Omit the id for the current Goal. The choice belongs to that Goal, is stored in its session snapshot, survives enable/reload/branch restore, and leaves other Goals and global configuration unchanged. Opening or cancelling the menu does not start, pause, or refill the Goal.
 
-Blocking rejects model `disable`, `delete`, and `update` with an empty or whitespace-only `nextStep`. It still allows `complete` after verification. User `/goal disable` and `/goal delete` remain available; budget/no-progress limits, real user dialogs, Plan, and failed compaction can still pause safely. The policy only governs Goal tool requests, not operating-system permissions or whether the model's verification is correct.
+Blocking rejects model `disable`, `delete`, and `update` with an empty or whitespace-only `nextStep`, so the model cannot stop or silently park a Goal. It does not stop the model from reporting progress or completing verified work. It still allows `complete` after verification. User `/goal disable` and `/goal delete` remain available; budget/no-progress limits, real user dialogs, Plan, and failed compaction can still pause safely. The policy only governs Goal tool requests, not operating-system permissions or whether the model's verification is correct.
 
 The model cannot change `modelPause` through the Goal tool. `goal get` exposes it, continuation hints respect it, and rejected stop requests leave Goal state unchanged. `/goal nopause` is a user command, supported by the interactive and RPC selection UI.
 

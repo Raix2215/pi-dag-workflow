@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
-- `/goal nopause [ #id]` opens a user-only model pause menu. The per-Goal `modelPause` choice defaults to allow; deny rejects model disable/delete and blank nextStep, while verified completion, user commands, and safety pauses remain available. The menu neither starts nor pauses work nor resets its allowance.
+- `/goal nopause [ #id]` opens a user-only menu that toggles, while a Goal runs, whether the model may interrupt it. The per-Goal `modelPause` choice defaults to allow; blocking rejects model disable/delete and blank nextStep, while verified completion, user commands, and safety pauses remain available. The menu neither starts nor pauses work nor resets its allowance.
 - Child inspect/wait results include the current linked `todoStatus`, derived at query time without changing retained Job state.
 
 ### Changed

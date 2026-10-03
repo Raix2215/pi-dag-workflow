@@ -51,7 +51,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       { action: 'delete', description: msg('删除目标：delete #编号') },
       { action: 'edit', description: msg('修改标题：edit #编号 新标题') },
       { action: 'get', description: msg('查看目标详情：get #编号') },
-      { action: 'nopause', description: msg('模型暂停控制：nopause [ #编号]') },
+      { action: 'nopause', description: msg('切换运行中是否允许模型中断：nopause [ #编号]') },
       { action: 'config', description: msg('查看配置路径与值') },
       { action: 'reset', description: msg('清除 Goal 状态') },
       { action: 'help', description: msg('查看命令帮助') },
@@ -146,8 +146,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if (!goal) throw new Error(msg('找不到目标；请给出 id'));
     if (!ctx.hasUI) throw new Error(msg('nopause 菜单需要交互界面'));
     if (policyPrompt) throw new Error(msg('nopause 菜单已打开'));
-    const allow = msg('允许模型暂停'); const deny = msg('禁止模型暂停');
-    const prompt = { title: msg`Goal #${goal.id} · nopause（当前：${goal.modelPause === 'deny' ? deny : allow}）`, epoch: sessionEpoch };
+    const allow = msg('允许模型中断'); const deny = msg('禁止模型中断');
+    const prompt = { title: msg`Goal #${goal.id} · 运行中模型中断（当前：${goal.modelPause === 'deny' ? msg('禁止') : msg('允许')}）`, epoch: sessionEpoch };
     policyPrompt = prompt;
     let selected: string | undefined;
     try { selected = await ctx.ui.select(prompt.title, goal.modelPause === 'deny' ? [deny, allow] : [allow, deny]); }
@@ -156,7 +156,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const policy = selected === deny ? 'deny' : selected === allow ? 'allow' : undefined;
     if (!policy) return;
     commit(setModelPausePolicy(state, id, policy, msg), ctx);
-    notify(ctx, msg`Goal #${id} nopause：${selected}`, 'info');
+    notify(ctx, msg`Goal #${id}：${selected}`, 'info');
   }
   function continuation(ctx: ExtensionContext, nextStep: string) {
     if (!reserveWake(ctx, true)) return;
@@ -310,7 +310,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('before_agent_start', (event) => {
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);
-    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; complete when achieved.'} ${goal.modelPause === 'deny' ? 'User policy blocks model disable/delete and empty nextStep. Ask when user input is needed; only the user can stop this Goal.' : 'Use disable when waiting for the user.'}`;
+    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}${goal.description ? ` — ${clean(goal.description)}` : ''}. ${state.run.paused ? 'Auto-continuation is paused; do not resume without user instruction.' : 'Verify completion. For research without Todos report new progress and concrete nextStep with goal update; complete when achieved.'} ${goal.modelPause === 'deny' ? 'The user set nopause: model disable/delete and empty nextStep are blocked. Ask when user input is needed; only the user can stop this Goal.' : 'Use disable when waiting for the user.'}`;
   });
   pi.on('input', (event, ctx) => { if (event.source !== 'extension') { cancelRetry(ctx); commit(releaseGoalWake(state), ctx); stepAck = undefined; resumeWanted = false; interruptedGoalId = undefined; rejectedWakes = 0; userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
   pi.on('tool_execution_end', (event) => {
@@ -410,11 +410,11 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     }
     return result;
   }
-  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable one target, disable or complete after verification. Update progress/nextStep for research; empty nextStep waits for the user. The user-only Goal modelPause policy may block disable/delete and empty nextStep. Shared auto budget defaults to 32.',
+  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable one target, disable or complete after verification. Update progress/nextStep for research; empty nextStep waits for the user. The user-only nopause setting may block model disable/delete and empty nextStep. Shared auto budget defaults to 32.',
     promptSnippet: 'Use goal to track an objective and continue it across turns',
     promptGuidelines: [
       'Create a goal only when the user asks for autonomous multi-turn work or progress tracking; ordinary tasks belong in the todo list. Enable one at a time, and complete it only after verifying the objective.',
-      'While a Goal is enabled, a final answer or completed Todo list does not stop it. Keep working within its scope; use complete after verification. Respect the Goal modelPause policy; use disable only when allowed, and ask when a user decision is needed. Wait for running children instead of polling.',
+      'While a Goal is enabled, a final answer or completed Todo list does not stop it. Keep working within its scope; use complete after verification. Respect the user nopause setting for this Goal; use disable only when allowed, and ask when a user decision is needed. Wait for running children instead of polling.',
     ], parameters: GoalParamsSchema, executionMode: 'sequential',
     async execute(_id, params, _signal, _update, ctx) {
       try { const result = mutate(params, ctx); return { content: [{ type: 'text', text: result.text }], details: { goalState: structuredClone(state) } }; }
