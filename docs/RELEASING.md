@@ -4,7 +4,7 @@ Maintainer checklist for a public release. Run checks on Node.js 22 and 24.
 
 ## 1. Prepare metadata
 
-- Set the intended version in both `package.json` and `package-lock.json`, for example with `npm version 0.2.0 --no-git-tag-version`. Keep `license: MIT`.
+- Set the intended version in both `package.json` and `package-lock.json`, for example with `npm version 0.2.1 --no-git-tag-version`. Keep `license: MIT`.
 - Add a dated `CHANGELOG.md` section matching that version, and update both READMEs for behavior and configuration changes.
 - Keep repository URLs in the manifest and README install examples consistent.
 - Keep distributed files limited to `src`, both READMEs, `LICENSE`, `CHANGELOG.md`, and the explicitly approved documents in `docs`. Update the release check's document allowlist when adding a public document. Tests, fixtures, scripts, development dependencies, `.github`, and local artifacts must not ship.
@@ -31,7 +31,9 @@ npm run test:continue-flash
 npm run test:joint-flash
 ```
 
-These exercise Goal startup and verification, two separately budgeted automatic rounds, and parallel children with a dependency join. Review every result; opt-in scripts never run in default CI. Their generated artifacts must remain outside the release package.
+These exercise Goal startup and verification, two separately budgeted automatic rounds, and parallel children with a dependency join. `test:continue-flash` also accepts `PI_DAG_TEST_EXTENSIONS`, a JSON array of explicitly trusted extension paths, to verify coexistence. Disable unrelated memory workers for a bounded lifecycle test; do not confuse that check with a full memory-worker accuracy test. Native compaction tests require no compression extension and run in default CI.
+
+Review every result; opt-in scripts never run in default CI. Their generated artifacts must remain outside the release package.
 
 ## 3. Publish with maintainer approval
 

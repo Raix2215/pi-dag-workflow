@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-03
+
+### Added
+
+- **Passive state checkpoints** — compaction, reload, branch navigation, and command edits append a short immutable summary of at most 12 unfinished Todos and 8 active Jobs. Checkpoints do not wake the model, replay full reports, change prior messages, or own memory-plugin summaries. Ordinary tool updates use their existing results instead of adding snapshots.
+- **Runtime verification hints** — newly unblocked tasks reach the model in the Todo result; terminal reports name current task status; Goal steps prefer verification of a returned child. Fragment resets keep old output queryable while marking it historical for reopened tasks.
+
+### Fixed
+
+- **Goal continuation survives compaction and rejected drafts** — wake reservations are confirmed by an actual turn and refunded when discarded; `nextStep` is consumed only when its continuation is visible. Boundary handlers preserve one another's entries and share one reservation. Native Pi recovery takes priority over fallback wakes, and failed/cancelled compaction still pauses.
+- **Direct enable and idle continuation work** — `/goal enable #id` starts an active idle Goal with its remaining allowance, while running/already-proposed requests are deduplicated. A settled active Goal gets a fallback decision: advance a concrete step, wait for real children, retry an error, or visibly pause rather than silently staying enabled. Explicit intervention clears stale draft-rejection counters.
+- **Report drafts are not premature deliveries** — acknowledgement waits for an actual request's context or an explicit wait result. Discarded drafts remain available for bounded delivery, memory filters are respected, and failed batches cannot block reports from future children.
+- **Create accepts safe initial status** — `todo create` now accepts `pending` (the default) and `in_progress`, matching the common request shape models emit. Starting still requires completed prerequisites and Plan off; initial `completed`/`deleted` remain rejected, with clear guidance to verify then update.
+- **Long-running tools keep real time** — remove both the 99-second display cap and refresh cutoff; seconds/minutes/hours remain width-safe, and completion/shutdown clear refresh timers.
+
+### Verification
+
+- Add native threshold/overflow tests with no compression extension, rejected-draft/compaction recovery, explicit active-idle enable, passive checkpoints, memory summary projections and filters, stable request prefixes, stale-report invalidation, and long-running timer tests.
+- Verify two-phase real-model continuation both alone and with memory/cache extensions. Document behavior in `docs/CHECKPOINTS.md` and verification in `docs/REVIEW-0.2.1.md`.
+
 ## [0.2.0] - 2026-10-03
 
 ### Fixed

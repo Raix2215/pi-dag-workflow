@@ -81,6 +81,23 @@ test('actual Pi: waiting child does not poll; question wake uses the same Goal b
   await call(client, { action: 'get' }); entries = await client.entries();
   assert.equal(goals(entries)!.run.used, 2);
 });
+test('actual Pi without a compaction plugin: explicit enable wakes an active idle Goal using its remaining budget', { timeout: 30000 }, async (t) => {
+  const client = await start(); t.after(() => client.close());
+  await call(client, { action: 'create', title: '空闲续跑测试', maxTurns: 4 });
+  await client.prompt('/goal enable #1');
+  await client.until(() => client.records.filter((record) => record.type === 'agent_settled').length >= 2);
+  const before = goals(await client.entries())!;
+  assert.equal(before.run.paused, false, 'a running child leaves the parent idle and the goal active');
+  assert.equal(before.run.used, 1);
+  const offset = client.records.length;
+  await client.prompt('/goal enable #1');
+  await client.until(() => client.records.slice(offset).some((record) => record.type === 'tool_execution_end' && record.toolName === 'goal'));
+  const after = goals(await client.entries())!;
+  assert.equal(after.goals[0]!.status, 'completed', 'the direct command actually starts another model request');
+  assert.equal(after.run.used, 2, 'same-goal enable retains the spent round rather than resetting the budget');
+  assert.equal(client.records.filter((record) => record.type === 'tool_execution_end' && record.toolName === 'subagent_spawn').length, 1, 'resuming cannot redispatch the original child');
+});
+
 test('actual Pi: abort locks automatic work until explicit resume; zero phantom retry after status', { timeout: 30000 }, async (t) => {
   const client = await start(); t.after(() => client.close());
   await call(client, { action: 'create', title: '中断测试' });

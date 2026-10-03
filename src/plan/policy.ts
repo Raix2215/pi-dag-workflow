@@ -17,7 +17,7 @@ export function planViolation(state: WorkflowState, tool: string, input: unknown
   if (["write", "edit", "bash", "powershell", "goal"].includes(tool) || tool.startsWith("subagent_")) return msg`Plan 中不允许执行 ${tool}；先 /plan off`;
   if (tool === "todo") {
     const params = input as { action?: string; status?: string } | null;
-    if (params?.action === "update" && (params.status === "completed" || params.status === "in_progress")) return msg("Plan 只允许整理 Todos，不允许开始或完成；先 /plan off");
+    if (["create", "update"].includes(params?.action ?? "") && (params?.status === "completed" || params?.status === "in_progress")) return msg("Plan 只允许整理 Todos，不允许开始或完成；先 /plan off");
     if (["create", "update", "list", "get", "delete", "clear", "apply", "reset"].includes(params?.action ?? "")) return;
   }
   if (READ_TOOLS.has(tool) || state.planTools.includes(tool) || configTools.includes(tool)) return;

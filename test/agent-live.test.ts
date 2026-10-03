@@ -16,8 +16,8 @@ test("live activity replaces the coarse running label with the child's real curr
   assert.doesNotMatch(lines([job({ kind: "tool", tool: "bash", since: Date.now() - 3000 })]), /运行中/);
 });
 
-test("tool names are shortened and capped at ten columns with bounded seconds", () => {
-  assert.match(lines([job({ kind: "tool", tool: "mcp__github__list_repository_files", since: Date.now() - 200000 })]), /󰆍 list_repo… 99s/);
+test("tool names are shortened and capped at ten columns while the elapsed time stays uncapped", () => {
+  assert.match(lines([job({ kind: "tool", tool: "mcp__github__list_repository_files", since: Date.now() - 200000 })]), /󰆍 list_repo… 3m20s/);
   assert.match(lines([job({ kind: "tool", tool: "read", since: Date.now() - 500 })]), /󰆍 read/);
 });
 

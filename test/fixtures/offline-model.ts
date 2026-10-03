@@ -5,6 +5,10 @@ import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall
 export default function offlineModel(pi: ExtensionAPI): void {
   let sequence = 0;
   let flaky = 0;
+  let pressureTurns = 0;
+  let overflowed = false;
+  pi.registerFlag('dag-test-compaction-pressure', { type: 'boolean', description: 'Offline test-only context pressure on the first Goal turn' });
+  pi.registerFlag('dag-test-overflow', { type: 'boolean', description: 'Offline test-only one context overflow on a Goal request' });
   const prefix = Date.now();
   pi.registerProvider("dag-test", {
     api: "dag-test-api", baseUrl: "http://offline.invalid", apiKey: "offline-test-only",
@@ -21,11 +25,24 @@ export default function offlineModel(pi: ExtensionAPI): void {
           await options?.onPayload?.({ testOnly: true }, model);
           if (options?.signal?.aborted) throw new Error("aborted");
           stream.push({ type: "start", partial: message });
-          const last = context.messages.at(-1);
-          const latestUser = context.messages.findLast((item) => item.role === "user");
+          // Workflow metadata is also converted to user-role text. Scripted test commands stay
+          // tied to the real input, while production models read both the input and checkpoint.
+          const relevant = context.messages.filter((item) => {
+            if (item.role !== 'user') return true;
+            const text = typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+            return !text.startsWith('Workflow state checkpoint');
+          });
+          const last = relevant.at(-1);
+          const latestUser = relevant.findLast((item) => item.role === "user");
           const prompt = latestUser?.role === "user" ? typeof latestUser.content === "string" ? latestUser.content : latestUser.content.filter((item) => item.type === "text").map((item) => item.text).join("\n") : "";
           const calls: { name: string; arguments: ToolCall["arguments"] }[] = [];
           if (last?.role !== "toolResult") {
+            if (prompt === 'HOLD-IDLE-ENABLE-CHILD') {
+              await new Promise<void>((resolve, reject) => {
+                const timer = setTimeout(resolve, 10000);
+                options?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
+              });
+            }
             if (prompt.startsWith('Goal #') && prompt.includes('中断测试')) {
               await new Promise<void>((resolve, reject) => {
                 const timer = setTimeout(resolve, 2000);
@@ -36,6 +53,9 @@ export default function offlineModel(pi: ExtensionAPI): void {
             // Goal error-recovery tests: one Goal fails the first two requests, another fails until
             // its retry budget is spent. Only Goal turns fail; the test's own tool calls stay intact.
             const goalWork = prompt.startsWith('Goal #') || prompt.includes('自动重试');
+            if (goalWork && pi.getFlag('dag-test-overflow') === true && !overflowed) {
+              overflowed = true; throw new Error('maximum context length exceeded');
+            }
             if (prompt === '报告重试触发失败' && flaky < 1) { flaky++; throw new Error('scripted provider failure (500)'); }
             if (goalWork && prompt.includes('出错重试测试') && flaky < 2) { flaky++; throw new Error(flaky === 1 ? 'scripted provider failure (500)' : 'scripted provider failure (503 auth_unavailable)'); }
             if (goalWork && prompt.includes('出错暂停测试')) throw new Error('scripted provider failure (500)');
@@ -43,6 +63,10 @@ export default function offlineModel(pi: ExtensionAPI): void {
             if (prompt.startsWith('子 Agent 报告') && prompt.includes('RECOVERY-CHILD-RESULT')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (goalWork && prompt.includes('出错重试测试') && flaky >= 2) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
+            else if (prompt.startsWith('Goal #') && prompt.includes('空闲续跑测试')) {
+              const dispatched = relevant.some((item) => item.role === 'toolResult' && item.toolName === 'subagent_spawn');
+              calls.push(dispatched ? { name: 'goal', arguments: { action: 'complete' } } : { name: 'subagent_spawn', arguments: { task: 'HOLD-IDLE-ENABLE-CHILD' } });
+            }
             else if (prompt.startsWith('Goal #') && prompt.includes('委派测试')) calls.push({ name: 'subagent_spawn', arguments: { task: 'TEST CALL subagent_send {"message":"M3预算提问","question":true}' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('预算测试')) calls.push({ name: 'goal', arguments: { action: 'update', progress: `离线预算进展-${sequence}`, nextStep: '预算测试下一步' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('研究测试')) calls.push({ name: 'goal', arguments: { action: 'update', progress: '同一份研究结论', nextStep: '研究测试下一步' } });
@@ -70,6 +94,9 @@ export default function offlineModel(pi: ExtensionAPI): void {
             message.content[0] = { type: "text", text };
             stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
             stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+          }
+          if (pi.getFlag('dag-test-compaction-pressure') === true && prompt.startsWith('Goal #') && last?.role === 'toolResult' && pressureTurns++ < 1) {
+            message.usage.input = 60000; message.usage.totalTokens = 60000;
           }
           message.stopReason = calls.length ? "toolUse" : "stop";
           stream.push({ type: "done", reason: message.stopReason, message });

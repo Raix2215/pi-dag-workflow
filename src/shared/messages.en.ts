@@ -7,6 +7,16 @@
  * variable values, command/tool names and Nerd Font glyphs are never included here.
  */
 export const englishMessages: Readonly<Record<string, string>> = {
+  // ----- runtime state reminders -----
+  '（历史输出，仅作参考）': ' (historical output, for reference only)',
+  '\nTodo #{0} 已完成，本报告仅供参考。': '\nTodo #{0} is completed; this report is for reference only.',
+  '\nTodo #{0} 当前状态：{1}；这是历史输出，不作为本轮验收依据。': '\nTodo #{0} current status: {1}; this is historical output, not acceptance evidence for the current run.',
+  '\nTodo #{0} 当前状态：{1}；核验后再更新，报告不会自动完成任务。': '\nTodo #{0} current status: {1}; verify before updating it. Reports never complete a task automatically.',
+  '核验 Todo #{0}：{1}；子 Agent {2} 已结束，若报告不在上下文中，用 subagent_wait 查看；核验后再更新任务。': 'Verify Todo #{0}: {1}; child {2} has stopped. Use subagent_wait if its report is missing from context, then update the task after verification.',
+  '上下文压缩未完成，自动续跑已暂停': 'Context compaction did not finish; auto-continuation is paused',
+  '续跑请求未被执行，请检查压缩或扩展后明确恢复': 'Continuation requests were not executed; check compaction or extensions and explicitly resume',
+  '损坏的待发续跑请求': 'Corrupt pending continuation request',
+
   // ----- shared status labels -----
   '待执行': 'Pending',
   '进行中': 'In progress',
@@ -39,6 +49,7 @@ export const englishMessages: Readonly<Record<string, string>> = {
   'Plan 只允许整理任务，不允许开始或完成；先 /plan off': 'Plan only allows organizing tasks, not starting or completing them; run /plan off first',
   '已清空 {0} 项，编号不复用': 'Cleared {0} item(s); ids are not reused',
   'create 需要 subject': 'create requires subject',
+  'create 的 status 只支持 pending 或 in_progress；核验完成后用 update 设置 completed': 'create status accepts only pending or in_progress; set completed with update after verification',
   '任务 #{0} 已删除': 'Task #{0} was deleted',
   'update 需要至少一个修改字段': 'update requires at least one changed field',
   '不允许 {0} → {1}；返工请新建任务': 'Transition {0} → {1} is not allowed; create a new task to rework',

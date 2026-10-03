@@ -10,7 +10,7 @@ export const TodoParamsSchema = Type.Object({
   subject: Type.Optional(Type.String({ description: "Short title; required for create" })),
   description: Type.Optional(Type.String({ description: "Task instructions or evidence" })),
   activeForm: Type.Optional(Type.String({ description: "Current activity label" })),
-  status: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("deleted")], { description: "Update sets status; list filters status" })),
+  status: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("deleted")], { description: "Create: pending (default) or in_progress; update sets status; list filters status" })),
   blockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Initial prerequisite ids, create only" })),
   addBlockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Update: add prerequisites" })),
   removeBlockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Update: remove prerequisites" })),
@@ -48,7 +48,7 @@ export const STATE_TYPE = "pi-dag-workflow.state";
 export const emptyState = (): WorkflowState => ({ version: 1, tasks: [], nextId: 1, plan: false, planTools: [], visible: true, view: "list", treeStyle: "paths" });
 
 const fields: Record<string, readonly string[]> = {
-  create: ["subject", "description", "activeForm", "owner", "metadata", "blockedBy"],
+  create: ["subject", "description", "activeForm", "owner", "metadata", "blockedBy", "status"],
   update: ["id", "subject", "description", "activeForm", "owner", "metadata", "status", "addBlockedBy", "removeBlockedBy"],
   list: ["status", "includeDeleted"], get: ["id"], delete: ["id"], clear: [],
   apply: ["preset", "vars"], reset: ["preset", "run", "step"],
@@ -134,7 +134,8 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
   if (params.action === "create") {
     if (!params.subject?.trim()) throw new Error(msg("create 需要 subject"));
     if (!Number.isSafeInteger(state.nextId + 1)) throw new Error(msg("任务计数器不能复用已有编号"));
-    task = { id: state.nextId, subject: params.subject.trim(), status: "pending", blockedBy: [...new Set(params.blockedBy ?? [])] };
+    if (params.status !== undefined && !['pending', 'in_progress'].includes(params.status)) throw new Error(msg('create 的 status 只支持 pending 或 in_progress；核验完成后用 update 设置 completed'));
+    task = { id: state.nextId, subject: params.subject.trim(), status: params.status ?? "pending", blockedBy: [...new Set(params.blockedBy ?? [])] };
   } else {
     task = { ...current!, blockedBy: [...current!.blockedBy] };
     if (task.status === "deleted") throw new Error(msg`任务 #${task.id} 已删除`);

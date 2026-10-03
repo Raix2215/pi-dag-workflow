@@ -158,6 +158,7 @@ export interface AgentView {
   status: "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
   /** Execution completion and report handoff are separate stages. */
   reportDelivery?: 'pending' | 'delivered';
+  taskReportStale?: boolean;
   /** One-line spawn task excerpt, shown for jobs that no Todo row can carry. */
   label?: string;
   /** Live activity from the child's real event stream; display-only, never persisted. */
@@ -168,16 +169,29 @@ const agentColors: Record<AgentView["status"], ThemeColor> = { starting: "accent
 const pendingReport = (job: AgentView): boolean => job.status === 'completed' && job.reportDelivery === 'pending';
 const agentLabel = (job: AgentView, msg: Translator): string => msg(pendingReport(job) ? '󰥔 待交付' : agentLabels[job.status]);
 const agentColor = (job: AgentView): ThemeColor => pendingReport(job) ? 'warning' : agentColors[job.status];
-/** Live labels use seconds capped at 99; tool names clipped to 10 columns (MCP shortened after the last separator). */
+/**
+ * Live labels name the tool (MCP shortened after the last separator, clipped to 10 columns) and
+ * count real elapsed time without a cap: `59s`, then `1m40s`, and `1h2m` from the first hour.
+ * A missing or non-finite timestamp adds no time instead of NaN; a backwards clock clamps to 0,
+ * and the zero case adds nothing so a just-started tool shows only its name.
+ */
 function activityLabel(activity: NonNullable<AgentView["activity"]>, now: number, msg: Translator = chinese): string {
-  const seconds = activity.since !== undefined ? Math.min(99, Math.max(0, Math.floor((now - activity.since) / 1000))) : 0;
   if (activity.kind === "thinking") return msg("󰧑 思考中");
   if (activity.kind === "output") return msg("󰏫 输出中");
   if (activity.tool) {
     const raw = clean(activity.tool);
     const name = raw.startsWith("mcp__") ? raw.split("__").at(-1)! : raw.includes(":") ? raw.split(":").at(-1)! : raw;
     const clipped = clip(name, 10);
-    return `󰆍 ${clipped}${seconds ? ` ${seconds}s` : ""}`;
+    const since = activity.since;
+    let time = "";
+    if (since !== undefined && Number.isFinite(since) && Number.isFinite(now)) {
+      const seconds = Math.max(0, Math.floor((now - since) / 1000));
+      const minutes = Math.floor(seconds / 60);
+      if (minutes >= 60) time = `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+      else if (seconds >= 100) time = `${minutes}m${seconds % 60}s`;
+      else if (seconds > 0) time = `${seconds}s`;
+    }
+    return `󰆍 ${clipped}${time ? ` ${time}` : ""}`;
   }
   return msg("󰆍 工具");
 }
@@ -255,7 +269,7 @@ function drawRows(rows: readonly TreeRow[], width: number, theme?: Theme, jobs: 
     const label = job ? live ? activityLabel(live, Date.now(), msg) : agentLabel(job, msg) : msg(statusLabel[task.status]);
     const minTitle = Math.min(6, visibleWidth(title));
     const statusBudget = available - minTitle - 1;
-    const variants = live?.kind === "tool" ? [label, label.replace(/ \d+s$/, ""), "󰆍"] : [label];
+    const variants = live?.kind === "tool" ? [label, label.replace(/ (?:\d+[hms])+$/, ""), "󰆍"] : [label];
     const ownerText = `[${owner}]`;
     // Tail order is fragment, owner, status; narrow terminals drop the fragment first, then the
     // owner, and keep the state that explains the row.

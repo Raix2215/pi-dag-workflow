@@ -14,7 +14,8 @@ A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with 
 - **Plan before you build.** Plan is a read-only mode for reading, searching, asking, and rearranging Todos; read-only network tools can be enabled through `planTools`. Implementation, shell commands, and dispatch are blocked until you leave it.
 - **Real child jobs.** Run up to eight Pi subprocesses. Give each one a task, an optional Todo link, and an optional named profile; send direction, answer questions, wait, cancel, or remove records. A finished child stays **Pending delivery** until its report reaches the main conversation. Returned work never completes a Todo by itself.
 - **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance; a Goal also pauses after three consecutive rounds without new progress. A failed model request retries automatically (5 attempts by default) before the Goal pauses. Pause happens on interruption, restore, Plan, an exhausted allowance or retry budget, or a stalled run.
-- **Readable progress.** A Nerd Font panel shows the task tree, a solid-line DAG, and live thinking/tool/output activity. Interface activity is not written into model context or persistent workflow state.
+- **Readable progress.** A Nerd Font panel shows the task tree, a solid-line DAG, and live thinking/tool/output activity. Tool elapsed time keeps updating beyond 99 seconds, using compact seconds/minutes/hours. Interface activity is not written into model context or persistent workflow state.
+- **State survives context loss.** Short, append-only checkpoints restore key Todo/Job state after compaction, reload, or branch navigation. Commands coalesce changes, and normal tool results carry their own notifications. Checkpoints never wake the model or replace memory-plugin summaries.
 - **Session-scoped persistence.** Todo, Goal, budget, and job snapshots follow the active Pi branch. Restoring a session never resurrects child processes and never resumes autonomous work on its own.
 
 ## Requirements
@@ -121,13 +122,15 @@ never exposes it.
 
 | Tool | Purpose |
 |---|---|
-| `todo` | create/update/list/get/delete/clear; apply/reset for fragments; numeric IDs and `blockedBy` prerequisites |
+| `todo` | create/update/list/get/delete/clear; create status `pending` (default) or `in_progress`; apply/reset for fragments; numeric IDs and `blockedBy` prerequisites |
 | `goal` | create/update/list/get/delete; enable; disable; complete — one spelling per operation |
 | `subagent_spawn` | start one child with `task` and optional `todoId`/`profile`/`tools`/`timeout`/`context` |
 | `subagent_send` | message a `recipient` job ID, or answer a `requestId` |
 | `subagent_wait` | wait for a result or question; a timeout or abort stops the wait, not the child |
 | `subagent_inspect` | job summaries and profiles, not full child conversations |
 | `subagent_cancel` | stop a child; optional `remove` discards its record, not project edits |
+
+Creating a Todo with `status: "pending"` is accepted, and `status: "in_progress"` starts it only when its prerequisites are complete and Plan is off. Creating a task directly as `completed` or `deleted` is rejected; use `update` after verifying work or `delete` to remove it.
 
 ## Commands
 
@@ -147,6 +150,10 @@ Each command family supports `help`; help does not call a model or change modes.
 ### Goal lifecycle
 
 `new` only records a Goal and leaves it paused. `enable` is the only activation: it focuses a Goal, or re-enables the current one when the id is omitted, and a completed or deleted Goal cannot be restarted — create a new one for rework. `disable` is the only stop and keeps the focus so you can enable it later. Enabling after a stop starts a fresh allowance, not the remainder of the previous one. Enabling another Goal does not clear the shared Todo list, and disabling a Goal does not kill running children; stop those with `/agents cancel`.
+
+For a Goal that is already active but idle, `/goal enable #1` starts another request with the remaining allowance. It does not refill that budget or redispatch a running child. Repeating enable while the parent is running or a wake is already proposed does not send a duplicate.
+
+Successful compaction preserves the active Goal and remaining allowance; Pi's own overflow retry runs first. If a continuation draft is discarded, its reservation is refunded and its next step retained. An idle fallback avoids leaving an active Goal silently stranded: it continues concrete work, waits for children, or pauses with a reason. Failed/cancelled compaction and explicit user stops remain stopped.
 
 Every operation has exactly one spelling. An unrecognized first word is treated as natural language and forwarded to the model, the same as any other free-form request.
 
@@ -184,6 +191,12 @@ similarly named tools and commands. Those names cannot be shared:
 
 Names are similar, but arguments and stored state are not portable. A child job or Goal created by one plugin
 is not understood by the other, and each plugin keeps its own settings and profile files.
+
+### Memory and compression plugins
+
+The workflow works with **Pi's native compaction**, with no compression extension installed. It also keeps checkpoint messages separate from memory-owned summaries and context projections, including those used by `pi-blackhole`, `pi-cache-optimizer`, and `pi-observational-memory`. There is no dependency on those packages and no summary override or earlier-message rewrite. Their own supported Pi versions and mutual conflicts still apply.
+
+Checkpoints list at most 12 unfinished tasks and 8 active jobs, without replaying full reports. They append at safe boundaries and remain unchanged afterwards. A memory filter may omit them; the workflow does not bypass that filter. This avoids workflow-induced prefix churn, but provider cache hits still depend on the full request and provider rules. See [checkpoint behavior](docs/CHECKPOINTS.md).
 
 ### Continuing a session that used rpiv-todo
 

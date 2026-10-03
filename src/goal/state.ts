@@ -12,7 +12,7 @@ export const GoalParamsSchema = Type.Object({
 }, { additionalProperties: false });
 export type GoalParams = Static<typeof GoalParamsSchema>;
 export interface Goal { id: number; title: string; description?: string; status: 'active' | 'paused' | 'completed' | 'deleted'; maxTurns: number; createdAt: number; completedAt?: number }
-export interface GoalRun { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string; errorRetries?: number }
+export interface GoalRun { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string; errorRetries?: number; pendingWake?: { id: string; goalId: number; usedBefore: number; nextStep?: string } }
 export interface GoalState { version: 1; goals: Goal[]; nextId: number; focusId?: number; run: GoalRun }
 export const GOAL_TYPE = 'pi-dag-workflow.goal';
 export const GOAL_DEFAULT_TURNS = 32;
@@ -39,6 +39,11 @@ export function validateGoalState(state: GoalState, msg: Translator = chinese): 
   if (active > 1 || state.focusId !== undefined && (!Number.isSafeInteger(state.focusId) || !focusedGoal(state))) throw new Error(msg('损坏的 focus 目标'));
   const run = state.run;
   if (!run || typeof run.paused !== 'boolean' || !Number.isSafeInteger(run.used) || run.used < 0 || !Number.isSafeInteger(run.stalled) || run.stalled < 0 || !run.paused && focusedGoal(state)?.status !== 'active') throw new Error(msg('损坏的 Goal 续跑状态'));
+  if (run.pendingWake !== undefined) {
+    const wake = run.pendingWake;
+    if (!wake || typeof wake.id !== 'string' || !wake.id || wake.id.length > 100 || !Number.isSafeInteger(wake.goalId) || !ids.has(wake.goalId) || !Number.isSafeInteger(wake.usedBefore) || wake.usedBefore < 0 || wake.usedBefore >= run.used) throw new Error(msg('损坏的待发续跑请求'));
+    if (wake.nextStep !== undefined) text(wake.nextStep, 'nextStep', 2048, false, msg);
+  }
   if (run.reason !== undefined) text(run.reason, 'reason', 2048, false, msg);
   if (run.progress !== undefined) text(run.progress, 'progress', 2048, false, msg);
   if (run.nextStep !== undefined) text(run.nextStep, 'nextStep', 2048, false, msg);
@@ -104,6 +109,14 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
 export function pauseGoal(state: GoalState, reason: string): GoalState {
   if (state.run.paused && state.run.reason === reason) return state;
   return { ...state, run: { ...state.run, paused: true, reason } };
+}
+/** A reservation is refundable until a real model turn starts. Never refills a confirmed budget. */
+export function releaseGoalWake(state: GoalState, refund = true): GoalState {
+  const wake = state.run.pendingWake;
+  if (!wake) return state;
+  const run = { ...state.run, used: refund ? Math.max(wake.usedBefore, state.run.used - 1) : state.run.used };
+  delete run.pendingWake;
+  return { ...state, run };
 }
 export function reserveGoalWake(state: GoalState): GoalState | undefined {
   const goal = focusedGoal(state);

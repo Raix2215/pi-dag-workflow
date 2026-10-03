@@ -6,7 +6,9 @@ import { GOAL_TYPE, type GoalState } from '../src/goal/state.ts';
 
 // Explicit opt-in live acceptance: PI_DAG_TEST_MODEL chooses the provider, never a private default.
 // Two different Goal continuation messages must advance two verified file-writing phases.
-const client = await IsolatedClient.startFlash(['goal']);
+const extras: unknown = JSON.parse(process.env.PI_DAG_TEST_EXTENSIONS ?? '[]');
+if (!Array.isArray(extras) || extras.some((path) => typeof path !== 'string')) throw new Error('PI_DAG_TEST_EXTENSIONS must be a JSON array of trusted extension paths');
+const client = await IsolatedClient.startFlash(['goal'], extras);
 let aborted = false;
 const abort = () => { aborted = true; void client.send('abort').catch(() => {}); };
 const timer = setTimeout(abort, 90000);

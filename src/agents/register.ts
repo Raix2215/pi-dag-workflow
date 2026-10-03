@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import { configPaths } from "../shared/config.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { AgentRuntime, type JobSummary, type JobResult } from "./runtime.ts";
@@ -14,7 +15,7 @@ import { completeArguments, type CompletionSpec } from '../shared/completion.ts'
 import { chinese, type Translator } from '../shared/i18n.ts';
 
 export const AGENTS_TYPE = "pi-dag-workflow.agents";
-interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean }
+interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean; beforeWake?(ctx: ExtensionContext): void; compacting?(): boolean }
 const active = (job: JobSummary) => ["starting", "running", "waiting"].includes(job.status);
 const fingerprint = (state: WorkflowState, id?: number) => {
   const task = state.tasks.find((item) => item.id === id);
@@ -51,6 +52,8 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   let generation = 0;
   let claiming: number | undefined;
   const notices = new AgentNotices();
+  let proposedReport: { id: string; content: string; terminalJobIds: string[] } | undefined;
+  let reportAttempts = 0;
   const original = new Map<string, string>();
   const adjusted = new Set<string>();
   const jobStatusLabel: Record<JobSummary['status'], string> = { starting: '启动中', running: '运行中', waiting: '等待回复', completed: '已返回', failed: '失败', cancelled: '已取消', interrupted: '已中断' };
@@ -83,7 +86,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   };
   pi.registerFlag("dag-workflow-test-child-provider", { type: "string", description: "Test-only: explicit trusted offline child provider extension" });
 
-  const clearDelivery = () => { if (timer) clearTimeout(timer); timer = undefined; failedRound = false; notices.clear(); };
+  const clearDelivery = () => { if (timer) clearTimeout(timer); timer = undefined; failedRound = false; notices.clear(); proposedReport = undefined; reportAttempts = 0; };
   const drain = () => {
     const jobs = new Map((runtime?.inspect() ?? []).map((job) => [job.id, job]));
     const state = hooks.state();
@@ -95,21 +98,39 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       if (notice.kind === 'question' && notice.requestId && !runtime?.hasRequest(job.id, notice.requestId)) return;
       const task = job.todoId === undefined ? undefined : tasks.get(job.todoId);
       if (job.todoId !== undefined && (!task || task.status === "deleted")) return;
-      const stale = original.has(job.id) && original.get(job.id) !== fingerprint(state, job.todoId);
+      const changedDefinition = original.has(job.id) && original.get(job.id) !== fingerprint(state, job.todoId);
+      const stale = job.taskReportStale ? msg('（历史输出，仅作参考）') : changedDefinition ? msg('（任务定义已改变，需重新核验）') : '';
       if ((notice.kind === 'completed' || notice.kind === 'failed') && (job.status === 'completed' || job.status === 'failed') && job.reportDelivery === 'pending') terminalJobIds.add(job.id);
-      return msg`[${clean(job.id)}${job.todoId ? msg` / #${job.todoId}` : ""}${notice.requestId ? msg` / requestId=${clean(notice.requestId)}` : ""}] ${notice.kind}${stale ? msg("（任务定义已改变，需重新核验）") : ""}: ${notice.message}`;
+      const receipt = task && ['completed', 'failed'].includes(notice.kind)
+        ? task.status === 'completed' ? msg`\nTodo #${task.id} 已完成，本报告仅供参考。`
+          : job.taskReportStale ? msg`\nTodo #${task.id} 当前状态：${task.status}；这是历史输出，不作为本轮验收依据。`
+          : msg`\nTodo #${task.id} 当前状态：${task.status}；核验后再更新，报告不会自动完成任务。`
+        : '';
+      return msg`[${clean(job.id)}${job.todoId ? msg` / #${job.todoId}` : ""}${notice.requestId ? msg` / requestId=${clean(notice.requestId)}` : ""}] ${notice.kind}${stale}: ${notice.message}${receipt}`;
     }, msg);
     return { content, terminalJobIds: [...terminalJobIds] };
   };
-  // Only a successful real delivery (idle wake or boundary entry) acknowledges terminal reports.
+  // Boundary entries are drafts. Retain an uncommitted batch until the real request sees it.
+  const reportPersisted = (ctx: ExtensionContext) => proposedReport && ctx.sessionManager.getBranch().some((entry) => entry.type === 'custom_message' && entry.customType === 'pi-dag-workflow.agent-report' && (entry.details as { deliveryId?: string } | undefined)?.deliveryId === proposedReport!.id);
+  const prepareReport = () => {
+    // A repeatedly rejected batch stays queryable in Job records; it cannot block new arrivals.
+    if (reportAttempts >= 3) { proposedReport = undefined; reportAttempts = 0; }
+    if (proposedReport) return proposedReport;
+    const batch = drain();
+    if (batch.content) proposedReport = { ...batch, content: batch.content, id: randomUUID() };
+    return proposedReport;
+  };
+  // A context filter remains free to omit persisted reports. Never force them back into a request.
+  const retirePersisted = (ctx: ExtensionContext) => { if (reportPersisted(ctx)) { proposedReport = undefined; reportAttempts = 0; } };
   const acknowledge = (jobIds: readonly string[]) => { for (const jobId of jobIds) runtime?.markReportDelivered(jobId); };
   const deliverIdle = () => {
     timer = undefined;
-    if (!context || restoring || paused || failedRound || hooks.state().plan || hooks.canWake?.() === false || !context.isIdle()) return;
-    const { content, terminalJobIds } = drain();
-    if (content && hooks.reserveWake?.(context) !== false) {
-      try { pi.sendMessage({ customType: "pi-dag-workflow.agent-report", content, display: true }, { triggerTurn: true, deliverAs: "followUp" }); acknowledge(terminalJobIds); }
-      catch (cause) { paused = true; notify(context, msg`Agent 自动唤醒失败：${String(cause)}`, "warning"); } // Durable output remains available; never retry an old wake.
+    if (!context || restoring || paused || failedRound || hooks.compacting?.() || hooks.state().plan || hooks.canWake?.() === false || !context.isIdle()) return;
+    retirePersisted(context);
+    const report = prepareReport();
+    if (report && reportAttempts < 3 && hooks.reserveWake?.(context) !== false) {
+      try { hooks.beforeWake?.(context); reportAttempts++; pi.sendMessage({ customType: "pi-dag-workflow.agent-report", content: report.content, details: { deliveryId: report.id }, display: true }, { triggerTurn: true, deliverAs: "followUp" }); }
+      catch (cause) { paused = true; proposedReport = undefined; reportAttempts = 0; notify(context, msg`Agent 自动唤醒失败：${String(cause)}`, "warning"); } // Durable output remains available; never retry an old wake.
     }
   };
   const onNotice = (notice: Notice) => {
@@ -130,7 +151,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       lastActivityStamp = Date.now();
       hooks.paint(context);
       // Only elapsed tool time needs a periodic tick; thinking/output repaint on transitions.
-      if (runtime?.activities().some((item) => item.activity.kind === "tool" && item.activity.since !== undefined && Date.now() - item.activity.since < 99000) && context.hasUI) activityTimer = setTimeout(refresh, 1000);
+      if (runtime?.activities().some((item) => item.activity.kind === "tool" && item.activity.since !== undefined) && context.hasUI) activityTimer = setTimeout(refresh, 1000);
     };
     activityTimer = setTimeout(refresh, Math.max(0, 300 - (Date.now() - lastActivityStamp)));
   };
@@ -197,21 +218,29 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     event.systemPromptOptions.sections["dag_workflow_agents"] = "Child agents are single-tier: no grandchildren. Verify returned work yourself before completing a Todo.";
   });
   pi.on("input", (event, ctx) => { context = ctx; if (event.source !== "extension" && !hooks.state().plan && !event.text.trim().startsWith("/")) { paused = false; failedRound = false; } });
-  const reportBoundary = (outcome: string, ctx: ExtensionContext) => {
+  const reportBoundary = (outcome: string, ctx: ExtensionContext, entries: SessionBoundaryDraft[] = []) => {
     // A model error may recover natively or through Goal. Hold reports for the successful turn
     // instead of dropping them or racing a separate idle wake. Explicit aborts still pause.
     if (outcome === "error") { failedRound = true; return; }
     if (outcome !== "completed") { paused = true; clearDelivery(); return; }
     failedRound = false;
-    if (restoring || paused || hooks.state().plan || hooks.canWake?.() === false) return;
-    const { content, terminalJobIds } = drain();
-    if (content && hooks.reserveWake?.(ctx) !== false) {
-      acknowledge(terminalJobIds);
-      return { entries: [{ type: "custom_message" as const, customType: "pi-dag-workflow.agent-report", content, display: true }], continue: true };
+    if (restoring || paused || hooks.compacting?.() || hooks.state().plan || hooks.canWake?.() === false) return;
+    retirePersisted(ctx);
+    const report = prepareReport();
+    if (report && reportAttempts < 3 && hooks.reserveWake?.(ctx) !== false) {
+      reportAttempts++;
+      return { entries: [...entries, { type: "custom_message" as const, customType: "pi-dag-workflow.agent-report", content: report.content, details: { deliveryId: report.id }, display: true }], continue: true };
     }
   };
-  pi.on("turn_end", (event, ctx) => reportBoundary(event.outcome, ctx));
-  pi.on("agent_before_settle", (event, ctx) => reportBoundary(event.outcome, ctx));
+  pi.on("turn_end", (event, ctx) => reportBoundary(event.outcome, ctx, event.entries));
+  pi.on("agent_before_settle", (event, ctx) => reportBoundary(event.outcome, ctx, event.entries));
+  pi.on('context', (event) => {
+    if (!proposedReport) return;
+    if (event.messages.some((message) => (message as { details?: { deliveryId?: string } }).details?.deliveryId === proposedReport!.id)) {
+      acknowledge(proposedReport.terminalJobIds); proposedReport = undefined; reportAttempts = 0;
+    }
+  });
+  pi.on('session_compact', (_event, ctx) => { context = ctx; if (!paused && !timer) timer = setTimeout(deliverIdle, 25); });
   pi.on("agent_settled", (_event, ctx) => { context = ctx; if (!paused && !failedRound && !timer) timer = setTimeout(deliverIdle, 25); });
 
   function ready(ctx: ExtensionContext, execution = true): AgentRuntime {
@@ -262,7 +291,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
           try { hooks.mutate({ action: "update", id: task.id, status: "in_progress" }, ctx); }
           finally { claiming = undefined; }
         }
-        const result = reply({ jobId: job.id, status: job.status, ...(job.error ? { error: job.error } : {}) });
+        const result = reply({ jobId: job.id, status: job.status, ...(task ? { todoId: task.id, todoStatus: hooks.state().tasks.find((item) => item.id === task.id)?.status } : {}), ...(job.error ? { error: job.error } : {}) });
         return job.status === "failed" ? { ...result, isError: true } : result;
       } catch (cause) { return fail(cause); }
     },
@@ -342,6 +371,10 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         if (claimedBy(job, params, { adjusted, reported })) throw new Error(msg`任务 #${job.todoId} 关联活动 ${job.id}；内容修改先发送明确调整信息；未收到它的汇报前不能完成，删除／清空请先停止该 Agent`);
       }
     },
-    afterTodoMutation(params: TodoParams) { for (const job of runtime?.inspect() ?? []) if (job.todoId === params.id) adjusted.delete(job.id); },
+    afterTodoMutation(params: TodoParams) {
+      if (params.action === 'reset') runtime?.invalidateTaskReports(resetClosure(hooks.state().tasks, params.preset ?? '', params.step, params.run));
+      else if (params.action === 'update' && params.status === 'pending' && params.id !== undefined) runtime?.invalidateTaskReports([params.id]);
+      for (const job of runtime?.inspect() ?? []) if (job.todoId === params.id) adjusted.delete(job.id);
+    },
   };
 }

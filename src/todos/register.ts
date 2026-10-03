@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
+import { CHECKPOINT_RULE } from './checkpoints.ts';
 import { statusLabel, TodoParamsSchema, type TodoParams, type WorkflowState } from './state.ts';
 import type { Preset } from './presets.ts';
 import { clean, notify } from '../ui/render.ts';
@@ -7,7 +8,7 @@ import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
 
-interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext): { state: WorkflowState; text: string }; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag'): Promise<void>; presets?(): Preset[]; refreshPresets?(): Promise<void> }
+interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext, source?: 'tool' | 'command'): { state: WorkflowState; text: string }; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag'): Promise<void>; presets?(): Preset[]; refreshPresets?(): Promise<void> }
 const asId = (text?: string, msg: Translator = chinese): number => {
   if (!text || !/^#?[1-9]\d*$/.test(text)) throw new Error(msg('请给出任务编号，例如 #2'));
   return Number(text.replace(/^#/, ''));
@@ -55,13 +56,14 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
   };
   pi.registerTool({
     name: "todo", label: "Todos", namespace: workflowNamespace, annotations: sessionMutation,
-    description: "Manage the current task list: create/update/list/get/delete/clear, plus apply and reset for reusable task fragments (presets). Use blockedBy for prerequisites; set status via update. Check work before completing it; Plan only edits the list.",
+    description: "Manage the current task list: create/update/list/get/delete/clear, plus apply and reset for reusable task fragments (presets). Use blockedBy for prerequisites. Create accepts status pending (default) or in_progress; update changes status after verification. Check work before completing it; Plan only edits the list.",
     promptSnippet: "Use todo to plan and track multi-step work in one dependency-aware list",
     promptGuidelines: [
       "Use todo for work with three or more steps, when the user lists tasks, or right after new instructions; skip it for single trivial requests.",
       "Keep one list: create a task instead of keeping a second plan. Mark a task in_progress before starting it and completed as soon as its work is verified; at most one task is in_progress per work stream.",
       "Never complete a task whose work is unfinished, failing, or blocked; create a task for the blocker instead.",
       "Express dependencies with blockedBy (#4 blocked by #2 and #3). A task cannot start or complete before its predecessors are completed.",
+      CHECKPOINT_RULE,
     ],
     parameters: TodoParamsSchema,
     executionMode: "sequential",
@@ -113,7 +115,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
             if (parts.length > 2) throw new Error(msg`用法：/todos ${action} 名称${' [步骤键]'}`);
             params = { action: 'reset', preset: name, ...(parts[1] ? { step: parts[1] } : {}) };
           }
-          notify(ctx, mutate(params, ctx).text, 'info');
+          notify(ctx, mutate(params, ctx, 'command').text, 'info');
           return;
         }
         if (!trimmed || action === "list") return await show(ctx, "list");
@@ -131,7 +133,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
         if (action === "clear") {
           if (!ctx.hasUI || !await ctx.ui.confirm(msg('清空 Todos？'), msg('这会清空当前清单，不修改项目文件；历史编号不复用。'))) return;
           if (hooks.protected()) hooks.reset(ctx);
-          else mutate({ action: "clear" }, ctx);
+          else mutate({ action: "clear" }, ctx, 'command');
           ctx.ui.notify(msg('已清空 Todos'), 'info');
           return;
         }
@@ -144,7 +146,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
           if (parts.length !== 1) throw new Error(msg`用法：/todos ${action} #编号`);
           params = action === "delete" ? { action: "delete", id: asId(parts[0], msg) } : { action: "update", id: asId(parts[0], msg), status: action === "start" ? "in_progress" : action === "done" ? "completed" : "pending" };
         } else if (action === "edit") params = { action: "update", id: asId(parts[0], msg), subject: parts.slice(1).join(" ") };
-        if (params) { notify(ctx, mutate(params, ctx).text, "info"); return; }
+        if (params) { notify(ctx, mutate(params, ctx, 'command').text, "info"); return; }
         pi.sendUserMessage(msg`请管理当前 Todos：${trimmed}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
       } catch (error) { notify(ctx, error instanceof Error ? error.message : String(error), "error"); }
     },

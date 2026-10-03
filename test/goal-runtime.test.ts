@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { registerGoal } from '../src/goal/register.ts';
-import { emptyState } from '../src/todos/state.ts';
+import { emptyState, type Todo } from '../src/todos/state.ts';
 import { GOAL_TYPE, type GoalParams } from '../src/goal/state.ts';
 
 function host(retryDelayMs = 0) {
@@ -12,16 +12,22 @@ function host(retryDelayMs = 0) {
   let messageSeq = 0;
   const ctx: any = { cwd: '/tmp', mode: 'rpc', hasUI: true, isIdle: () => idle, sessionManager: { getBranch: () => entries }, ui: { notify: (text: string) => notifications.push(text), confirm: async () => true } };
   const pi: any = { on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); return () => {}; }, registerTool(tool: any) { tools.set(tool.name, tool); }, registerCommand(name: string, cmd: any) { commands.set(name, cmd); }, appendEntry(customType: string, data: any) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any, options: any) { wakes.push({ message, options }); }, sendUserMessage(message: string) { wakes.push({ message, options: { source: 'extension' } }); } };
-  const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, retryDelayMs });
+  const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, retryDelayMs, resumeDelayMs: 0 });
   const fire = async (name: string, event: any = {}) => { let result: any; for (const handler of events.get(name) ?? []) result = await handler(event, ctx) ?? result; return result; };
   const call = async (params: GoalParams) => tools.get('goal').execute('test', params, undefined, undefined, ctx);
-  const settle = (event: any = {}) => fire('agent_before_settle', { outcome: 'completed', continue: false, ...event });
+  const propose = (event: any = {}) => fire('agent_before_settle', { outcome: 'completed', continue: false, entries: [], ...event });
+  const startTurn = async (messages: any[] = []) => { await fire('turn_start'); await fire('context', { messages }); };
+  const settle = async (event: any = {}) => {
+    const result = await propose(event);
+    if (result?.continue) await startTurn(result.entries.map((entry: any) => ({ role: 'custom', ...entry })));
+    return result;
+  };
   const enable = async (maxTurns = 20) => { await call({ action: 'create', title: '研究', maxTurns }); await fire('input', { source: 'rpc', text: '启用目标' }); assert.ok(!(await call({ action: 'enable', id: 1 })).isError); };
   const message = (stopReason: string) => { entries.push({ type: 'message', id: `m${++messageSeq}`, parentId: null, message: { role: 'assistant', stopReason, errorMessage: stopReason === 'error' ? 'stream error' : undefined } }); };
   // A settled run schedules its retry on a timer; drain it before asserting.
   const settled = async () => { await fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 0)); };
   const retries = () => wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-retry').length;
-  return { ctx, controller, fire, call, settle, enable, settled, message, retries, entries, notifications, wakes, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, commands };
+  return { ctx, controller, fire, call, settle, propose, startTurn, enable, settled, message, retries, entries, notifications, wakes, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, setTasks(tasks: Todo[]) { workflow = { ...workflow, tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 }; }, commands };
 }
 
 test('mock host: shared Agent/Goal wakes consume one allowance, never reset on status/input/read', async () => {
@@ -177,6 +183,20 @@ test('mock host: explicit idle enable reserves and starts once; unknown extra ar
   assert.match(h.wakes[0].message, /Goal #1.*不是用户新授权/);
 });
 
+test('the last paid wake still receives its independent error retries before the allowance pause', async () => {
+  const h = host(30); await h.enable(1); await h.settle();
+  assert.equal(h.controller.snapshot().run.used, 1);
+  h.setIdle(true); h.message('error'); await h.fire('agent_settled');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(h.retries(), 1, 'idle fallback cannot preempt error recovery with a budget pause');
+  assert.equal(h.controller.snapshot().run.paused, false);
+  assert.equal(h.controller.snapshot().run.used, 1, 'error retries do not consume a second wake');
+  h.message('stop'); await h.fire('agent_settled');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.match(h.controller.snapshot().run.reason!, /上限/);
+});
+
 test('mock host: a newer settled failure during the delay replaces the pending retry', async () => {
   const h = host(30); await h.enable(); h.setIdle(true);
   h.message('error'); await h.fire('agent_settled');
@@ -240,4 +260,182 @@ test('mock host: explicit goal edit is user-authorized after an automatic round,
   assert.equal(h.controller.snapshot().goals[0]!.title, 'User revised title');
   assert.equal(h.controller.snapshot().run.used, 1);
   assert.equal((await h.call({ action: 'update', maxTurns: 200 })).isError, true);
+});
+
+test('continuation drafts preserve prior entries and consume nextStep only on a visible request', async () => {
+  const h = host(); await h.enable(3);
+  await h.call({ action: 'update', nextStep: 'verify saved step' });
+  const prior = { type: 'custom_message', customType: 'memory-test', content: 'memory baseline', display: false };
+  const draft = await h.propose({ entries: [prior] });
+  assert.equal(draft.entries[0], prior);
+  assert.equal(h.controller.snapshot().run.nextStep, 'verify saved step');
+  assert.ok(h.controller.snapshot().run.pendingWake);
+  await h.startTurn(draft.entries.map((entry: any) => ({ role: 'custom', ...entry })));
+  assert.equal(h.controller.snapshot().run.used, 1);
+  assert.equal(h.controller.snapshot().run.pendingWake, undefined);
+  assert.equal(h.controller.snapshot().run.nextStep, undefined);
+});
+
+test('a filtered continuation retains nextStep and does not restore filtered messages', async () => {
+  const h = host(); await h.enable(3);
+  await h.call({ action: 'update', nextStep: 'saved after filter' });
+  await h.propose(); await h.startTurn([]);
+  assert.equal(h.controller.snapshot().run.nextStep, 'saved after filter');
+  assert.equal(h.controller.snapshot().run.used, 1, 'a real turn still consumes the budget');
+  assert.equal(h.wakes.length, 0, 'the workflow never bypasses a context filter');
+});
+
+test('provisional report and Goal requests share one reservation and rejected drafts refund it', async () => {
+  const h = host(); await h.enable(3);
+  assert.equal(h.controller.reserveWake(h.ctx, true), true);
+  assert.equal(h.controller.reserveWake(h.ctx, true), true);
+  assert.equal(h.controller.snapshot().run.used, 1);
+  assert.equal(await h.propose({ continue: true }), undefined);
+  await h.fire('agent_settled');
+  assert.equal(h.controller.snapshot().run.used, 0);
+  assert.equal(h.controller.snapshot().run.pendingWake, undefined);
+  assert.match(h.controller.snapshot().run.nextStep!, /推进目标/);
+  await h.fire('session_shutdown');
+});
+
+test('repeated rejected drafts stop without spending confirmed turns or counting false stalls', async () => {
+  const h = host(); await h.enable(4);
+  h.controller.reserveWake(h.ctx); // one actual, confirmed round
+  for (let index = 0; index < 3; index++) {
+    await h.propose(); await h.fire('agent_settled');
+  }
+  assert.equal(h.controller.snapshot().run.used, 1, 'refunds never refill a confirmed round');
+  assert.equal(h.controller.snapshot().run.stalled, 1, 'three discarded proposals are not three completed rounds');
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.match(h.controller.snapshot().run.reason!, /未被执行/);
+});
+
+test('explicit enable wakes an active idle goal once without refilling or changing the target', async () => {
+  const h = host(); await h.enable(4);
+  await h.settle(); // First actual round consumed the initial nextStep.
+  assert.equal(h.controller.snapshot().run.used, 1);
+  h.setIdle(true);
+  await h.commands.get('goal').handler('enable #1', h.ctx);
+  assert.equal(h.wakes.length, 1);
+  assert.match(h.wakes[0].message, /Goal #1 2\/4.*推进目标/);
+  assert.equal(h.controller.snapshot().run.used, 2);
+  await h.commands.get('goal').handler('enable #1', h.ctx);
+  assert.equal(h.wakes.length, 1, 'an already proposed wake is not sent twice');
+  await h.startTurn([{ role: 'user', content: h.wakes[0].message }]);
+  h.setIdle(false);
+  await h.commands.get('goal').handler('enable #1', h.ctx);
+  assert.equal(h.wakes.length, 1, 'a running parent needs no extra wake');
+});
+
+test('an explicit re-enable starts a fresh rejection counter without stale automatic pauses', async () => {
+  const h = host(); await h.enable(4);
+  for (let index = 0; index < 2; index++) { await h.propose(); await h.fire('agent_settled'); }
+  await h.commands.get('goal').handler('disable', h.ctx);
+  await h.commands.get('goal').handler('enable', h.ctx);
+  await h.propose(); await h.fire('agent_settled');
+  assert.equal(h.controller.snapshot().run.paused, false);
+  assert.equal(h.controller.snapshot().run.used, 0);
+  await h.fire('session_shutdown');
+});
+
+test('successful compaction reissues an unstarted step once with its original budget', async () => {
+  const h = host(); await h.enable(3);
+  await h.call({ action: 'update', nextStep: 'resume exact step' });
+  await h.propose();
+  await h.fire('session_before_compact', { reason: 'threshold', willRetry: false });
+  assert.equal(h.controller.snapshot().run.used, 0);
+  assert.equal(h.controller.snapshot().run.nextStep, 'resume exact step');
+  h.setIdle(true);
+  await h.fire('session_compact', { reason: 'threshold', willRetry: false });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(h.wakes.length, 1);
+  assert.match(h.wakes[0].message.content, /resume exact step/);
+  await h.startTurn([h.wakes[0].message]);
+  assert.equal(h.controller.snapshot().run.used, 1);
+  assert.equal(h.controller.snapshot().run.nextStep, undefined);
+  await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(h.wakes.length, 1, 'the next settled event must not queue a duplicate');
+});
+
+test('native overflow retry takes priority over an idle fallback wake after compaction', async () => {
+  const h = host(); await h.enable(3);
+  await h.fire('session_before_compact', { reason: 'overflow', willRetry: true });
+  h.setIdle(true);
+  await h.fire('session_compact', { reason: 'overflow', willRetry: true });
+  await h.startTurn([]); // Pi natively resumed; no Goal reservation exists.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(h.wakes.length, 0);
+  assert.equal(h.controller.snapshot().run.used, 0);
+});
+
+test('failed compaction and a user abort during compaction remain stopped', async () => {
+  for (const aborted of [false, true]) {
+    const h = host(); await h.enable(3);
+    await h.call({ action: 'update', nextStep: 'kept on failure' }); await h.propose();
+    await h.fire('session_before_compact', { reason: 'threshold', willRetry: false });
+    await h.fire('session_compact_failed', { aborted });
+    h.setIdle(true); await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(h.controller.snapshot().run.paused, true);
+    assert.equal(h.controller.snapshot().run.used, 0);
+    assert.equal(h.controller.snapshot().run.nextStep, 'kept on failure');
+    assert.equal(h.wakes.length, 0);
+  }
+});
+
+test('compaction never rearms user-disable, dialogs, Plan, restore or exhausted budget', async () => {
+  for (const kind of ['disable', 'dialog', 'plan', 'restore', 'budget']) {
+    const h = host(); await h.enable(kind === 'budget' ? 1 : 3);
+    if (kind === 'disable') await h.call({ action: 'disable' });
+    else if (kind === 'dialog') await h.fire('ui_prompt_start', { kind: 'input' });
+    else if (kind === 'plan') { h.controller.pause('进入 Plan', h.ctx); h.setPlan(true); }
+    else if (kind === 'restore') await h.fire('session_tree');
+    else { h.controller.reserveWake(h.ctx); await h.propose(); }
+    const used = h.controller.snapshot().run.used;
+    await h.fire('session_before_compact', { reason: 'overflow', willRetry: true });
+    await h.fire('session_compact', { reason: 'overflow', willRetry: true });
+    h.setIdle(true); await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(h.controller.snapshot().run.paused, true, kind);
+    assert.equal(h.controller.snapshot().run.used, used, kind);
+    assert.equal(h.wakes.length, 0, kind);
+  }
+});
+
+test('a settled active Goal uses the idle fallback if the before-settle continuation path was skipped', async () => {
+  const h = host(); await h.enable(4); await h.settle();
+  await h.call({ action: 'update', progress: 'first stage verified', nextStep: 'second stage exact action' });
+  h.setIdle(true); await h.fire('agent_settled');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(h.wakes.length, 1);
+  assert.match(h.wakes[0].message.content, /second stage exact action/);
+  assert.equal(h.controller.snapshot().run.used, 2);
+  assert.equal(h.controller.snapshot().run.stalled, 0);
+  await h.startTurn([h.wakes[0].message]);
+  h.controller.pause('user stop', h.ctx);
+  await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(h.wakes.length, 1, 'a stopped goal never enters the fallback');
+});
+
+test('idle fallback waits for real children without polling and visibly stops an actionless Goal', async () => {
+  const h = host(); await h.enable(4); await h.settle();
+  h.setJobs([{ id: 'a1', status: 'running' }]); h.setIdle(true);
+  await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(h.wakes.length, 0); assert.equal(h.controller.snapshot().run.paused, false);
+  h.setJobs([]);
+  await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(h.wakes.length, 0); assert.equal(h.controller.snapshot().run.paused, true);
+  assert.match(h.controller.snapshot().run.reason!, /没有具体下一步/);
+});
+
+test('completed non-stale child work is selected for verification instead of redispatch', async () => {
+  const h = host(); await h.enable();
+  h.setTasks([{ id: 1, subject: 'ready task', status: 'pending', blockedBy: [] }, { id: 2, subject: 'returned task', status: 'in_progress', blockedBy: [] }]);
+  h.setJobs([{ id: 'a2', todoId: 2, status: 'completed', reportDelivery: 'delivered' }]);
+  await h.call({ action: 'update', nextStep: ' ' });
+  const proposal = await h.propose();
+  assert.match(proposal.entries.at(-1).content, /核验 Todo #2.*subagent_wait/);
+  await h.startTurn(proposal.entries);
+  h.setJobs([{ id: 'a2', todoId: 2, status: 'completed', taskReportStale: true }]);
+  const stale = await h.propose();
+  assert.match(stale.entries.at(-1).content, /推进并核验 Todo #1/);
+  await h.fire('session_shutdown');
 });

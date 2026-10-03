@@ -68,7 +68,7 @@ test("titles, instructions, empty updates and action-specific fields are validat
   assert.throws(() => create(state, "中".repeat(61)), /60/);
   assert.throws(() => apply(state, { action: "update", id: 1 }), /修改字段/);
   assert.throws(() => apply(state, { action: "update", id: 1, description: "x".repeat(8193) }), /8 KiB/);
-  assert.throws(() => apply(state, { action: "create", subject: "B", status: "completed" }), /不接受/);
+  assert.throws(() => apply(state, { action: "create", subject: "B", status: "completed" }), /只支持 pending 或 in_progress/);
   assert.throws(() => apply(state, { action: "update", id: 1, blockedBy: [1] }), /不接受/);
 });
 

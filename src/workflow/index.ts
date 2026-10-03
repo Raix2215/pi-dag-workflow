@@ -10,6 +10,7 @@ import { registerGoal } from "../goal/register.ts";
 import { detailView } from "../ui/detail.ts";
 import { noFeatures, type Feature } from './features.ts';
 import { registerTodos } from '../todos/register.ts';
+import { registerCheckpoints } from '../todos/checkpoints.ts';
 import { registerPlan } from '../plan/register.ts';
 import { loadLocale, configPaths } from '../shared/config.ts';
 import { createTranslator } from '../shared/i18n.ts';
@@ -42,6 +43,7 @@ export function createWorkflow(pi: ExtensionAPI) {
   const jobs = () => agents?.summaries() ?? [];
   const activeState = () => modules.todos ? state : { ...state, tasks: [] };
   let goals: ReturnType<typeof registerGoal> | undefined;
+  let checkpoints: ReturnType<typeof registerCheckpoints> | undefined;
 
   function paint(ctx: ExtensionContext): void {
     if (!modules.ui) return;
@@ -72,11 +74,20 @@ export function createWorkflow(pi: ExtensionAPI) {
     else if (ctx.hasUI) ctx.ui.setWidget(WIDGET, lines(80));
   }
 
-  function commit(next: WorkflowState, ctx: ExtensionContext): void {
+  function commit(next: WorkflowState, ctx: ExtensionContext, source: 'tool' | 'command' = 'command'): void {
     if (next === state) return;
+    const changedTasks = next.tasks !== state.tasks;
+    const changedMode = next.plan !== state.plan;
+    let ids: number[] = [];
+    if (source === 'command' && changedTasks) {
+      const previous = new Map(state.tasks.map((task) => [task.id, task]));
+      const nextIds = new Set(next.tasks.map((task) => task.id));
+      ids = [...new Set([...next.tasks.filter((task) => previous.get(task.id) !== task).map((task) => task.id), ...state.tasks.filter((task) => !nextIds.has(task.id)).map((task) => task.id)])];
+    }
     // Persist first: a failure leaves the in-memory canonical state unchanged.
     pi.appendEntry(STATE_TYPE, next);
     state = next;
+    if (source === 'command' && (changedTasks || changedMode)) checkpoints?.changed(ids);
     paint(ctx);
     warnEphemeral(ctx);
   }
@@ -105,14 +116,18 @@ export function createWorkflow(pi: ExtensionAPI) {
     paint(ctx);
   }
 
-  function mutate(params: TodoParams, ctx: ExtensionContext) {
+  function mutate(params: TodoParams, ctx: ExtensionContext, source: 'tool' | 'command' = 'tool') {
     if (restoreError && params.action !== "list" && params.action !== "get") throw new Error(msg`状态恢复失败，不能修改：${restoreError}`);
     agents?.assertTodoMutation(params);
     const result = applyTodo(state, params, msg, presetStore);
     const ready = newlyReady(state, result.state);
-    commit(result.state, ctx);
+    commit(result.state, ctx, source);
     agents?.afterTodoMutation(params);
-    if (ready.length) notify(ctx, msg`前置已完成，可开始：${ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、')}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`, 'info');
+    if (ready.length) {
+      const hint = msg`前置已完成，可开始：${ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、')}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`;
+      result.text += `\n${hint}`;
+      notify(ctx, hint, 'info');
+    }
     return result;
   }
 
@@ -161,21 +176,27 @@ export function createWorkflow(pi: ExtensionAPI) {
       if (attached.has(feature)) throw new Error(msg`重复加载工作流模块：${feature}`);
       attached.add(feature);
       registerLifecycle(owner, feature);
-      if (feature === 'todos') registerTodos(owner, { msg, state: () => state, mutate, commit, show, protected: () => !!restoreError,
-        presets: () => presetList, refreshPresets,
-        reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
-      });
+      if (feature === 'todos') {
+        checkpoints = registerCheckpoints(owner, { state: activeState, jobs, protected: () => !!restoreError });
+        registerTodos(owner, { msg, state: () => state, mutate, commit, show, protected: () => !!restoreError,
+          presets: () => presetList, refreshPresets,
+          reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
+        });
+      }
       if (feature === 'plan') registerPlan(owner, { msg, state: () => state, commit, protected: () => !!restoreError,
         assertCanEnter: () => agents?.assertPlanEntry(), onEnter: (ctx) => goals?.pause(msg('进入 Plan'), ctx),
       });
       if (feature === 'agents') agents = registerAgents(owner, { msg, state: activeState, mutate, paint, protected: () => !!restoreError, ui: () => modules.ui,
         canWake: () => !modules.goal || (goals?.canWake() ?? false),
-        reserveWake: (ctx) => !modules.goal || (goals?.reserveWake(ctx) ?? false),
+        reserveWake: (ctx) => !modules.goal || (goals?.reserveWake(ctx, true) ?? false),
         pauseAuto: (ctx) => { if (modules.goal) goals?.pause(msg('用户暂停自动工作'), ctx); },
         resumeAuto: () => !modules.goal || (goals?.resumeAgentReports() ?? false),
+        beforeWake: (ctx) => checkpoints?.beforeWake(ctx),
+        compacting: () => goals?.isCompacting() ?? false,
       });
       if (feature === 'goal') goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError,
         pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: warnEphemeral,
+        beforeWake: (ctx) => checkpoints?.beforeWake(ctx),
       });
     },
   };

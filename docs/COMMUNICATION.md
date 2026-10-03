@@ -8,7 +8,9 @@ This reference distinguishes execution, report delivery, and model consumption. 
 |---|---|---|
 | Child `subagent_send` | Report or question, with the originating job and optional `requestId` | Buffered for the next safe main-session boundary; an idle session can be woken |
 | Child completion | Completion report and retained child output | Same automatic report channel |
-| Parent `subagent_spawn` | Job ID and startup state | Ordinary result of the current tool call |
+| Parent `subagent_spawn` | Job ID and startup state, with linked Todo ID/current status when bound | Ordinary result of the current tool call |
+| Todo completion | Newly ready task hints appended to the same Todo tool result | Following request; the UI keeps its notification |
+| Workflow checkpoint | Key task/Job state after compaction, restore, or command changes | Passive append before a normal request or safe boundary; no independent wake |
 | Parent `subagent_inspect` | Job summaries and profiles, not full output | Ordinary result of the current tool call |
 | Parent `subagent_wait` | Full retained output, status, usage, and pending questions | Ordinary result of the current tool call |
 | Parent `subagent_send` | Delivery confirmation; the instruction or answer goes to the child | Confirmation is the current tool result; later child replies use the report channel |
@@ -30,9 +32,11 @@ This distinction answers two different timing questions: a report is **written a
 Jobs retain their execution status, such as `running`, `waiting`, `completed`, or `failed`. A separate `reportDelivery` field records terminal report handoff:
 
 - `pending`: execution has finished, but the terminal report has not been handed to the main session. The Todo panel shows **Pending delivery / 待交付** for a completed child.
-- `delivered`: the automatic report was handed off, or a real `subagent_wait` tool result carried it back. The panel shows **Returned / 已返回**.
+- `delivered`: the automatic report reached the model-context hook of an actual request, or a real `subagent_wait` tool result carried it back. A proposed boundary draft alone does not acknowledge it. The panel shows **Returned / 已返回**.
 
 Delivered means handed to the conversation, not read, accepted, or verified by the model. The Todo still requires explicit acceptance. A report intentionally suppressed by a paused workflow or a missing/deleted linked Todo remains pending until retrieved with the real `subagent_wait` tool.
+
+A discarded report draft is retained for a bounded delivery attempt. Persisted reports omitted by a memory-owned context filter are not forced back into the request; full output remains queryable. Terminal reports include the linked Todo's current status and verification reminder. Fragment resets mark old output historical, including every reopened successor, without deleting it.
 
 A successful `subagent_wait` consumes notices for the same job so its returned content is not immediately repeated as an automatic completion report. `/agents wait` and `subagent_inspect` do not acknowledge report delivery, because neither returns the full report to the model.
 
@@ -58,4 +62,6 @@ Reports, retained output, questions, and answers have no plugin-imposed characte
 
 Children are prompted to give task-appropriate conclusions, changes, verification, and risks, avoiding routine play-by-play and duplicate final reports. Removing caps does not create unlimited model context: long results still grow memory, session storage, and the next request's context. Model context windows and Pi's own result handling still apply.
 
-Agent-state `appendEntry` snapshots are session data, not model messages. Live thinking/tool/output activity is UI-only and never enters model context.
+Agent-state `appendEntry` snapshots are session data, not model messages. Live thinking/tool/output activity is UI-only and never enters model context. Tool duration keeps refreshing beyond 99 seconds; finishing a tool or shutting down the session stops its clock timer.
+
+See [workflow checkpoints](CHECKPOINTS.md) for append timing, memory filters, immutable request prefixes, and budget confirmation after compaction.

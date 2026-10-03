@@ -38,7 +38,7 @@ const REQUIRED_PACK_FILES = [
 ];
 const REQUIRED_PACKAGE_FILES = ['src', 'README.md', 'README.zh-CN.md', 'LICENSE', 'CHANGELOG.md', 'docs'];
 const FORBIDDEN_PACK_PREFIXES = ['node_modules/', '.pi/', 'test/', 'tests/', 'artifacts/', '.git/', 'scripts/', '.github/', '.workflow/'];
-const ALLOWED_DOCS_FILES = new Set(['docs/RELEASING.md', 'docs/COMMUNICATION.md', 'docs/REVIEW-0.2.0.md']);
+const ALLOWED_DOCS_FILES = new Set(['docs/RELEASING.md', 'docs/COMMUNICATION.md', 'docs/REVIEW-0.2.0.md', 'docs/REVIEW-0.2.1.md', 'docs/CHECKPOINTS.md']);
 
 function linesOf(text) {
   return text.split('\n').map((text, index) => ({ number: index + 1, text }));

@@ -15,6 +15,8 @@ export interface JobSummary {
   label?: string;
   /** Terminal jobs stay "pending" until their report is delivered into the parent context. */
   reportDelivery?: "pending" | "delivered";
+  /** The bound task was reopened; retained output belongs to a previous attempt. */
+  taskReportStale?: boolean;
 }
 export interface AgentRequest { requestId: string; message: string }
 export interface AgentUsage { requests: number; input: number; output: number; estimatedCost: number }
@@ -194,11 +196,12 @@ export class AgentRuntime {
     const plain = (summary: JobSummary): JobSummary => { const { label: _label, ...rest } = summary; return rest; };
     return structuredClone(jobId ? [plain(this.job(jobId).summary)] : [...this.jobs.values()].map((job) => plain(job.summary)));
   }
-  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status' | 'reportDelivery' | 'label'> & { activity?: JobActivity })[] {
+  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status' | 'reportDelivery' | 'label' | 'taskReportStale'> & { activity?: JobActivity })[] {
     return [...this.jobs.values()].map((job) => ({ id: job.summary.id, profile: job.summary.profile, status: job.summary.status,
       ...(job.summary.todoId !== undefined ? { todoId: job.summary.todoId } : {}),
       ...(job.summary.reportDelivery !== undefined ? { reportDelivery: job.summary.reportDelivery } : {}),
       ...(job.summary.label !== undefined ? { label: job.summary.label } : {}),
+      ...(job.summary.taskReportStale ? { taskReportStale: true } : {}),
       ...(job.activity ? { activity: { ...job.activity } } : {}),
     }));
   }
@@ -209,6 +212,15 @@ export class AgentRuntime {
   }
   /** Interim reports this job sent so far; 0 means it has not reported on its work yet. */
   reports(jobId: string): number { return this.jobs.get(jobId)?.messages ?? 0; }
+  invalidateTaskReports(ids: readonly number[]): void {
+    const affected = new Set(ids);
+    let changed = false;
+    for (const job of this.jobs.values()) {
+      if (job.summary.todoId === undefined || !affected.has(job.summary.todoId) || ACTIVE.has(job.summary.status) || job.summary.taskReportStale) continue;
+      job.summary.taskReportStale = true; changed = true;
+    }
+    if (changed) this.changed();
+  }
   hasRequest(jobId: string, requestId: string): boolean { return this.jobs.get(jobId)?.requests.has(requestId) ?? false; }
   private job(id: string): LiveJob { const job = this.jobs.get(id); if (!job) throw new Error(`Unknown agent: ${id}`); return job; }
   private changed(job?: LiveJob): void {
@@ -419,6 +431,7 @@ export class AgentRuntime {
     const restored = summaries.map((item) => {
       if (!item || !/^a[1-9]\d{0,8}$/.test(item.id) || ![...ACTIVE, "completed", "failed", "cancelled", "interrupted"].includes(item.status) || !Number.isFinite(item.startedAt) || typeof item.profile !== "string" || !Array.isArray(item.tools) || !item.model || typeof item.model.provider !== "string" || typeof item.model.id !== "string") throw new Error("Invalid agent summary");
       if (!THINKING_LEVELS.includes(item.thinking) || item.endedAt !== undefined && !Number.isFinite(item.endedAt) || item.todoId !== undefined && (!Number.isSafeInteger(item.todoId) || item.todoId < 1)) throw new Error("Invalid agent summary");
+      if (item.taskReportStale !== undefined && typeof item.taskReportStale !== 'boolean') throw new Error("Invalid agent summary");
       const delivery = (item as { reportDelivery?: unknown }).reportDelivery;
       if (delivery !== undefined && delivery !== "pending" && delivery !== "delivered") throw new Error("Invalid agent summary");
       const terminal = item.status === "completed" || item.status === "failed";
@@ -426,6 +439,7 @@ export class AgentRuntime {
         id: item.id, ...(Number.isSafeInteger(item.todoId) && item.todoId! > 0 ? { todoId: item.todoId } : {}),
         profile: item.profile.slice(0, 48), model: { provider: item.model.provider.slice(0, 200), id: item.model.id.slice(0, 200) },
         ...(typeof (item as { label?: unknown }).label === "string" ? { label: jobLabel(String((item as { label?: unknown }).label)) } : {}),
+        ...(item.taskReportStale ? { taskReportStale: true } : {}),
         thinking: item.thinking, tools: item.tools.filter((tool: unknown): tool is string => typeof tool === "string").slice(0, 8),
         status: ACTIVE.has(item.status) ? "interrupted" : item.status, startedAt: item.startedAt, pendingRequests: 0,
         ...(typeof item.endedAt === "number" ? { endedAt: item.endedAt } : {}),
