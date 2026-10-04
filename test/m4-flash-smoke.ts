@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { IsolatedClient, liveModel } from './fixtures/isolated-client.ts';
 import { STATE_TYPE } from '../src/todos/state.ts';
 import { GOAL_TYPE } from '../src/goal/state.ts';
-import { AGENTS_TYPE } from '../src/agents/register.ts';
+import { foldAgentEntries } from '../src/agents/persistence.ts';
 
 // Explicit low-cost integration: parent + two short children, bounded wall time/parent turns.
 const client = await IsolatedClient.startFlash(['goal', 'subagent_spawn', 'subagent_wait', 'subagent_inspect', 'subagent_send', 'subagent_cancel']);
@@ -19,7 +19,7 @@ try {
   const entries = await client.entries() as any[];
   const todos = entries.findLast((entry) => entry.customType === STATE_TYPE).data;
   const goals = entries.findLast((entry) => entry.customType === GOAL_TYPE).data;
-  const jobs = entries.findLast((entry) => entry.customType === AGENTS_TYPE).data.jobs;
+  const jobs = foldAgentEntries(entries).records;
   assert.equal(stopped, false);
   assert.equal(todos.tasks.length, 4); assert.ok(todos.tasks.every((task: any) => task.status === 'completed'));
   assert.deepEqual(todos.tasks[3].blockedBy, [2, 3]);
@@ -34,11 +34,11 @@ finally {
   // Stop children explicitly on failure; don't leave paid subprocesses running after a watchdog abort.
   if (failure) {
     const entries = await client.entries().catch(() => []) as any[];
-    const jobs = entries.findLast((entry) => entry.customType === AGENTS_TYPE)?.data?.jobs ?? [];
+    const jobs = foldAgentEntries(entries).records;
     for (const job of jobs) if (['starting', 'running', 'waiting'].includes(job.status)) await client.send('prompt', { message: `/agents cancel ${job.id}` }).catch(() => {});
   }
   const assistants = client.records.filter((record) => record.type === 'message_end' && (record.message as any)?.role === 'assistant').map((record) => record.message as any);
-  const savedJobs = (await client.entries().catch(() => []) as any[]).findLast((entry) => entry.customType === AGENTS_TYPE)?.data?.jobs ?? [];
+  const savedJobs = foldAgentEntries(await client.entries().catch(() => []) as any[]).records;
   const estimatedChildCost = savedJobs.reduce((sum: number, job: any) => sum + (job.usage?.estimatedCost ?? 0), 0);
   const childRequests = savedJobs.reduce((sum: number, job: any) => sum + (job.usage?.requests ?? 0), 0);
   const estimatedParentCost = assistants.reduce((sum, item) => sum + (item.usage?.cost?.total ?? 0), 0);

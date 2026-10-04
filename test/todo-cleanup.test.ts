@@ -9,6 +9,7 @@ import { planTaskCleanup } from '../src/todos/cleanup.ts';
 import { AgentRuntime } from '../src/agents/runtime.ts';
 import { ProfileStore } from '../src/agents/profiles.ts';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
+import { foldAgentEntries } from '../src/agents/persistence.ts';
 
 const task = (id: number, status: Todo['status'], blockedBy: number[] = []): Todo => ({ id, subject: `task ${id}`, status, blockedBy });
 const history = fileURLToPath(new URL('./fixtures/history-records.ts', import.meta.url));
@@ -102,8 +103,8 @@ test('real Pi closed cleanup includes main failed/cancelled and child records wh
   const state = entries.findLast((entry) => entry.customType === STATE_TYPE).data;
   assert.deepEqual(state.tasks.map((task: Todo) => task.id), [1, 4, 5, 6]);
   assert.equal(state.nextId, 7);
-  const agents = entries.findLast((entry) => entry.customType === 'pi-dag-workflow.agents').data;
-  assert.deepEqual(agents.jobs.map((job: any) => job.id), ['a4', 'a5', 'a6']);
+  const agents = foldAgentEntries(entries);
+  assert.deepEqual(agents.records.map((job) => job.id), ['a4', 'a5', 'a6']);
   assert.equal(agents.nextId, 20);
   await client.prompt('/test-reload');
   const inspect = await call(client, 'subagent_inspect', { profiles: true });
@@ -119,5 +120,5 @@ test('real Pi invalid cleanup fields are rejected and completed cleanup does not
   await call(client, 'todo', { action: 'clear', scope: 'completed' });
   const entries = await client.entries() as any[];
   assert.ok(entries.findLast((entry) => entry.customType === STATE_TYPE).data.tasks.some((task: Todo) => task.id === 2 && task.status === 'failed'));
-  assert.ok(entries.findLast((entry) => entry.customType === 'pi-dag-workflow.agents').data.jobs.some((job: any) => job.id === 'a2'));
+  assert.ok(foldAgentEntries(entries).records.some((job) => job.id === 'a2'));
 });

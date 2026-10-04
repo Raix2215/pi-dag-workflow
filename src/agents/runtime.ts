@@ -28,7 +28,7 @@ export interface AgentSendResult { delivered: true; delivery: 'accepted' | 'queu
 export interface SpawnOptions { task: string; todoId?: number; profile?: string; tools?: string[]; timeout?: number; context?: string }
 export interface AgentRuntimeOptions {
   cwd: string; profiles: ProfileStore; getInheritedModel: () => ModelRef | undefined;
-  onChanged?: (summaries: JobSummary[]) => void; onNotice?: (notice: AgentNotice) => void; onActivity?: () => void;
+  onChanged?: () => void; onNotice?: (notice: AgentNotice) => void; onActivity?: () => void;
   childEnv?: NodeJS.ProcessEnv;
   getModelBootstrap?: (ref: ModelRef) => Promise<{ model: Record<string, unknown>; apiKey?: string; env?: NodeJS.ProcessEnv }>;
   /** Explicit test provider/resource paths only. Production children load only child.ts. */
@@ -158,7 +158,7 @@ interface LiveJob {
   sawEnd: boolean; lastStop?: string; lastError?: string; settling: boolean; settleAgain: boolean; generation: number; sends: number;
   /** Reports the child sent while it kept working; a bound task may be closed once it reported. */
   messages: number;
-  reportVersion: number; lastEventAt: number; deadlineAt?: number; redirecting: boolean; directions: string[];
+  hasOutput: boolean; reportVersion: number; lastEventAt: number; deadlineAt?: number; redirecting: boolean; directions: string[];
 }
 function seconds(value: number | undefined, fallback: number, max: number): number {
   const result = value ?? fallback;
@@ -199,7 +199,7 @@ export class AgentRuntime {
   /** Model-facing projection: ids, states and progress only, never task text or child output. */
   private observation(job: LiveJob): JobObservation {
     const phase = job.redirecting ? 'redirecting' : job.summary.status === 'starting' ? 'starting' : job.requests.size ? 'waiting' : !ACTIVE.has(job.summary.status) ? 'closed' : job.settling || job.sawEnd ? 'settling' : job.activity?.kind ?? 'running';
-    return { phase, elapsedMs: Math.max(0, (job.summary.endedAt ?? Date.now()) - job.summary.startedAt), lastEventAt: job.lastEventAt, ...(job.deadlineAt === undefined ? {} : { deadlineAt: job.deadlineAt }), reportVersion: job.reportVersion, hasOutput: Boolean(job.output.trim()), pendingMessages: job.directions.length, ...(job.activity ? { activity: { ...job.activity } } : {}), activeTools: [...job.activeTools.values()].map((tool) => ({ ...tool })), questions: [...job.requests].map(([requestId, text]) => ({ requestId, message: text })) };
+    return { phase, elapsedMs: Math.max(0, (job.summary.endedAt ?? Date.now()) - job.summary.startedAt), lastEventAt: job.lastEventAt, ...(job.deadlineAt === undefined ? {} : { deadlineAt: job.deadlineAt }), reportVersion: job.reportVersion, hasOutput: job.hasOutput, pendingMessages: job.directions.length, ...(job.activity ? { activity: { ...job.activity } } : {}), activeTools: [...job.activeTools.values()].map((tool) => ({ ...tool })), questions: [...job.requests].map(([requestId, text]) => ({ requestId, message: text })) };
   }
   inspect(jobId?: string): JobInspection[] {
     const plain = (job: LiveJob): JobInspection => { const { label: _label, ...rest } = job.summary; return { ...rest, ...this.observation(job) }; };
@@ -243,12 +243,15 @@ export class AgentRuntime {
   private job(id: string): LiveJob { const job = this.jobs.get(id); if (!job) throw new Error(`Unknown agent: ${id}`); return job; }
   private changed(job?: LiveJob): void {
     if (job) { job.summary.pendingRequests = job.requests.size; for (const listener of job.listeners) listener(); }
-    if (!this.restoring) this.options.onChanged?.(this.exportSummaries());
+    if (!this.restoring) this.options.onChanged?.();
   }
   private notice(job: LiveJob, notice: Omit<AgentNotice, "jobId">): void {
     if (this.jobs.get(job.summary.id) === job && !job.finishing && !this.restoring) this.options.onNotice?.({ jobId: job.summary.id, ...notice });
   }
-  private append(job: LiveJob, text: string): void { job.output += text; }
+  private append(job: LiveJob, text: string): void {
+    job.output += text;
+    if (!job.hasOutput && /\S/.test(text)) job.hasOutput = true;
+  }
   async spawn(input: SpawnOptions): Promise<JobSummary> {
     if (this.unavailable) throw new Error("Agent runtime is resetting or shut down");
     if (typeof input.task !== "string" || !input.task.trim() || input.task.length > 65536) throw new Error("task must contain 1–65536 characters");
@@ -260,7 +263,7 @@ export class AgentRuntime {
     const timeout = seconds(input.timeout, DEFAULT_TIMEOUT, 86400);
     const label = jobLabel(input.task);
     const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
-    const job: LiveJob = { summary, output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0, messages: 0, reportVersion: 0, lastEventAt: summary.startedAt, deadlineAt: summary.startedAt + timeout * 1000, redirecting: false, directions: [] };
+    const job: LiveJob = { summary, output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0, messages: 0, hasOutput: false, reportVersion: 0, lastEventAt: summary.startedAt, deadlineAt: summary.startedAt + timeout * 1000, redirecting: false, directions: [] };
     this.jobs.set(summary.id, job);
     job.timer = setTimeout(() => { void this.finish(job, "failed", "Agent deadline exceeded"); }, timeout * 1000);
     this.changed(job); // Reserve the slot before the first await; concurrent spawn cannot exceed the limit.
@@ -525,7 +528,7 @@ export class AgentRuntime {
         this.sequence = Math.max(this.sequence, Number(summary.id.slice(1)));
         const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
         const usage = { requests: number(record.usage?.requests), input: number(record.usage?.input), output: number(record.usage?.output), estimatedCost: number(record.usage?.estimatedCost) };
-        this.jobs.set(summary.id, { summary, usage, output, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, messages: 0, sends: 0, reportVersion: Number.isSafeInteger(record.reportVersion) && record.reportVersion! >= 0 ? record.reportVersion! : 0, lastEventAt: summary.endedAt ?? summary.startedAt, redirecting: false, directions: [] });
+        this.jobs.set(summary.id, { summary, usage, output, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, messages: 0, sends: 0, hasOutput: /\S/.test(output), reportVersion: Number.isSafeInteger(record.reportVersion) && record.reportVersion! >= 0 ? record.reportVersion! : 0, lastEventAt: summary.endedAt ?? summary.startedAt, redirecting: false, directions: [] });
       }
     } finally { this.unavailable = false; this.restoring = false; }
     this.changed();

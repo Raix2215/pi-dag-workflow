@@ -6,6 +6,7 @@ export interface Notice { jobId: string; kind: "message" | "question" | "complet
 /** Whole reports, deduplicated not queued. Progress and paused reports never enter model context. */
 export class AgentNotices {
   private pending = new Map<string, Notice>();
+  get size(): number { return this.pending.size; }
   add(notice: Notice): void {
     // Completed output already contains interim reports. Collapse only those still in this batch;
     // a failure's short diagnostic does not contain them, so its interim message must be retained.

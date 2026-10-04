@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { IsolatedClient } from "./fixtures/isolated-client.ts";
 import { AGENTS_TYPE } from "../src/agents/register.ts";
+import { foldAgentEntries } from "../src/agents/persistence.ts";
 import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
 
 const offline = fileURLToPath(new URL("./fixtures/offline-model.ts", import.meta.url));
@@ -105,7 +106,7 @@ test("actual Pi consumes wait results without duplicate auto reports and suppres
 
 test("actual Pi keeps paused terminal reports pending until an explicit wait acknowledges delivery", { timeout: 30000 }, async (t) => {
   const client = await start(); t.after(() => client.close());
-  const jobs = (entries: unknown[]) => ((entries as any[]).findLast((entry) => entry.customType === AGENTS_TYPE)?.data?.jobs ?? []) as any[];
+  const jobs = (entries: unknown[]) => foldAgentEntries(entries).records as any[];
   const result = await call(client, "subagent_spawn", { task: "完成只读调查" });
   const jobId = result.details.jobId;
   await client.prompt("/agents pause");
@@ -123,7 +124,7 @@ test("actual Pi keeps paused terminal reports pending until an explicit wait ack
 
 test("actual Pi delivers an idle terminal report automatically and marks it delivered once", { timeout: 30000 }, async (t) => {
   const client = await start(); t.after(() => client.close());
-  const jobs = (entries: unknown[]) => ((entries as any[]).findLast((entry) => entry.customType === AGENTS_TYPE)?.data?.jobs ?? []) as any[];
+  const jobs = (entries: unknown[]) => foldAgentEntries(entries).records as any[];
   const result = await call(client, "subagent_spawn", { task: 'TEST CALL subagent_send {"message":"自动交付报告"}' });
   const jobId = result.details.jobId;
   await client.until(() => client.records.some((item) => item.type === "entry_appended" && (item.entry as any)?.data?.jobs?.some((job: any) => job.id === jobId && job.reportDelivery === "delivered")));

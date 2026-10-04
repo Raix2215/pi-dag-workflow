@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
-import { AGENTS_TYPE } from '../src/agents/register.ts';
+import { foldAgentEntries } from '../src/agents/persistence.ts';
 
 const offline = fileURLToPath(new URL('./fixtures/offline-model.ts', import.meta.url));
 async function call(client: IsolatedClient, name: string, params: object) {
@@ -15,7 +15,7 @@ async function call(client: IsolatedClient, name: string, params: object) {
   assert.ok(!event.isError && !(event.result as any).isError, JSON.stringify(event.result));
   return (event.result as any).details;
 }
-const savedJobs = (entries: any[]) => entries.findLast((entry) => entry.type === 'custom' && entry.customType === AGENTS_TYPE).data.jobs as any[];
+const savedJobs = (entries: any[]) => foldAgentEntries(entries).records as any[];
 
 test('real Pi: fragment reset invalidates every reopened task report and redispatch creates fresh evidence', { timeout: 30000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dag-report-reset-'));

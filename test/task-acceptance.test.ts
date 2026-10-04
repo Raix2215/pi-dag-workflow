@@ -7,7 +7,7 @@ import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
 import { emptyState, STATE_TYPE, type Todo, type WorkflowState } from '../src/todos/state.ts';
 import { createTranslator } from '../src/shared/i18n.ts';
 import { renderTasks, renderDag, type AgentView } from '../src/ui/render.ts';
-import { AGENTS_TYPE } from '../src/agents/register.ts';
+import { foldAgentEntries } from '../src/agents/persistence.ts';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
 
 // ---------------------------------------------------------------------------
@@ -187,9 +187,9 @@ test('actual Pi: completing the Todo flips the bound label while the execution s
   assert.equal(reread.details.todoStatus, 'completed');
   assert.equal(todoState(await client.entries()).tasks[0]!.status, 'completed');
   // The projection is display-only: persisted Agent state never gains a todoStatus field.
-  const persisted = (await client.entries()).findLast((entry) => (entry as { customType?: string }).customType === AGENTS_TYPE) as { data: { jobs: Record<string, unknown>[] } };
-  assert.ok(persisted.data.jobs.length > 0);
-  for (const record of persisted.data.jobs) assert.ok(!Object.hasOwn(record, 'todoStatus'), JSON.stringify(record));
+  const persisted = foldAgentEntries(await client.entries()).records as unknown as Record<string, unknown>[];
+  assert.ok(persisted.length > 0);
+  for (const record of persisted) assert.ok(!Object.hasOwn(record, 'todoStatus'), JSON.stringify(record));
 });
 
 test('actual Pi: an unbound job keeps returned/delivery semantics without a todoStatus field', { timeout: 30000 }, async (t) => {

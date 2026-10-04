@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
-import { activates, applyGoal, emptyGoalState, focusedGoal, GOAL_TYPE, GoalParamsSchema, goalBudgetSpent, goalLimitLabel, goalNolimit, pauseGoal, releaseGoalWake, reserveGoalWake, restoreGoalState, setGoalNolimit, setModelPausePolicy, stops, type GoalParams, type GoalState } from './state.ts';
+import { activates, applyGoal, emptyGoalState, focusedGoal, GOAL_TYPE, GoalParamsSchema, goalBudgetSpent, goalLimitLabel, goalNolimit, pauseGoal, releaseGoalWake, reserveGoalWake, restoreGoalState, setGoalNolimit, setModelPausePolicy, stops, type Goal, type GoalParams, type GoalState } from './state.ts';
 import { configPaths, defaultConfig, loadConfig, type WorkflowConfig } from '../shared/config.ts';
 import { GOAL_CHECKPOINT_TYPE, goalCheckpoint, goalRules, goalWakeRules } from './prompt.ts';
 import { clean, notify, type AgentView } from '../ui/render.ts';
@@ -21,7 +21,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   let lastCheckpoint: string | undefined;
   const removedTools = new Map<string, number>();
   const noPauseRunning = () => !state.run.paused && !hooks.state().plan && focusedGoal(state)?.modelPause === 'deny';
-  const promptStamp = () => JSON.stringify([focusedGoal(state), state.run.paused, state.run.reason]);
+  const sameGoal = (left: Goal | undefined, right: Goal | undefined) => left === right || Boolean(left && right && left.id === right.id && left.title === right.title && left.description === right.description && left.status === right.status && left.maxTurns === right.maxTurns && left.createdAt === right.createdAt && left.completedAt === right.completedAt && left.modelPause === right.modelPause && left.nolimit === right.nolimit);
   function syncNoPauseTools() {
     // Remove only currently active tools; restore only tools this controller removed.
     // The tool_call guard also covers nested/codemode calls and later external reactivation.
@@ -69,7 +69,17 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   let interruptedGoalId: number | undefined;
   let sessionEpoch = 0;
   let menuPrompt: { title: string; epoch: number } | undefined;
-  const workStamp = () => JSON.stringify([revision, hooks.state().tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, task.status])]);
+  let stampedTasks: WorkflowState['tasks'] | undefined;
+  let taskStamp = '';
+  const workStamp = () => {
+    const tasks = hooks.state().tasks;
+    if (tasks !== stampedTasks) {
+      stampedTasks = tasks;
+      taskStamp = JSON.stringify(tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, task.status]));
+    }
+    return `${revision}:${taskStamp}`;
+  };
+  let failureCache: { manager: ExtensionContext['sessionManager']; leaf: string | null; failure: string | undefined } | undefined;
   const paint = (ctx: ExtensionContext) => hooks.paint(ctx);
   const goalStatusLabel: Record<GoalState['goals'][number]['status'], string> = { active: '活动', paused: '暂停', completed: '已完成', deleted: '已删除' };
   const activatable = new Set(['enable', 'nopause', 'nolimit']);
@@ -97,9 +107,10 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   function commit(next: GoalState, ctx: ExtensionContext) {
     if (next === state) return;
     pi.appendEntry(GOAL_TYPE, next);
-    const previousPrompt = promptStamp();
+    const previousGoal = focusedGoal(state);
+    const previousRun = state.run;
     state = next;
-    if (promptStamp() !== previousPrompt) checkpointPending = true;
+    if (!sameGoal(previousGoal, focusedGoal(state)) || state.run.paused !== previousRun.paused || state.run.reason !== previousRun.reason) checkpointPending = true;
     syncNoPauseTools();
     hooks.onSaved?.(ctx);
     paint(ctx);
@@ -107,7 +118,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   function cancelRetry(ctx: ExtensionContext) {
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = undefined;
-    retriedFailure = lastFailure(ctx); // User intervention retires the old failed request.
+    retriedFailure = focusedGoal(state) ? lastFailure(ctx) : undefined; // Ordinary input without a Goal needs no history scan.
   }
   function pause(reason: string, ctx: ExtensionContext) {
     cancelRetry(ctx); resumeWanted = false; interruptedGoalId = undefined; rejectedWakes = 0;
@@ -158,17 +169,23 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
    * so the entry id names exactly one failure and stays stable while the run reports it.
    */
   function lastFailure(ctx: ExtensionContext): string | undefined {
-    const branch = ctx.sessionManager.getBranch();
+    const manager = ctx.sessionManager;
+    const leaf = typeof manager.getLeafId === 'function' ? manager.getLeafId() : undefined;
+    if (leaf !== undefined && failureCache?.manager === manager && failureCache.leaf === leaf) return failureCache.failure;
+    const branch = manager.getBranch();
+    let failure: string | undefined;
     for (let index = branch.length - 1; index >= 0; index--) {
       const entry = branch[index];
       // Compaction is a new recovery boundary. Raw branch history still contains the old
       // failed request even when Pi omitted it from the compacted model context. Treating
       // that retired id as the current failure can suppress every later fallback wake.
-      if (entry?.type === 'compaction') return undefined;
+      if (entry?.type === 'compaction') break;
       if (!entry || entry.type !== 'message' || entry.message.role !== 'assistant') continue;
-      return entry.message.stopReason === 'error' ? entry.id : undefined;
+      failure = entry.message.stopReason === 'error' ? entry.id : undefined;
+      break;
     }
-    return undefined;
+    if (leaf !== undefined) failureCache = { manager, leaf, failure };
+    return failure;
   }
   /** Answer a failure Pi gave up on with one bounded retry turn; pause once the budget is spent. */
   function recoverFailure(ctx: ExtensionContext, failure: string, goalId: number) {
@@ -347,7 +364,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   });
   pi.on('session_compact_failed', (_event, ctx) => { compacting = false; compactionGoalId = undefined; compactionInterrupted = false; if (resumeWanted) pause(msg('上下文压缩未完成，自动续跑已暂停'), ctx); });
   async function restore(ctx: ExtensionContext) {
-    sessionEpoch++; menuPrompt = undefined;
+    sessionEpoch++; menuPrompt = undefined; failureCache = undefined; stampedTasks = undefined;
     userAuthority = false; automaticRound = false; waitedForChildren.clear(); revision = 0; error = undefined;
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = undefined; retriedFailure = undefined;
@@ -375,7 +392,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('session_before_switch', stopPendingRetry);
   pi.on('session_before_fork', stopPendingRetry);
   pi.on('session_before_tree', stopPendingRetry);
-  pi.on('session_shutdown', () => { sessionEpoch++; menuPrompt = undefined; state = emptyGoalState(); syncNoPauseTools(); checkpointPending = false; lastCheckpoint = undefined; userAuthority = false; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; resumeWanted = false; compacting = false; stepAck = undefined; });
+  pi.on('session_shutdown', () => { sessionEpoch++; menuPrompt = undefined; failureCache = undefined; stampedTasks = undefined; state = emptyGoalState(); syncNoPauseTools(); checkpointPending = false; lastCheckpoint = undefined; userAuthority = false; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; resumeWanted = false; compacting = false; stepAck = undefined; });
   pi.on('before_agent_start', (event) => {
     delete event.systemPromptOptions.sections['dag_workflow_goal'];
     const goal = focusedGoal(state);

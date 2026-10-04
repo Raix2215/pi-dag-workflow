@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import { configPaths } from "../shared/config.ts";
 import { Text } from "@earendil-works/pi-tui";
-import { AgentRuntime, type JobSummary, type JobResult } from "./runtime.ts";
+import { AgentRuntime, type JobSummary } from "./runtime.ts";
 import { ProfileStore, type Profile } from "./profiles.ts";
 import { fragmentContext } from "./context.ts";
 import { resetClosure } from "../todos/presets.ts";
@@ -13,8 +13,9 @@ import { applyTodo, type ClearScope, type Todo, type TodoParams, type WorkflowSt
 import { workflowNamespace, readOnly } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
+import { AgentJournal, AGENTS_ENTRY_TYPE, foldAgentEntries } from './persistence.ts';
 
-export const AGENTS_TYPE = "pi-dag-workflow.agents";
+export const AGENTS_TYPE = AGENTS_ENTRY_TYPE;
 interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean; beforeWake?(ctx: ExtensionContext): void; compacting?(): boolean }
 const active = (job: JobSummary) => ["starting", "running", "waiting"].includes(job.status);
 const fingerprint = (state: WorkflowState, id?: number) => {
@@ -52,6 +53,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   let generation = 0;
   let claiming: number | undefined;
   const notices = new AgentNotices();
+  const journal = new AgentJournal();
   let proposedReport: { id: string; content: string; terminalJobIds: string[] } | undefined;
   let reportAttempts = 0;
   const original = new Map<string, string>();
@@ -122,6 +124,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     // A repeatedly rejected batch stays queryable in Job records; it cannot block new arrivals.
     if (reportAttempts >= 3) { proposedReport = undefined; reportAttempts = 0; }
     if (proposedReport) return proposedReport;
+    if (!notices.size) return undefined;
     const batch = drain();
     if (batch.content) proposedReport = { ...batch, content: batch.content, id: randomUUID() };
     return proposedReport;
@@ -163,7 +166,11 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   };
   const onChanged = () => {
     if (restoring || !runtime || !context) return;
-    try { pi.appendEntry(AGENTS_TYPE, { version: 1, jobs: runtime.exportRecords(), nextId: runtime.nextId() }); }
+    try {
+      // Append-only deltas: unchanged jobs keep their previous bytes and only the output tail is written.
+      const payload = journal.prepare(runtime.exportRecords(), runtime.nextId());
+      if (payload) { pi.appendEntry(AGENTS_TYPE, payload); journal.confirm(); }
+    }
     catch (cause) { error = msg`运行状态无法保存：${String(cause)}`; paused = true; clearDelivery(); notify(context, error, "error"); }
     hooks.paint(context);
     onActivity();
@@ -192,13 +199,12 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
           },
         }),
       });
-      const entry = [...ctx.sessionManager.getBranch()].reverse().find((item) => item.type === "custom" && item.customType === AGENTS_TYPE);
-      if (entry?.type === "custom") {
-        const data = entry.data as { version?: unknown; jobs?: unknown; nextId?: unknown } | undefined;
-        if (data?.version !== 1 || !Array.isArray(data.jobs)) throw new Error(msg("不支持或损坏的 Agent 状态"));
-        if (data.nextId !== undefined && typeof data.nextId !== 'number') throw new Error('Invalid agent nextId');
-        await runtime.importSummaries(data.jobs as JobResult[], data.nextId);
-      }
+      // Fold the active branch once: version-1 snapshots replace, version-2 deltas continue.
+      const folded = foldAgentEntries(ctx.sessionManager.getBranch());
+      await runtime.importSummaries(folded.records, folded.nextId);
+      // The confirmed base is what was actually saved, before import normalizes metadata
+      // and interrupts old live jobs. Persist those changes on the next real update.
+      journal.hydrate(folded.records, runtime.nextId());
     } catch (cause) { error = String(cause); notify(ctx, msg`Agent 恢复／配置失败：${error}；/agents reset 可明确清除运行记录`, "error"); }
     finally { restoring = false; hooks.paint(ctx); }
   }
@@ -342,6 +348,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         if (!ctx.hasUI || !await ctx.ui.confirm(msg("清除 Agent 运行记录？"), msg("先停止所有子 Agent，不撤销文件修改；历史记录保留。"))) return;
         restoring = true; clearDelivery(); clearActivity(); await runtime?.shutdown();
         pi.appendEntry(AGENTS_TYPE, { version: 1, jobs: [], nextId: runtime?.nextId() ?? 1 });
+        journal.reset();
         await restore(ctx); return;
       }
       const agent = ready(ctx, false);
@@ -398,6 +405,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     assertPlanEntry() { if (restoring || error) throw new Error(error ?? msg("Agent 状态正在恢复")); if (runtime?.activeCount()) throw new Error(msg("子 Agent 仍在执行／等待；请先等待结束或明确取消，再进入 Plan")); clearDelivery(); paused = true; },
     assertTodoMutation(params: TodoParams) {
       if (params.action === "list" || params.action === "get" || params.action === "create" || claiming !== undefined && params.action === "update" && params.id === claiming) return;
+      if (!runtime?.activeCount()) return;
       const resetIds = params.action === "reset" ? new Set(resetClosure(hooks.state().tasks, params.preset ?? "", params.step, params.run)) : undefined;
       const jobs = (runtime?.inspect() ?? []).filter(active).filter((job) => params.action === "clear" || job.todoId !== undefined && (resetIds ? resetIds.has(job.todoId) : job.todoId === params.id));
       for (const job of jobs) {
@@ -408,6 +416,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     afterTodoMutation(params: TodoParams) {
       if (params.action === 'reset') runtime?.invalidateTaskReports(resetClosure(hooks.state().tasks, params.preset ?? '', params.step, params.run));
       else if (params.action === 'update' && ['pending', 'in_progress'].includes(params.status ?? '') && params.id !== undefined) runtime?.invalidateTaskReports([params.id]);
+      if (adjusted.size === 0) return;
       for (const job of runtime?.inspect() ?? []) if (job.todoId === params.id) adjusted.delete(job.id);
     },
   };

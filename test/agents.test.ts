@@ -20,7 +20,7 @@ async function setup(fake = false, cli = fixture) {
   const profiles = new ProfileStore({ registry: { find: (provider, id) => provider === model.provider && id === model.id ? model : undefined } });
   const notices: AgentNotice[] = [];
   const changes: JobSummary[][] = [];
-  const runtime = new AgentRuntime({ cwd: root, profiles, getInheritedModel: () => model, childEnv: { HOME: root, PI_CODING_AGENT_DIR: join(root, "agent") }, ...(fake ? { testCliPath: cli } : { testExtensions: [offline] }), onNotice: (notice) => notices.push(notice), onChanged: (summaries) => changes.push(summaries) });
+  const runtime = new AgentRuntime({ cwd: root, profiles, getInheritedModel: () => model, childEnv: { HOME: root, PI_CODING_AGENT_DIR: join(root, "agent") }, ...(fake ? { testCliPath: cli } : { testExtensions: [offline] }), onNotice: (notice) => notices.push(notice), onChanged: () => changes.push(runtime.exportSummaries()) });
   return { root, runtime, profiles, notices, changes, close: async () => { await runtime.shutdown(); await rm(root, { recursive: true, force: true }); } };
 }
 const question = (text: string) => `TEST CALL subagent_send ${JSON.stringify({ message: text, question: true })}`;

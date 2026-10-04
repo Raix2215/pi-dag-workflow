@@ -7,13 +7,13 @@ import { GOAL_TYPE, type GoalParams } from '../src/goal/state.ts';
 const cleanups = new Set<() => Promise<unknown>>();
 afterEach(async () => { await Promise.all([...cleanups].map((cleanup) => cleanup())); cleanups.clear(); });
 
-function host(retryDelayMs = 0) {
+function host(retryDelayMs = 0, leafAware = false) {
   const events = new Map<string, Function[]>();
   const tools = new Map<string, any>(); const commands = new Map<string, any>();
   let workflow = emptyState(); let jobs: any[] = []; let protectedState = false; let idle = false;
   const entries: any[] = []; const notifications: string[] = []; const wakes: any[] = []; const passive: any[] = [];
-  let messageSeq = 0;
-  const ctx: any = { cwd: '/tmp', mode: 'rpc', hasUI: true, isIdle: () => idle, sessionManager: { getBranch: () => entries }, ui: { notify: (text: string) => notifications.push(text), confirm: async () => true } };
+  let messageSeq = 0; let branchReads = 0;
+  const ctx: any = { cwd: '/tmp', mode: 'rpc', hasUI: true, isIdle: () => idle, sessionManager: { getBranch: () => { branchReads++; return entries; }, ...(leafAware ? { getLeafId: () => String(entries.length) } : {}) }, ui: { notify: (text: string) => notifications.push(text), confirm: async () => true } };
   const pi: any = { on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); return () => {}; }, registerTool(tool: any) { tools.set(tool.name, tool); }, registerCommand(name: string, cmd: any) { commands.set(name, cmd); }, appendEntry(customType: string, data: any) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any, options: any) { (options?.triggerTurn === false ? passive : wakes).push({ message, options }); }, sendUserMessage(message: string) { wakes.push({ message, options: { source: 'extension' } }); } };
   const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, retryDelayMs, resumeDelayMs: 0 });
   const fire = async (name: string, event: any = {}) => { let result: any; for (const handler of events.get(name) ?? []) result = await handler(event, ctx) ?? result; return result; };
@@ -31,8 +31,40 @@ function host(retryDelayMs = 0) {
   // A settled run schedules its retry on a timer; drain it before asserting.
   const settled = async () => { await fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 0)); };
   const retries = () => wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-retry').length;
-  return { ctx, controller, fire, call, settle, propose, startTurn, enable, settled, message, retries, entries, notifications, wakes, passive, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, setTasks(tasks: Todo[]) { workflow = { ...workflow, tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 }; }, commands };
+  return { ctx, controller, fire, call, settle, propose, startTurn, enable, settled, message, retries, entries, notifications, wakes, passive, branchReads: () => branchReads, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, setTasks(tasks: Todo[]) { workflow = { ...workflow, tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 }; }, commands };
 }
+
+test('ordinary input without a Goal never reads session history; leaf-aware failure cache invalidates on changes', async () => {
+  const empty = host();
+  for (let i = 0; i < 30; i++) await empty.fire('input', { source: 'rpc', text: 'ordinary work' });
+  assert.equal(empty.branchReads(), 0);
+  const h = host(0, true); await h.enable();
+  await h.fire('input', { source: 'rpc', text: 'same leaf' });
+  const reads = h.branchReads();
+  for (let i = 0; i < 10; i++) await h.fire('input', { source: 'rpc', text: 'same leaf' });
+  assert.equal(h.branchReads(), reads);
+  h.message('error'); h.setIdle(true); await h.settled();
+  assert.equal(h.retries(), 1);
+  assert.ok(h.branchReads() > reads, 'a new leaf is not served from the old cache');
+  await h.fire('session_before_compact', { willRetry: false });
+  h.entries.push({ type: 'compaction', id: 'changed-boundary' });
+  await h.fire('session_compact', { willRetry: false });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(h.retries(), 1);
+  assert.equal(h.wakes.some((wake) => wake.message?.customType === 'pi-dag-workflow.goal-continue'), true);
+});
+
+test('run-only Goal updates do not append redundant checkpoints; goal-definition changes still do', async () => {
+  const h = host(); await h.enable();
+  const start = () => h.fire('before_agent_start', { systemPromptOptions: { sections: {}, selectedTools: [] } });
+  assert.ok((await start())?.message);
+  h.controller.reserveWake(h.ctx);
+  await h.call({ action: 'update', progress: 'new evidence', nextStep: 'run actual test' });
+  assert.equal(await start(), undefined);
+  await h.fire('input', { source: 'rpc', text: 'rename authorized' });
+  await h.call({ action: 'update', title: 'updated objective' });
+  assert.match((await start()).message.content, /updated objective/);
+});
 
 test('mock host: shared Agent/Goal wakes consume one allowance, never reset on status/input/read', async () => {
   const h = host(); await h.enable(2);

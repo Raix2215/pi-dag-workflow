@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
 import { STATE_TYPE } from '../src/todos/state.ts';
 import { GOAL_TYPE } from '../src/goal/state.ts';
+import { AGENTS_ENTRY_TYPE, foldAgentEntries } from '../src/agents/persistence.ts';
 
 const offline = fileURLToPath(new URL('./fixtures/offline-model.ts', import.meta.url));
 const tools = async (client: IsolatedClient, name: string, params: object) => {
@@ -64,7 +65,9 @@ test('real Pi: cleanup menus do not pause, wake or refill an active Goal and do 
   assert.deepEqual(after.run, before.run);
   assert.equal(entries.findLast((entry) => entry.customType === STATE_TYPE).data.tasks.length, 0);
   assert.equal(client.records.slice(offset).some((record) => record.type === 'agent_start'), false);
-  assert.ok(entries.findLast((entry) => entry.customType === 'pi-dag-workflow.agents').data.jobs.some((job: any) => job.status === 'running'));
+  // The journal is append-only deltas: fold the branch instead of assuming the last entry is a full snapshot.
+  assert.ok(foldAgentEntries(entries).records.some((job) => job.status === 'running'), `expected a running child, got ${JSON.stringify(foldAgentEntries(entries).records.map((job) => [job.id, job.status]))}`);
+  assert.ok(entries.some((entry) => entry.customType === AGENTS_ENTRY_TYPE));
 });
 
 test('real Pi: inspect defaults to short profiles and explicit profiles:true retains instructions', { timeout: 30000 }, async (t) => {
