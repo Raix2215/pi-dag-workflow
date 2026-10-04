@@ -58,6 +58,22 @@ for (const [reason, flag] of [['threshold', '--dag-test-compaction-pressure'], [
   });
 }
 
+test('real Pi: one continuous Goal recovers three separate context overflows without extra wakes or error retries', { timeout: 30000 }, async (t) => {
+  const client = await setup(['--dag-test-repeated-overflow'], false); t.after(() => client.close());
+  await client.prompt('TEST CALL goal {"action":"create","title":"预算测试","maxTurns":6}');
+  await client.prompt('/goal enable #1');
+  await client.until(() => client.records.some((record) => record.method === 'notify' && String(record.message).includes('轮上限')));
+  const entries = await client.entries() as any[];
+  const goal = latestGoal(entries);
+  assert.equal(goal.run.used, 6);
+  assert.equal(goal.run.paused, true);
+  assert.match(goal.run.reason!, /6 轮上限/);
+  assert.equal(entries.filter((entry) => entry.type === 'compaction').length, 3);
+  assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-continue').length, 5);
+  assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-retry').length, 0);
+  assert.ok(entries.filter((entry) => entry.customType === GOAL_CHECKPOINT_TYPE && entry.content.includes('"paused":false')).length >= 3);
+});
+
 test('real Pi: threshold compaction keeps Goal continuation and delivers a passive state checkpoint', { timeout: 30000 }, async (t) => {
   const client = await setup(['--dag-test-compaction-pressure']); t.after(() => client.close());
   await create(client);

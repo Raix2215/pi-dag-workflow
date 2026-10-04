@@ -44,7 +44,7 @@ export class IsolatedClient {
   }
   static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = [], configuredPackage = false, entries?: string[], language = 'zh-CN'): Promise<IsolatedClient> {
     const home = root ?? await mkdtemp(join(tmpdir(), "pi-dag-m1-"));
-    const cli = resolve(fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url)));
+    const cli = process.env.PI_DAG_TEST_CLI?.trim() || resolve(fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url)));
     const entry = fileURLToPath(new URL("../../", import.meta.url));
     const model = fileURLToPath(new URL("./offline-model.ts", import.meta.url));
     const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", ...configuredPackage ? [] : ['--no-extensions', ...(entries ?? [entry]).flatMap((path) => ['-e', path])], "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", ...extraArgs.includes('--approve') ? [] : ['--no-approve'], "--session-id", session, "--provider", "dag-test", "--model", "scripted", "-e", model, ...extraExtensions.flatMap((path) => ["-e", path]), ...extraArgs], {
@@ -59,7 +59,7 @@ export class IsolatedClient {
   static async startFlash(extraTools: string[] = [], extraExtensions: string[] = []): Promise<IsolatedClient> {
     const model = liveModel();
     const root = await mkdtemp(join(tmpdir(), "pi-dag-live-"));
-    const cli = fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url));
+    const cli = process.env.PI_DAG_TEST_CLI?.trim() || fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url));
     const entry = fileURLToPath(new URL("../../", import.meta.url));
     const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-dir", join(root, "sessions"), "--provider", model.provider, "--model", model.id, "--thinking", model.thinking, "--tools", ["todo", "read", "grep", "find", "ls", "write", ...extraTools].join(","), "-e", entry, ...extraExtensions.flatMap((path) => ['-e', path])], {
       cwd: root,

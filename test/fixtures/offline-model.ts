@@ -7,10 +7,12 @@ export default function offlineModel(pi: ExtensionAPI): void {
   let flaky = 0;
   let pressureTurns = 0;
   let overflowed = false;
+  const overflowRounds = new Set<number>();
   let plainGoalPhase = 0;
   pi.registerFlag('dag-test-plain-goal', { type: 'boolean', description: 'Offline test: finish a Todo then continue the unfinished Goal without a nextStep' });
   pi.registerFlag('dag-test-compaction-pressure', { type: 'boolean', description: 'Offline test-only context pressure on the first Goal turn' });
   pi.registerFlag('dag-test-overflow', { type: 'boolean', description: 'Offline test-only one context overflow on a Goal request' });
+  pi.registerFlag('dag-test-repeated-overflow', { type: 'boolean', description: 'Offline test-only context overflow on three separate Goal continuation rounds' });
   const prefix = Date.now();
   pi.registerProvider("dag-test", {
     api: "dag-test-api", baseUrl: "http://offline.invalid", apiKey: "offline-test-only",
@@ -55,6 +57,10 @@ export default function offlineModel(pi: ExtensionAPI): void {
             // Goal error-recovery tests: one Goal fails the first two requests, another fails until
             // its retry budget is spent. Only Goal turns fail; the test's own tool calls stay intact.
             const goalWork = prompt.startsWith('Goal #') || prompt.includes('自动重试');
+            const round = Number(/^Goal #\d+ (\d+)\//.exec(prompt)?.[1] ?? 0);
+            if (goalWork && pi.getFlag('dag-test-repeated-overflow') === true && [1, 3, 5].includes(round) && !overflowRounds.has(round)) {
+              overflowRounds.add(round); throw new Error('maximum context length exceeded');
+            }
             if (goalWork && pi.getFlag('dag-test-overflow') === true && !overflowed) {
               overflowed = true; throw new Error('maximum context length exceeded');
             }

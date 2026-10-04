@@ -161,6 +161,10 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const branch = ctx.sessionManager.getBranch();
     for (let index = branch.length - 1; index >= 0; index--) {
       const entry = branch[index];
+      // Compaction is a new recovery boundary. Raw branch history still contains the old
+      // failed request even when Pi omitted it from the compacted model context. Treating
+      // that retired id as the current failure can suppress every later fallback wake.
+      if (entry?.type === 'compaction') return undefined;
       if (!entry || entry.type !== 'message' || entry.message.role !== 'assistant') continue;
       return entry.message.stopReason === 'error' ? entry.id : undefined;
     }

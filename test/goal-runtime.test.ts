@@ -404,6 +404,36 @@ test('successful shell work prevents a false no-progress pause when no Todo or p
   await h.fire('session_shutdown');
 });
 
+test('a retired pre-compaction error cannot strand an active Goal after successful compaction', async () => {
+  const h = host(); await h.enable(4); h.setIdle(true);
+  h.message('error'); await h.settled();
+  assert.equal(h.retries(), 1);
+  await h.fire('session_before_compact', { reason: 'manual', willRetry: false });
+  h.entries.push({ type: 'compaction', id: 'compact-after-retired-failure' });
+  await h.fire('session_compact', { reason: 'manual', willRetry: false });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(h.controller.snapshot().run.paused, false);
+  assert.equal(h.retries(), 1, 'an error from before the successful compaction is not a new failed request');
+  assert.equal(h.wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-continue').length, 1, 'the retained retry id must not suppress continuation forever');
+});
+
+test('a post-compaction error still gets a bounded retry and user/budget pauses stay stopped', async () => {
+  const h = host(); await h.enable(4); h.setIdle(true);
+  h.message('error');
+  await h.fire('session_before_compact', { reason: 'overflow', willRetry: true });
+  h.entries.push({ type: 'compaction', id: 'successful-overflow-boundary' });
+  await h.fire('session_compact', { reason: 'overflow', willRetry: true });
+  h.message('error'); // This is a new failed request after the successful compaction.
+  await h.settled();
+  assert.equal(h.retries(), 1);
+  assert.equal(h.controller.snapshot().run.errorRetries, 1);
+  await h.commands.get('goal').handler('disable', h.ctx);
+  await h.fire('agent_settled');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.equal(h.retries(), 1);
+});
+
 test('native overflow retry takes priority over an idle fallback wake after compaction', async () => {
   const h = host(); await h.enable(3);
   await h.fire('session_before_compact', { reason: 'overflow', willRetry: true });
