@@ -24,7 +24,8 @@ export const englishMessages: Readonly<Record<string, string>> = {
 
   // ----- user-owned Goal pause policy -----
   '损坏的模型暂停策略': 'Corrupt model pause policy',
-  '需要用户时提问；模型停用已禁止': 'ask when user input is needed; model stopping is blocked',
+  '自主解决缺口并继续执行；禁止提问和模型停用': 'resolve gaps autonomously and keep executing; questions and model stopping are forbidden',
+  '先尝试替代路径并继续独立工作；仅真实外部阻塞时请求用户': 'try alternatives and continue independent work; ask the user only for a verified external blocker',
   '；自动续跑上限 {0}，研究可 update progress/nextStep，{1}': '; auto-continuation limit {0}; for research use update progress/nextStep, {1}',
   '切换运行中是否允许模型中断：nopause [ #编号]': 'Toggle whether the model may interrupt a running Goal: nopause [ #id]',
   '需要用户时提问，用户可 /goal disable': 'ask when user input is needed; the user can run /goal disable',
@@ -40,7 +41,8 @@ export const englishMessages: Readonly<Record<string, string>> = {
   'Goal #{0} 禁止模型停用／删除或设置空 nextStep；需要用户决策时提问，用户可 /goal disable': 'Goal #{0} blocks model disable/delete and empty nextStep; ask when a user decision is needed. The user can run /goal disable',
   '目标 new/list/enable/disable/complete/delete/edit/get/nopause/config/reset，或自然语言': 'Goal new/list/enable/disable/complete/delete/edit/get/nopause/config/reset, or natural language',
   '/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · nopause [ #编号] · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。': '/goal new title · list · enable [ #id] (current Goal when omitted) · disable [ #id] · complete/delete #id · edit #id title · get #id · nopause [ #id] · config · reset; create does not start, inspection does not refill the budget, and resuming requires explicit enable.',
-  '上一次请求失败（模型出错）。这是 Goal #{0} 的第 {1}/{2} 次自动重试：继续推进「{3}」，并按需 goal update progress／nextStep；{4}，达成时 complete。': 'The previous request failed (model error). Goal #{0} retry {1}/{2}: continue "{3}", update progress/nextStep as needed; {4}, and complete when achieved.',
+  '上一次请求失败（模型出错）。这是 Goal #{0} 的第 {1}/{2} 次自动重试：继续推进「{3}」。': 'The previous request failed (model error). Goal #{0} retry {1}/{2}: continue "{3}".',
+  '这是工作流续跑，不是用户新授权。': 'This is a workflow continuation, not new user authorization.',
   'Goal #{0} {1}/{2}: {3}。{4}核验结果；研究可 goal update progress/nextStep，{5}，达成时 complete。这是工作流续跑，不是用户新授权。': 'Goal #{0} {1}/{2}: {3}. {4}Verify results; for research use goal update progress/nextStep, {5}, and complete when achieved. This is a workflow continuation, not new user authorization.',
   '检查子 Agent {0} 的待答复问题（subagent_wait）；在当前 Goal 范围内答复，{1}': 'Inspect child {0}\'s pending question with subagent_wait; answer within the current Goal scope, {1}',
   '核对 Goal #{0} 的目标、要求与进展（goal get）；继续未达成的当前范围，达成时 complete，{1}': 'Review Goal #{0}, its requirements and verified progress with goal get; continue within the current objective until achieved, complete when verified, {1}',
@@ -208,7 +210,7 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '工作流状态损坏；先检查或明确 /todos clear 重置': 'Workflow state is corrupt; inspect it or explicitly reset with /todos clear',
   '先 /plan off，再配置额外只读工具': 'Run /plan off before configuring extra read-only tools',
   '额外只读工具 · 配置文件：{0} · 本会话：{1}。/plan tools 名称1,名称2 追加到本会话；none 清空本会话；机器级默认写在配置文件的 planTools。': 'Extra read-only tools · config file: {0} · this session: {1}. /plan tools name1,name2 adds to this session; none clears this session; the machine-wide default lives in the config file planTools.',
-  'planTools 需为最多 {0} 个不重复的工具名': 'planTools must be up to {0} unique tool names',
+  '{0} 需为最多 {1} 个不重复的工具名': '{0} must be up to {1} unique tool names',
   '只能明确允许已注册的额外只读工具；不能放行写入／委派工具': 'Only registered extra read-only tools can be explicitly allowed; write/dispatch tools cannot be enabled',
   '已保存额外只读工具；Plan 只拦截已注册的写入／Shell 工具，请只选择可信读取／搜索工具': 'Saved extra read-only tools; Plan blocks registered write/shell tools, so choose only trusted read/search tools',
   '主会话仍在运行；请先停止或等待，再切换 Plan': 'The main session is still running; stop or wait before switching Plan',

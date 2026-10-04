@@ -12,14 +12,15 @@ function host(language: 'zh-CN' | 'en' = 'zh-CN') {
   const entries: any[] = []; const notices: string[] = []; const wakes: any[] = [];
   let selection: (title: string, options: string[]) => Promise<string | undefined> = async (_title, options) => options[1];
   let workflow = emptyState();
+  let activeTools = ['goal', 'read', 'bash', 'ask_user_question'];
   const fire = async (name: string, data: any = {}) => { let result: any; for (const handler of events.get(name) ?? []) result = await handler(data, ctx) ?? result; return result; };
   const ctx: any = { hasUI: true, mode: 'rpc', cwd: '/tmp', isIdle: () => false, sessionManager: { getBranch: () => entries }, ui: { notify: (text: string) => notices.push(text), select: async (title: string, options: string[]) => { await fire('ui_prompt_start', { kind: 'select', title }); return selection(title, options); } } };
-  const pi: any = { on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); }, registerCommand(name: string, command: any) { commands.set(name, command); }, registerTool(tool: any) { tools.set(tool.name, tool); }, appendEntry(customType: string, data: unknown) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any) { wakes.push(message); }, sendUserMessage(message: string) { wakes.push(message); } };
+  const pi: any = { getActiveTools: () => [...activeTools], setActiveTools: (names: string[]) => { activeTools = [...names]; }, on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); }, registerCommand(name: string, command: any) { commands.set(name, command); }, registerTool(tool: any) { tools.set(tool.name, tool); }, appendEntry(customType: string, data: unknown) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any) { wakes.push(message); }, sendUserMessage(message: string) { wakes.push(message); } };
   const controller = registerGoal(pi, { msg: createTranslator(language), state: () => workflow, jobs: () => [], paint() {}, pauseAgents() {}, resumeAgents() {}, protected: () => false });
   const call = async (params: GoalParams | any) => tools.get('goal').execute('policy-test', params, undefined, undefined, ctx);
   const command = async (args: string) => commands.get('goal').handler(args, ctx);
   const enable = async () => { await fire('input', { source: 'rpc', text: 'enable this objective' }); await call({ action: 'enable', id: 1 }); };
-  return { controller, ctx, call, command, fire, enable, entries, notices, wakes, select(fn: typeof selection) { selection = fn; }, plan(value: boolean) { workflow = { ...workflow, plan: value }; } };
+  return { controller, ctx, call, command, fire, enable, entries, notices, wakes, activeTools: () => [...activeTools], setActiveTools: (names: string[]) => { activeTools = [...names]; }, select(fn: typeof selection) { selection = fn; }, plan(value: boolean) { workflow = { ...workflow, plan: value }; } };
 }
 
 test('nopause is the only menu command; policy is not kept as an alias', async () => {
@@ -123,20 +124,58 @@ test('policy is preserved on branch restore, and a stale menu cannot write into 
   await h.fire('session_shutdown');
 });
 
-test('a deny policy does not suppress Plan, budget, compaction failure or no-progress safety pauses', async () => {
-  for (const kind of ['plan', 'budget', 'compaction', 'stall']) {
+test('a deny policy does not suppress Plan, budget or compaction failure safety pauses', async () => {
+  for (const kind of ['plan', 'budget', 'compaction']) {
     const h = host(); await h.call({ action: 'create', title: 'first', maxTurns: kind === 'budget' ? 1 : 10 }); await h.enable(); await h.command('nopause');
     if (kind === 'plan') { h.controller.pause('entering Plan', h.ctx); h.plan(true); }
     if (kind === 'budget') { h.controller.reserveWake(h.ctx); await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false }); }
     if (kind === 'compaction') { await h.fire('session_before_compact', { willRetry: false }); await h.fire('session_compact_failed', { aborted: false }); }
-    if (kind === 'stall') for (let index = 0; index < 4 && !h.controller.snapshot().run.paused; index++) {
-      const next = await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false });
-      if (next?.continue) { await h.fire('turn_start'); await h.fire('context', { messages: next.entries }); }
-    }
     assert.equal(h.controller.snapshot().run.paused, true, kind);
     assert.equal(h.controller.snapshot().goals[0]!.modelPause, 'deny');
     await h.fire('session_shutdown');
   }
+});
+
+test('nopause hides question tools, blocks nested/reactivated calls, and restores only its own removals', async () => {
+  const h = host(); await h.call({ action: 'create', title: 'autonomous work' }); await h.enable(); await h.command('nopause');
+  assert.deepEqual(h.activeTools(), ['goal', 'read', 'bash']);
+  const blocked = await h.fire('tool_call', { toolName: 'ask_user_question', input: {}, parentToolCallId: 'nested-test' });
+  assert.equal(blocked.block, true); assert.match(blocked.reason, /Do not ask the user or stop/);
+  h.setActiveTools(['goal', 'bash', 'ask_user_question']); // External activation cannot bypass the guard.
+  assert.equal((await h.fire('tool_call', { toolName: 'ask_user_question', input: {} })).block, true);
+  await h.command('disable');
+  assert.deepEqual(h.activeTools(), ['goal', 'bash', 'ask_user_question'], 'do not reactivate an unrelated tool disabled externally');
+  assert.equal(await h.fire('tool_call', { toolName: 'ask_user_question', input: {} }), undefined);
+  await h.command('enable');
+  assert.deepEqual(h.activeTools(), ['goal', 'bash']);
+  await h.fire('turn_end', { outcome: 'aborted' });
+  assert.ok(h.activeTools().includes('ask_user_question'), 'a user abort restores normal interaction tools');
+  await h.fire('session_shutdown');
+});
+
+test('restoring nopause tools preserves their original order relative to unaffected tools', async () => {
+  const h = host(); h.setActiveTools(['goal', 'ask_user_question', 'read', 'bash']);
+  await h.call({ action: 'create', title: 'ordered tools' }); await h.enable(); await h.command('nopause');
+  assert.deepEqual(h.activeTools(), ['goal', 'read', 'bash']);
+  await h.command('disable');
+  assert.deepEqual(h.activeTools(), ['goal', 'ask_user_question', 'read', 'bash']);
+  await h.fire('session_shutdown');
+});
+
+test('nopause replans and keeps executing past the no-progress threshold until its finite allowance ends', async () => {
+  const h = host(); await h.call({ action: 'create', title: 'persistent work', maxTurns: 12 }); await h.enable(); await h.command('nopause');
+  for (let index = 0; index < 12; index++) {
+    const next = await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false });
+    assert.equal(next?.continue, true);
+    assert.match(next.entries.at(-1).content, /Do not ask the user questions/);
+    if (index >= 8) assert.match(next.entries.at(-1).content, /choose a different feasible approach/);
+    await h.fire('turn_start'); await h.fire('context', { messages: next.entries });
+    assert.equal(h.controller.snapshot().run.paused, false);
+  }
+  await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false });
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.match(h.controller.snapshot().run.reason!, /上限/);
+  await h.fire('session_shutdown');
 });
 
 test('real Pi: selecting deny on an active Goal preserves its budget and blocks a later model disable', { timeout: 30000 }, async (t) => {

@@ -6,6 +6,13 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 export default function goalCompaction(pi: ExtensionAPI): void {
   let rejectOnce = false;
   let compactAfterSettle = false;
+  let slowCompletion = false;
+  pi.registerCommand('test-compact-slow-race', { description: 'Compact with slow completion handlers after discarding a wake', handler: async () => { rejectOnce = true; slowCompletion = true; } });
+  pi.on('session_compact', async () => {
+    if (!slowCompletion) return;
+    slowCompletion = false;
+    await new Promise((resolve) => setTimeout(resolve, 180));
+  });
   pi.registerCommand('test-compact-race', { description: 'Discard one proposed continuation and compact before idle recovery', handler: async () => { rejectOnce = true; } });
   pi.on('agent_before_settle', (event) => {
     if (!rejectOnce || !event.entries.some((entry) => entry.type === 'custom_message' && entry.customType === 'pi-dag-workflow.goal-continue')) return;

@@ -8,12 +8,12 @@ export const configPaths = () => {
   const directory = join(getAgentDir(), 'pi-dag-workflow');
   return { directory, config: join(directory, 'pi-dag-workflow-config.json'), profile: join(directory, 'pi-dag-workflow-profile.json'), preset: join(directory, 'pi-dag-workflow-preset.json') };
 };
-export interface WorkflowConfig { language: Language; goalMaxTurns: number; goalNoProgressLimit: number; goalErrorRetries: number; planTools: string[] }
-const defaults: WorkflowConfig = { language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 3, goalErrorRetries: 5, planTools: [] };
+export interface WorkflowConfig { language: Language; goalMaxTurns: number; goalNoProgressLimit: number; goalErrorRetries: number; planTools: string[]; goalNoPauseTools: string[] }
+export const defaultConfig = (): WorkflowConfig => ({ language: 'auto', goalMaxTurns: 32, goalNoProgressLimit: 8, goalErrorRetries: 5, planTools: [], goalNoPauseTools: ['ask_user_question'] });
 /** Machine-wide extra read-only tools for Plan mode; hard guards (write/shell/dispatch) still win. */
 export const MAX_PLAN_TOOLS = 16;
 /** Accepted range per key; an absent key is a default, an out-of-range value is an error. */
-const limits: Record<string, { min: number; max: number }> = { goalMaxTurns: { min: 1, max: 200 }, goalNoProgressLimit: { min: 1, max: 10 }, goalErrorRetries: { min: 0, max: 20 } };
+const limits: Record<string, { min: number; max: number }> = { goalMaxTurns: { min: 1, max: 200 }, goalNoProgressLimit: { min: 1, max: 100 }, goalErrorRetries: { min: 0, max: 20 } };
 function parseConfig(source: string, msg: Translator): WorkflowConfig {
   if (Buffer.byteLength(source) > 16384) throw new Error(msg('配置超过 16 KiB'));
   const value = JSON.parse(source) as Record<string, unknown>;
@@ -24,21 +24,22 @@ function parseConfig(source: string, msg: Translator): WorkflowConfig {
       continue;
     }
     if (key === 'modules') throw new Error(msg('modules 不是配置项；模块选择用 pi config 勾选扩展入口'));
-    if (key === 'planTools') {
+    if (key === 'planTools' || key === 'goalNoPauseTools') {
       const names = Array.isArray(item) ? (item as unknown[]).map((entry) => typeof entry === 'string' ? entry.trim() : '') : [];
       const valid = Array.isArray(item) && names.length <= MAX_PLAN_TOOLS && names.every((name) => /^[\w-]+$/.test(name)) && new Set(names).size === names.length;
-      if (!valid) throw new Error(msg`planTools 需为最多 ${MAX_PLAN_TOOLS} 个不重复的工具名`);
+      if (!valid) throw new Error(msg`${key} 需为最多 ${MAX_PLAN_TOOLS} 个不重复的工具名`);
+      value[key] = names;
       continue;
     }
     const range = limits[key];
     if (!range || typeof item !== 'number' || !Number.isSafeInteger(item) || item < range.min || item > range.max) throw new Error(msg`未知或无效配置：${key}`);
   }
-  return { ...defaults, ...value } as WorkflowConfig;
+  return { ...defaultConfig(), ...value } as WorkflowConfig;
 }
 export async function loadConfig(msg: Translator = chinese): Promise<WorkflowConfig> {
   let source: string;
   try { source = await readFile(configPaths().config, 'utf8'); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ...defaults }; throw error; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultConfig(); throw error; }
   return parseConfig(source, msg);
 }
 

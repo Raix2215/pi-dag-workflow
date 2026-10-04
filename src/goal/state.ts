@@ -8,7 +8,7 @@ export const GoalParamsSchema = Type.Object({
   description: Type.Optional(Type.String({ description: 'Objective and acceptance criteria' })),
   maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
   progress: Type.Optional(Type.String({ description: 'Update: brief new verified progress, including research without Todos' })),
-  nextStep: Type.Optional(Type.String({ description: 'Update: concrete next action; empty means wait for the user' })),
+  nextStep: Type.Optional(Type.String({ description: 'Update: concrete next action, a working note that cannot narrow the original objective; empty clears the note (forbidden under nopause)' })),
 }, { additionalProperties: false });
 export type GoalParams = Static<typeof GoalParamsSchema>;
 export type ModelPausePolicy = 'allow' | 'deny';
@@ -83,7 +83,10 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
       if (params.progress !== undefined || params.nextStep !== undefined) {
         if (goal.id !== next.focusId || next.run.paused) throw new Error(msg('先启用此目标，再报告进展／下一步'));
         if (params.progress !== undefined) next.run.progress = params.progress;
-        if (params.nextStep !== undefined) next.run.nextStep = params.nextStep;
+        if (params.nextStep !== undefined) {
+          if (params.nextStep.trim()) next.run.nextStep = params.nextStep;
+          else delete next.run.nextStep;
+        }
       }
     } else if (activates(params.action)) {
       if (goal.status === 'completed') throw new Error(msg('已完成目标不能重启；新建目标记录返工'));
@@ -105,7 +108,7 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
   validateGoalState(next, msg);
   if (JSON.stringify(next) === JSON.stringify(state)) return { state, text: msg('Goal 无变化') };
   const goal = params.action === 'create' ? next.goals.at(-1)! : next.goals.find((item) => item.id === current!.id)!;
-  const waitHint = goal.modelPause === 'deny' ? msg('需要用户时提问；模型停用已禁止') : msg('需要用户时 disable');
+  const waitHint = goal.modelPause === 'deny' ? msg('自主解决缺口并继续执行；禁止提问和模型停用') : msg('先尝试替代路径并继续独立工作；仅真实外部阻塞时请求用户');
   const hint = activates(params.action) ? msg`；自动续跑上限 ${goal.maxTurns}，研究可 update progress/nextStep，${waitHint}` : '';
   return { state: next, text: msg`Goal #${goal.id} ${params.action}：${goal.title}${hint}` };
 }

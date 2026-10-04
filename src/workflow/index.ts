@@ -190,7 +190,7 @@ export function createWorkflow(pi: ExtensionAPI) {
         reserveWake: (ctx) => !modules.goal || (goals?.reserveWake(ctx, true) ?? false),
         pauseAuto: (ctx) => { if (modules.goal) goals?.pause(msg('用户暂停自动工作'), ctx); },
         resumeAuto: () => !modules.goal || (goals?.resumeAgentReports() ?? false),
-        beforeWake: (ctx) => checkpoints?.beforeWake(ctx),
+        beforeWake: (ctx) => goals ? goals.beforeWake(ctx) : checkpoints?.beforeWake(ctx),
         compacting: () => goals?.isCompacting() ?? false,
       });
       if (feature === 'goal') goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError,

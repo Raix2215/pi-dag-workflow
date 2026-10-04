@@ -13,9 +13,9 @@ A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with 
 - **One task list, one derived DAG.** Todos carry prerequisites through `blockedBy`. Unfinished prerequisites block starting and completing downstream work, and `/dag` draws the real graph from that same list. There is no second queue or database.
 - **Plan before you build.** Plan is a read-only mode for reading, searching, asking, and rearranging Todos; read-only network tools can be enabled through `planTools`. Implementation, shell commands, and dispatch are blocked until you leave it.
 - **Real child jobs.** Run up to eight Pi subprocesses. Give each one a task, an optional Todo link, and an optional named profile; send direction, answer questions, wait, cancel, or remove records. A finished child stays **Pending delivery** until its report reaches the main conversation. A linked unfinished Todo then shows **Pending verification**, and changes to **Completed** only after acceptance. Returned work never completes a Todo by itself.
-- **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance; a Goal also pauses after three consecutive rounds without new progress. A failed model request retries automatically (5 attempts by default) before the Goal pauses. Pause happens on interruption, restore, Plan, an exhausted allowance or retry budget, or a stalled run.
+- **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance. Regular mode replans after eight consecutive rounds without recorded work progress and pauses if another round is still unproductive; `nopause` keeps trying within the allowance. Failed model requests retry automatically (5 attempts by default). User stops, restore, Plan, exhausted budgets, and compaction failures remain safety stops.
 - **Readable progress.** A Nerd Font panel shows the task tree, a solid-line DAG, and live thinking/tool/output activity. Tool elapsed time keeps updating beyond 99 seconds, using compact seconds/minutes/hours. Interface activity is not written into model context or persistent workflow state.
-- **State survives context loss.** Short, append-only checkpoints restore key Todo/Job state after compaction, reload, or branch navigation. Commands coalesce changes, and normal tool results carry their own notifications. Checkpoints never wake the model or replace memory-plugin summaries.
+- **State survives context loss.** Append-only checkpoints restore key Todo/Job state and the original Goal requirements and execution policy after compaction, reload, or branch navigation. Commands coalesce changes, and normal tool results carry their own notifications. Checkpoints never wake the model or replace memory-plugin summaries.
 - **Session-scoped persistence.** Todo, Goal, budget, and job snapshots follow the active Pi branch. Restoring a session never resurrects child processes and never resumes autonomous work on its own.
 
 ## Requirements
@@ -46,7 +46,7 @@ Useful entries while you work:
 - `/todos` for the full list and `/dag` for the dependency graph.
 - `/goal new Improve the parser` creates a Goal without starting it; `/goal enable #1` starts focused continuation.
 
-Research does not require Todos: the model can report new progress and a concrete next step with `goal update`, or pause while it waits for your answer.
+Research does not require Todos: use brief `goal update` notes for new evidence and the next executable action. Goals prioritize implementation, experiments, and verification; documents are only needed when requested or necessary for delivery or reproducibility.
 
 ## The panel
 
@@ -155,13 +155,13 @@ For a Goal that is already active but idle, `/goal enable #1` starts another req
 
 Successful compaction preserves the active Goal and remaining allowance; Pi's own overflow retry runs first. If a continuation draft is discarded, its reservation is refunded and its next step retained. An idle fallback avoids leaving an active Goal silently stranded: it continues concrete work or reviews the same objective with `goal get` even when the Todo list is complete or the model omitted `nextStep`. A plain final answer does not stop an enabled Goal. Running children can keep the parent idle until their reports arrive; real wait timeouts are not stalled work. Child questions take priority without discarding saved independent work. Failed/cancelled compaction and explicit user stops remain stopped.
 
-Use `complete` after verifying the full objective or `disable` when user input is required. An explicit empty `nextStep` still waits for the user. Objective reviews spend the remaining allowance and remain subject to the no-progress limit; they cannot bypass pauses or create new authorization.
+Use `complete` only after verifying every original requirement. In regular mode, try safe alternatives and continue independent work before asking about a verified external blocker. An empty `nextStep` clears the working note and continues the original objective; notes cannot narrow the goal or withdraw existing permission. Successful shell work counts as activity, while repeated status reports and unexecuted plans do not. The default no-progress threshold is eight rounds, followed by one replan attempt before a safety pause. Reviews spend the remaining allowance and cannot create new authorization.
 
 ### `nopause` control
 
 Run `/goal nopause #1` to toggle, while a Goal runs, whether the model may interrupt it: **Allow model interruption** (the default) or **Block model interruption**. Omit the id for the current Goal. The choice belongs to that Goal, is stored in its session snapshot, survives enable/reload/branch restore, and leaves other Goals and global configuration unchanged. Opening or cancelling the menu does not start, pause, or refill the Goal.
 
-Blocking rejects model `disable`, `delete`, and `update` with an empty or whitespace-only `nextStep`, so the model cannot stop or silently park a Goal. It does not stop the model from reporting progress or completing verified work. It still allows `complete` after verification. User `/goal disable` and `/goal delete` remain available; budget/no-progress limits, real user dialogs, Plan, and failed compaction can still pause safely. The policy only governs Goal tool requests, not operating-system permissions or whether the model's verification is correct.
+Blocking enables autonomous execution: reject model `disable`, `delete`, and blank `nextStep`; direct the model to resolve gaps through inspection, reasonable assumptions, experiments, and alternatives without asking the user or handing work back. Tools listed in `goalNoPauseTools` are hidden while the Goal runs and blocked at execution, including nested calls; the default is `ask_user_question`. Stopping restores only tools this Goal removed. No-progress rounds trigger replanning rather than a pause. Verified `complete` remains available, and explicit user `/goal disable` or `/goal delete`, finite budgets, errors, Plan, and runtime/compaction failures retain their safety controls. This policy cannot expand permissions or prove the model's completion claims.
 
 The model cannot change `modelPause` through the Goal tool. `goal get` exposes it, continuation hints respect it, and rejected stop requests leave Goal state unchanged. `/goal nopause` is a user command, supported by the interactive and RPC selection UI.
 
@@ -227,22 +227,24 @@ Configuration only holds plugin settings and is stored separately from Pi's sess
 
 ### `pi-dag-workflow-config.json`
 
-Optional. These five keys are the complete configuration; anything absent falls back to the value shown. Choose
+Optional. These six keys are the complete configuration; anything absent falls back to the value shown. Choose
 modules with `pi config`, not in this file, and apply changes with `/reload`.
 
 ```json
 {
   "language": "auto",
   "goalMaxTurns": 32,
-  "goalNoProgressLimit": 3,
+  "goalNoProgressLimit": 8,
   "goalErrorRetries": 5,
-  "planTools": []
+  "planTools": [],
+  "goalNoPauseTools": ["ask_user_question"]
 }
 ```
 
 - `language` — `"auto"` (default), `"en"`, or `"zh-CN"`. `auto` selects `zh-CN` when the terminal locale is Chinese and `en` otherwise. Plugin labels, help, notifications, and workflow messages are localized. User-authored content, command names, and structured tool fields stay unchanged.
 - `goalMaxTurns` — default allowance for newly created Goals, 1–200 (default `32`), shared by automatic continuation and child-report wakes.
-- `goalNoProgressLimit` — consecutive rounds without new progress before a Goal pauses, 1–10 (default `3`).
+- `goalNoProgressLimit` — consecutive rounds without recorded work progress before replanning, 1–100 (default `8`). Regular mode pauses if the next replan round is still unproductive; `nopause` keeps working under the finite allowance.
+- `goalNoPauseTools` — tools disabled while a `nopause` Goal is running, up to 16 unique exact names (default `["ask_user_question"]`). Add names of other question tools you use; `[]` disables no tools, while the autonomous prompt and Goal stop guards still apply. The list affects the main session, not child profile tool lists.
 - `goalErrorRetries` — automatic retries after a failed model request while a Goal is running, 0–20 (default `5`). Each failed request earns one retry, queued once Pi's own retry has given up and the run has settled; the counter resets after a successful turn, and `0` pauses on the first error. A retry does not consume the continuation allowance. User input, a stop, a Goal switch, reset, or session navigation cancels a pending retry.
 - `planTools` — machine-wide extra read-only tools for Plan mode, up to 16 unique names (default `[]`). Use it to let planning search the web, for example `["web_search", "fetch_content", "get_search_content", "source_check"]`; the names must match the tools your Pi has installed. Writes, shell commands, and dispatch stay blocked whatever this lists, and `/plan tools name1,name2` adds tools for one session on top.
 

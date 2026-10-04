@@ -14,6 +14,8 @@ test('actual Pi: idle Goal enable after Plan uses fresh Normal/Goal guidance and
   const mode = entries.findLast((entry) => entry.message?.role === 'system' && entry.message.sections?.dag_workflow_mode);
   assert.match(mode.message.sections.dag_workflow_mode, /Normal mode/);
   const goal = entries.findLast((entry) => entry.message?.role === 'system' && entry.message.sections?.dag_workflow_goal);
-  assert.match(goal.message.sections.dag_workflow_goal, /附加验收要求/);
+  assert.match(goal.message.sections.dag_workflow_goal, /verify every requirement/);
+  const checkpoint = entries.find((entry) => entry.customType === 'pi-dag-workflow.goal-checkpoint' && entry.content.includes('"paused":false'));
+  assert.match(checkpoint.content, /附加验收要求/);
   assert.equal(entries.findLast((entry) => entry.customType === 'pi-dag-workflow.goal').data.goals[0].status, 'completed');
 });

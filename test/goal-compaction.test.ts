@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
 import { GOAL_TYPE, type GoalState } from '../src/goal/state.ts';
 import { CHECKPOINT_TYPE } from '../src/todos/checkpoints.ts';
+import { GOAL_CHECKPOINT_TYPE } from '../src/goal/prompt.ts';
 
 const memory = fileURLToPath(new URL('./fixtures/goal-compaction.ts', import.meta.url));
 const latestGoal = (entries: any[]): GoalState => entries.findLast((entry) => entry.type === 'custom' && entry.customType === GOAL_TYPE)?.data;
@@ -33,6 +34,7 @@ async function ended(client: IsolatedClient) {
   assert.ok(entries.some((entry) => entry.type === 'compaction'));
   const calls = (await readFile(join(client.root, 'goal-compaction-context.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as any[]);
   assert.ok(calls.some((messages) => messages.some((message) => message.role === 'compactionSummary' && message.summary.startsWith('MEMORY PROJECTION:')) && messages.some((message) => message.customType === CHECKPOINT_TYPE && message.content.includes('saved open task'))), 'the resumed provider context gets both memory-owned summary projection and the workflow state');
+  assert.ok(calls.some((messages) => messages.some((message) => message.role === 'compactionSummary') && messages.some((message) => message.customType === GOAL_CHECKPOINT_TYPE && message.content.includes('"paused":false') && message.content.includes('full original objective'))), 'compacted provider context receives the authoritative Goal and execution rules even if its system section is absent');
   return entries;
 }
 
@@ -74,6 +76,16 @@ test('real Pi: native overflow recovery wins over fallback continuation and pres
   assert.ok(client.records.some((record) => record.type === 'compaction_start' && record.reason === 'overflow'));
   assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-retry').length, 0, 'Pi recovery finishes before Goal error retries');
   assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-continue').length, 1, 'native retry does not schedule a duplicate Goal wake');
+});
+
+test('real Pi: slow manual compaction completion resumes an active Goal without another settled event', { timeout: 30000 }, async (t) => {
+  const client = await setup(); t.after(() => client.close());
+  await create(client);
+  await client.prompt('/test-compact-slow-race');
+  await client.prompt('/goal enable #1');
+  const entries = await ended(client);
+  assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-continue').length, 1);
+  assert.equal(entries.filter((entry) => entry.type === 'compaction').length, 1);
 });
 
 test('real Pi: rejected continuation then memory compaction resumes once without losing nextStep', { timeout: 30000 }, async (t) => {

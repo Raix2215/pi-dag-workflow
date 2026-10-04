@@ -8,6 +8,7 @@ All notable changes to this project are documented in this file. The format is b
 
 - `/goal nopause [ #id]` opens a user-only menu that toggles, while a Goal runs, whether the model may interrupt it. The per-Goal `modelPause` choice defaults to allow; blocking rejects model disable/delete and blank nextStep, while verified completion, user commands, and safety pauses remain available. The menu neither starts nor pauses work nor resets its allowance.
 - Child inspect/wait results include the current linked `todoStatus`, derived at query time without changing retained Job state.
+- Append-only Goal checkpoints preserve the full original requirements and execution policy after compaction or policy changes. `goalNoPauseTools` configures disabled main-session tools in autonomous mode (default `ask_user_question`), with execution guards covering nested calls.
 
 ### Changed
 
@@ -15,14 +16,19 @@ All notable changes to this project are documented in this file. The format is b
 - Newly ready task hints stay in the Todo tool result; remove the separate UI notification so users do not see the same dependency change twice.
 - An enabled Goal reviews and continues the same objective when the model ends a round without `nextStep` or completes its current Todo list. Only explicit completion/disable and existing safety limits stop it; completed Todos do not imply an achieved Goal.
 - Child questions take priority while preserving a saved independent next step. Substituting a concrete action for the initial Goal placeholder consumes the correct step after actual delivery.
+- Goal guidance prioritizes concrete implementation, experiments, and verification, with brief progress notes and documentation only when required. Model `nextStep` suggestions cannot narrow the original objective or withdraw existing permission.
+- Regular Goal mode defaults to eight no-progress rounds, then one replan attempt before pausing; the configuration range is 1–100. Empty `nextStep` clears the note instead of waiting for the user. `nopause` forbids user questions and model handoffs, and replans without a no-progress pause while respecting user stops and finite budget/error protections.
 
 ### Fixed
 
+- Retain continuation intent when slow compaction-completion handlers keep Pi busy beyond the first idle check; retry admission until the host becomes idle without spending extra wakes.
+- Successful shell work counts as activity, preventing real tests, calculations, and edits from being misclassified as no-progress rounds.
 - Real `subagent_wait` timeouts no longer count as stalled work while the exact waited child still runs. The exemption is local to that round and never bypasses the shared allowance, user pauses, or no-progress checks on actual execution.
 
 ### Tests
 
 - Cover task-acceptance display across list/DAG/locales/themes/widths and real inspect/wait status projection; test the policy menu on an active Goal, cancellation, per-Goal persistence, stale sessions, model mutation rejection, and preserved user/safety controls.
+- Add generic compaction-tail race tests, autonomous question-tool and nested-call guards, tool restoration order, regular replanning, and original-objective/documentation guidance checks.
 - Add generic reproductions of a final answer after all Todos finish without a next step, objective continuation through real Pi in both locales, question priority and placeholder consumption, and repeated child-wait timeouts. Private project histories and task contents are not copied into public fixtures.
 
 ## [0.2.1] - 2026-10-03

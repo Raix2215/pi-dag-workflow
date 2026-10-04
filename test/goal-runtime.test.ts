@@ -1,19 +1,23 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import { registerGoal } from '../src/goal/register.ts';
 import { emptyState, type Todo } from '../src/todos/state.ts';
 import { GOAL_TYPE, type GoalParams } from '../src/goal/state.ts';
+
+const cleanups = new Set<() => Promise<unknown>>();
+afterEach(async () => { await Promise.all([...cleanups].map((cleanup) => cleanup())); cleanups.clear(); });
 
 function host(retryDelayMs = 0) {
   const events = new Map<string, Function[]>();
   const tools = new Map<string, any>(); const commands = new Map<string, any>();
   let workflow = emptyState(); let jobs: any[] = []; let protectedState = false; let idle = false;
-  const entries: any[] = []; const notifications: string[] = []; const wakes: any[] = [];
+  const entries: any[] = []; const notifications: string[] = []; const wakes: any[] = []; const passive: any[] = [];
   let messageSeq = 0;
   const ctx: any = { cwd: '/tmp', mode: 'rpc', hasUI: true, isIdle: () => idle, sessionManager: { getBranch: () => entries }, ui: { notify: (text: string) => notifications.push(text), confirm: async () => true } };
-  const pi: any = { on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); return () => {}; }, registerTool(tool: any) { tools.set(tool.name, tool); }, registerCommand(name: string, cmd: any) { commands.set(name, cmd); }, appendEntry(customType: string, data: any) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any, options: any) { wakes.push({ message, options }); }, sendUserMessage(message: string) { wakes.push({ message, options: { source: 'extension' } }); } };
+  const pi: any = { on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); return () => {}; }, registerTool(tool: any) { tools.set(tool.name, tool); }, registerCommand(name: string, cmd: any) { commands.set(name, cmd); }, appendEntry(customType: string, data: any) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any, options: any) { (options?.triggerTurn === false ? passive : wakes).push({ message, options }); }, sendUserMessage(message: string) { wakes.push({ message, options: { source: 'extension' } }); } };
   const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, retryDelayMs, resumeDelayMs: 0 });
   const fire = async (name: string, event: any = {}) => { let result: any; for (const handler of events.get(name) ?? []) result = await handler(event, ctx) ?? result; return result; };
+  cleanups.add(() => fire('session_shutdown'));
   const call = async (params: GoalParams) => tools.get('goal').execute('test', params, undefined, undefined, ctx);
   const propose = (event: any = {}) => fire('agent_before_settle', { outcome: 'completed', continue: false, entries: [], ...event });
   const startTurn = async (messages: any[] = []) => { await fire('turn_start'); await fire('context', { messages }); };
@@ -27,7 +31,7 @@ function host(retryDelayMs = 0) {
   // A settled run schedules its retry on a timer; drain it before asserting.
   const settled = async () => { await fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 0)); };
   const retries = () => wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-retry').length;
-  return { ctx, controller, fire, call, settle, propose, startTurn, enable, settled, message, retries, entries, notifications, wakes, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, setTasks(tasks: Todo[]) { workflow = { ...workflow, tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 }; }, commands };
+  return { ctx, controller, fire, call, settle, propose, startTurn, enable, settled, message, retries, entries, notifications, wakes, passive, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, setTasks(tasks: Todo[]) { workflow = { ...workflow, tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 }; }, commands };
 }
 
 test('mock host: shared Agent/Goal wakes consume one allowance, never reset on status/input/read', async () => {
@@ -130,17 +134,20 @@ test('mock host: Plan, restore and abort pause persistently; only explicit enabl
   assert.equal(h.controller.snapshot().run.paused, true);
   assert.equal(h.controller.canWake(), false);
 });
-test('mock host: no Todos research checkpoints permit concrete actions; repeated reports stop at three', async () => {
+test('regular Goal tolerates eight no-progress rounds, replans once, then safely pauses', async () => {
   const h = host(); await h.enable();
   await h.call({ action: 'update', progress: '发现 API 边界', nextStep: '阅读 SDK 示例' });
   assert.equal((await h.settle()).continue, true);
-  for (let i = 0; i < 3; i++) {
+  for (let i = 1; i <= 9; i++) {
     await h.call({ action: 'update', progress: '发现 API 边界', nextStep: '阅读 SDK 示例' });
     const result = await h.settle();
-    if (i < 2) assert.equal(result.continue, true); else assert.equal(result, undefined);
+    if (i <= 8) {
+      assert.equal(result.continue, true);
+      if (i === 8) assert.match(result.entries.at(-1).content, /choose a different feasible approach/);
+    } else assert.equal(result, undefined);
   }
   assert.match(h.controller.snapshot().run.reason!, /无新进展/);
-  assert.equal(h.controller.snapshot().run.used, 3);
+  assert.equal(h.controller.snapshot().run.used, 9);
 });
 test('mock host: read-only calls/text do not count as progress; waiting children cause no polling', async () => {
   const h = host(); await h.enable();
@@ -149,8 +156,9 @@ test('mock host: read-only calls/text do not count as progress; waiting children
   assert.equal(h.controller.snapshot().run.used, 0);
   assert.equal(h.controller.snapshot().run.paused, false);
   h.setJobs([]); await h.settle();
-  await h.call({ action: 'update', nextStep: '' }); await h.settle();
-  assert.match(h.controller.snapshot().run.reason!, /等待用户/);
+  await h.call({ action: 'update', nextStep: '' });
+  assert.equal((await h.settle()).continue, true, 'clearing a note does not request a user wait');
+  assert.equal(h.controller.snapshot().run.paused, false);
 });
 test('mock host: failed tools and ordinary reads cannot masquerade as progress', async () => {
   const h = host(); await h.enable();
@@ -180,7 +188,7 @@ test('mock host: explicit idle enable reserves and starts once; unknown extra ar
   await h.commands.get('goal').handler('enable', h.ctx);
   assert.equal(h.wakes.length, 1);
   assert.equal(h.controller.snapshot().run.used, 1);
-  assert.match(h.wakes[0].message, /Goal #1.*不是用户新授权/);
+  assert.match(h.wakes[0].message, /Goal #1[\s\S]*不是用户新授权/);
 });
 
 test('the last paid wake still receives its independent error retries before the allowance pause', async () => {
@@ -356,6 +364,43 @@ test('successful compaction reissues an unstarted step once with its original bu
   await h.fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(h.wakes.filter((wake) => wake.message.content?.includes('resume exact step')).length, 1, 'the consumed action must not be replayed');
   assert.match(h.wakes[1].message.content, /Goal #1.*goal get/, 'a subsequent settled round can reassess the still-active objective');
+  await h.fire('session_shutdown');
+});
+
+test('manual compaction resumes after slow completion handlers release host idle, without another settled event', async () => {
+  const h = host(); await h.enable(3);
+  await h.call({ action: 'update', nextStep: 'resume after slow compaction tail' });
+  await h.fire('session_before_compact', { reason: 'manual', willRetry: false });
+  await h.fire('session_compact', { reason: 'manual', willRetry: false });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(h.wakes.length, 0, 'session_compact fires before the host becomes idle');
+  h.setIdle(true);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  try {
+    assert.equal(h.wakes.length, 1, 'a missed idle check must retain and retry the wake intent');
+    assert.match(h.wakes[0].message.content, /resume after slow compaction tail/);
+    assert.equal(h.controller.snapshot().run.used, 1);
+  } finally { await h.fire('session_shutdown'); }
+});
+
+test('user disable during a slow compaction completion cancels the deferred wake and restores no execution', async () => {
+  const h = host(); await h.enable(3);
+  await h.fire('session_before_compact', { reason: 'manual', willRetry: false });
+  await h.fire('session_compact', { reason: 'manual', willRetry: false });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await h.commands.get('goal').handler('disable', h.ctx);
+  h.setIdle(true);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(h.wakes.length, 0);
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.equal(h.controller.snapshot().run.used, 0);
+});
+
+test('successful shell work prevents a false no-progress pause when no Todo or progress text changes', async () => {
+  const h = host(); await h.enable(6); await h.settle();
+  await h.fire('tool_execution_end', { toolName: 'bash', isError: false });
+  await h.propose();
+  assert.equal(h.controller.snapshot().run.stalled, 0, 'shell tests and edits are actual work, not a text-only turn');
   await h.fire('session_shutdown');
 });
 

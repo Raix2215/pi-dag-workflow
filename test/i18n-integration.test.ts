@@ -97,11 +97,13 @@ test("actual Pi English independent Goal: continuation, untranslated description
     .map((entry) => String(entry.content));
   assert.equal(continuations.length, 2);
   assert.match(continuations[1]!, /Review Goal #1.*goal get/);
-  assert.ok(!hasHan(continuations[1]!));
-  assert.match(continuations[0]!, /^Goal #1 1\/2: Advance goal: 预算目标\./);
-  assert.match(continuations[0]!, /Requirements: 完整描述不要翻译; full requirements via goal get\./);
+  assert.ok(!hasHan(continuations[1]!.replaceAll('预算目标', '')));
+  assert.match(continuations[0]!, /^Goal #1 1\/2: 预算目标\./);
+  const checkpoint = (entries as any[]).find((entry) => entry.customType === 'pi-dag-workflow.goal-checkpoint' && entry.content.includes('"paused":false'));
+  assert.match(checkpoint.content, /完整描述不要翻译/);
+  assert.ok(!hasHan(checkpoint.content.replaceAll('预算目标', '').replaceAll('完整描述不要翻译', '')));
   assert.match(continuations[0]!, /This is a workflow continuation, not new user authorization\./);
-  assert.ok(!hasHan(continuations[0]!.replace("预算目标", "").replace("完整描述不要翻译", "")), continuations[0]!);
+  assert.ok(!hasHan(continuations[0]!.replaceAll("预算目标", "").replaceAll("完整描述不要翻译", "")), continuations[0]!);
 
   const state = goalState(entries)!;
   assert.equal(state.run.paused, true);

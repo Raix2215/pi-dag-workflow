@@ -32,7 +32,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
           const relevant = context.messages.filter((item) => {
             if (item.role !== 'user') return true;
             const text = typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
-            return !text.startsWith('Workflow state checkpoint');
+            return !text.startsWith('Workflow state checkpoint') && !text.startsWith('Goal state checkpoint');
           });
           const last = relevant.at(-1);
           const latestUser = relevant.findLast((item) => item.role === "user");

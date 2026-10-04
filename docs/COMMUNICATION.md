@@ -11,6 +11,7 @@ This reference distinguishes execution, report delivery, and model consumption. 
 | Parent `subagent_spawn` | Job ID and startup state, with linked Todo ID/current status when bound | Ordinary result of the current tool call |
 | Todo completion | Newly ready task hints appended to the same Todo tool result | Following request; no duplicate UI notification |
 | Workflow checkpoint | Key task/Job state after compaction, restore, or command changes | Passive append before a normal request or safe boundary; no independent wake |
+| Goal checkpoint | Full original requirements, running/paused state, and execution policy after compaction or a Goal-policy change | Passive append; automatic wakes also carry the execution rules, without rewriting prior messages |
 | Parent `subagent_inspect` | Job execution summaries, linked `todoStatus`, and profiles, not full output | Ordinary result of the current tool call |
 | Parent `subagent_wait` | Full retained output, execution status, linked `todoStatus`, usage, and pending questions | Ordinary result of the current tool call |
 | Parent `subagent_send` | Delivery confirmation; the instruction or answer goes to the child | Confirmation is the current tool result; later child replies use the report channel |
@@ -75,4 +76,4 @@ Children are prompted to give task-appropriate conclusions, changes, verificatio
 
 Agent-state `appendEntry` snapshots are session data, not model messages. Live thinking/tool/output activity is UI-only and never enters model context. Tool duration keeps refreshing beyond 99 seconds; finishing a tool or shutting down the session stops its clock timer.
 
-See [workflow checkpoints](CHECKPOINTS.md) for append timing, memory filters, immutable request prefixes, and budget confirmation after compaction. A per-Goal user pause policy blocks model stop requests only; it never disables safe report suppression after a real user stop or budget pause.
+Workflow and Goal checkpoints append at safe boundaries without changing memory-owned summaries or earlier messages. A per-Goal `nopause` policy rejects model stopping and disables configured question tools; child questions are answered autonomously by the parent. No-progress rounds trigger replanning in this mode. Real user stops, finite budgets, Plan, and runtime/compaction failures retain their safety controls and report suppression.
