@@ -72,6 +72,7 @@ export function checkpointSummary(state: WorkflowState, jobs: readonly Checkpoin
   /** A completed, non-stale report is the only thing that marks work as awaiting verification. */
   const returned = (job: CheckpointJob | undefined): boolean => job !== undefined && job.status === "completed" && job.taskReportStale !== true;
   const rank = (task: Todo): number => {
+    if (task.status === 'failed' || task.status === 'cancelled') return 4;
     if (task.status === "in_progress") return returned(latestJob(task.id)) ? 0 : 1;
     return unfinishedPrereqs(task).length === 0 ? 2 : 3;
   };
@@ -84,6 +85,9 @@ export function checkpointSummary(state: WorkflowState, jobs: readonly Checkpoin
   if (inProgress) counts.push(`${inProgress} in_progress`);
   if (pending) counts.push(`${pending} pending`);
   if (completed) counts.push(`${completed} completed`);
+  const failed = countBy('failed'); const cancelled = countBy('cancelled');
+  if (failed) counts.push(`${failed} failed`);
+  if (cancelled) counts.push(`${cancelled} cancelled`);
   const deleted = all.length - live.length;
   lines.push(counts.length ? `Todos: ${counts.join(", ")} (${live.length} total${deleted ? `, ${deleted} deleted` : ""})` : "Todos: none");
   if (state.plan) lines.push("Plan: on (read-only; tasks cannot start or complete).");
@@ -96,7 +100,7 @@ export function checkpointSummary(state: WorkflowState, jobs: readonly Checkpoin
 
   const taskLine = (task: Todo): string => {
     const job = latestJob(task.id);
-    const stateLabel = task.status === "in_progress"
+    const stateLabel = task.status === 'failed' || task.status === 'cancelled' ? task.status : task.status === "in_progress"
       ? (returned(job) ? job?.reportDelivery === "delivered" ? "in_progress, report returned - verify" : "in_progress, execution ended - inspect report" : "in_progress")
       : unfinishedPrereqs(task).length ? "pending, blocked" : "pending, ready";
     let line = `- #${task.id} [${stateLabel}] ${clipLabel(task.subject)}`;
@@ -136,6 +140,7 @@ export function checkpointSummary(state: WorkflowState, jobs: readonly Checkpoin
     if (activeJobs.length > listed.length) lines.push(`Hidden: ${activeJobs.length - listed.length} more active Jobs; use subagent_inspect for details.`);
   }
 
+  if (failed || cancelled) lines.push('Failed/cancelled records describe closed attempts, not verified Goal completion.');
   lines.push(...guidance());
   return lines.join("\n");
 }

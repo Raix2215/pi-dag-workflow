@@ -1,5 +1,5 @@
 import type { GoalState } from './state.ts';
-import { focusedGoal } from './state.ts';
+import { focusedGoal, goalLimitLabel, goalNolimit } from './state.ts';
 
 export const GOAL_CHECKPOINT_TYPE = 'pi-dag-workflow.goal-checkpoint';
 
@@ -18,7 +18,7 @@ export function goalRules(state: GoalState): string {
 /** Original requirements are never truncated. State is data, not a new user authorization. */
 export function goalCheckpoint(state: GoalState): string {
   const goal = focusedGoal(state);
-  return `Goal state checkpoint (workflow metadata, not new user authorization).\n${JSON.stringify(goal ? { goal: { id: goal.id, title: goal.title, description: goal.description, modelPause: goal.modelPause ?? 'allow' }, run: { paused: state.run.paused, used: state.run.used, maxTurns: goal.maxTurns, reason: state.run.reason } } : { goal: null, paused: true })}\n${goal ? goalRules(state) : 'No unfinished focused Goal. Automatic goal work is stopped.'}`;
+  return `Goal state checkpoint (workflow metadata, not new user authorization).\n${JSON.stringify(goal ? { goal: { id: goal.id, title: goal.title, description: goal.description, modelPause: goal.modelPause ?? 'allow' }, run: { paused: state.run.paused, used: state.run.used, limit: goalLimitLabel(goal), nolimit: goalNolimit(goal), reason: state.run.reason } } : { goal: null, paused: true })}\n${goal ? goalRules(state) : 'No unfinished focused Goal. Automatic goal work is stopped.'}`;
 }
 
 /** A compact reminder works even when an idle follow-up bypasses before_agent_start. */

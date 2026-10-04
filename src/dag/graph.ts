@@ -1,7 +1,7 @@
 /** Minimal input shared by Todo validation and the two derived task views. */
 export interface DependencyTask {
   readonly id: number;
-  readonly status: "pending" | "in_progress" | "completed" | "deleted";
+  readonly status: "pending" | "in_progress" | "completed" | "failed" | "cancelled" | "deleted";
   readonly blockedBy?: readonly number[];
 }
 

@@ -78,6 +78,16 @@ test("pure notices: drop removes all reports for one job, filter removes obsolet
   assert.equal(notices.drain(line), undefined);
 });
 
+test('pure notices: consuming an older report version never discards a newer report or question', () => {
+  const notices = new AgentNotices();
+  notices.add({ jobId: 'a1', kind: 'message', message: 'old', version: 1 });
+  notices.add({ jobId: 'a1', kind: 'message', message: 'new', version: 2 });
+  notices.add({ jobId: 'a1', kind: 'question', message: 'new question', requestId: 'q2', version: 2 });
+  notices.drop('a1', 1);
+  const delivered = notices.drain((item) => item.message)!;
+  assert.match(delivered, /new/); assert.match(delivered, /new question/); assert.doesNotMatch(delivered, /old/);
+});
+
 test("pure notices: a merged batch keeps every character beyond the old 16000 budget", () => {
   const notices = new AgentNotices();
   for (let i = 0; i < 32; i++) notices.add({ jobId: `a${i}`, kind: "completed", message: "x".repeat(50000) });

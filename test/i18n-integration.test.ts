@@ -156,5 +156,5 @@ test("actual Pi explicit config language overrides the English environment after
   const chinese = (await client.send("get_commands")).data as { commands: { name: string; description: string }[] };
   assert.equal(chinese.commands.find((command) => command.name === "todos")!.description, "当前 Todos：查看、编辑与视图切换；也可直接描述需求");
   const help = notifications(await client.prompt("/todos help"));
-  assert.ok(help.some((message) => message.includes("查看实线图")), help.join(" | "));
+  assert.ok(help.some((message) => message.includes("查看完整图")), help.join(" | "));
 });

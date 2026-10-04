@@ -13,6 +13,8 @@ export interface CompletionSpec {
   tokens?: (action: string) => readonly CompletionToken[] | null;
   /** Actions whose next argument is free text: never replace what the user typed. */
   freeText?: readonly string[];
+  /** Explicit deeper argument positions, e.g. view list -> a status filter. */
+  arguments?: (tokens: readonly string[], trailing: boolean) => readonly CompletionToken[] | null;
 }
 
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
@@ -96,6 +98,11 @@ export function completeArguments(text: string, spec: CompletionSpec): Autocompl
 
   // The user is still typing the action name (or nothing yet).
   if (tokens.length === 0) return completeRoot(spec, '');
+  const deeper = spec.arguments?.(tokens, trailing);
+  if (deeper?.length) {
+    const items = deeper.map((item) => makeItem(item.token, item.label ?? item.token, item.description)).filter((item): item is AutocompleteItem => item !== undefined);
+    return suppressCompleted(items.length ? items : null, trimmed);
+  }
   const candidates = tokens.length === 1
     ? (trailing ? completeSecond(spec, free, tokens[0]!, '') : completeRoot(spec, tokens[0]!))
     // Only the second argument position has candidates; anything later is free text.

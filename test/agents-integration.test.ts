@@ -34,7 +34,10 @@ test("actual Pi delegates an unblocked Todo, shows real waiting/profile state, g
   const requestId = result.details.requests[0].requestId;
   assert.match(widgets(client), /a1 · research/); assert.match(widgets(client), /等待回复/);
   const inspect = await call(client, "subagent_inspect", {});
-  assert.doesNotMatch(JSON.stringify(inspect.details.jobs), /请选择方向|output|requests\"/);
+  assert.doesNotMatch(JSON.stringify(inspect.details.jobs), /\"output\"|\"requests\"/);
+  assert.equal(inspect.details.jobs[0].questions[0].message, '请选择方向');
+  assert.equal(inspect.details.jobs[0].questions[0].requestId, requestId);
+  assert.equal(inspect.details.jobs[0].phase, 'waiting');
   assert.equal(inspect.details.profiles[0].name, "research");
   await client.prompt("/plan start");
   assert.equal(state(await client.entries()).plan, false);

@@ -13,7 +13,7 @@ A visible, session-scoped workflow for [Pi](https://pi.dev): one Todo list with 
 - **One task list, one derived DAG.** Todos carry prerequisites through `blockedBy`. Unfinished prerequisites block starting and completing downstream work, and `/dag` draws the real graph from that same list. There is no second queue or database.
 - **Plan before you build.** Plan is a read-only mode for reading, searching, asking, and rearranging Todos; read-only network tools can be enabled through `planTools`. Implementation, shell commands, and dispatch are blocked until you leave it.
 - **Real child jobs.** Run up to eight Pi subprocesses. Give each one a task, an optional Todo link, and an optional named profile; send direction, answer questions, wait, cancel, or remove records. A finished child stays **Pending delivery** until its report reaches the main conversation. A linked unfinished Todo then shows **Pending verification**, and changes to **Completed** only after acceptance. Returned work never completes a Todo by itself.
-- **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance. Regular mode replans after eight consecutive rounds without recorded work progress and pauses if another round is still unproductive; `nopause` keeps trying within the allowance. Failed model requests retry automatically (5 attempts by default). User stops, restore, Plan, exhausted budgets, and compaction failures remain safety stops.
+- **Bounded goals.** Focus one Goal. Automatic continuation and child-report wakes share a default 32-wake allowance. Regular mode replans after eight consecutive rounds without recorded work progress and pauses if another round is still unproductive; `nopause` keeps trying within the allowance. Failed model requests retry automatically (5 attempts by default). A per-Goal `/goal nolimit` menu can remove the continuation-turn cap without resetting usage. User stops, restore, Plan, exhausted finite budgets, and compaction failures remain safety stops.
 - **Readable progress.** A Nerd Font panel shows the task tree, a solid-line DAG, and live thinking/tool/output activity. Tool elapsed time keeps updating beyond 99 seconds, using compact seconds/minutes/hours. Interface activity is not written into model context or persistent workflow state.
 - **State survives context loss.** Append-only checkpoints restore key Todo/Job state and the original Goal requirements and execution policy after compaction, reload, or branch navigation. Commands coalesce changes, and normal tool results carry their own notifications. Checkpoints never wake the model or replace memory-plugin summaries.
 - **Session-scoped persistence.** Todo, Goal, budget, and job snapshots follow the active Pi branch. Restoring a session never resurrects child processes and never resumes autonomous work on its own.
@@ -122,13 +122,15 @@ never exposes it.
 
 | Tool | Purpose |
 |---|---|
-| `todo` | create/update/list/get/delete/clear; create status `pending` (default) or `in_progress`; apply/reset for fragments; numeric IDs and `blockedBy` prerequisites |
+| `todo` | create/update/list/get/delete/clear; update can record failed/cancelled attempts; clear scopes completed/closed/all; apply/reset for fragments; numeric IDs and `blockedBy` prerequisites |
 | `goal` | create/update/list/get/delete; enable; disable; complete — one spelling per operation |
 | `subagent_spawn` | start one child with `task` and optional `todoId`/`profile`/`tools`/`timeout`/`context` |
-| `subagent_send` | message a `recipient` job ID, or answer a `requestId` |
-| `subagent_wait` | result or question with linked `todoStatus`; a timeout or abort stops the wait, not the child |
-| `subagent_inspect` | execution summaries, linked `todoStatus`, and profiles, not full child conversations |
+| `subagent_send` | direct a `recipient`, optionally `interrupt: true` to redirect the same child; or answer a `requestId` |
+| `subagent_wait` | `timeout: 0` snapshot; `until: update` (default 5s) or `finish` (default 30s), optional `after` reportVersion; timeout/abort only stops waiting |
+| `subagent_inspect` | activity/tools, elapsed time, queued directions, question IDs, reportVersion and todoStatus; brief profiles by default, `profiles: true` for full instructions |
 | `subagent_cancel` | stop a child; optional `remove` discards its record, not project edits |
+
+Failed and cancelled Todo attempts can return to pending/in-progress for an explicit retry. They never satisfy a prerequisite. A child's failed/cancelled result can place an unfinished Todo in that view filter without accepting the task.
 
 Creating a Todo with `status: "pending"` is accepted, and `status: "in_progress"` starts it only when its prerequisites are complete and Plan is off. Creating a task directly as `completed` or `deleted` is rejected; use `update` after verifying work or `delete` to remove it.
 
@@ -136,16 +138,22 @@ Creating a Todo with `status: "pending"` is accepted, and `status: "in_progress"
 
 | Command | Examples |
 |---|---|
-| `/todos` | `add Title --after 1,2`, `start #2`, `done #2`, `pending #2`, `edit #2 New title`, `delete #2`, `clear` |
-| Task display | `/todos paths`, `/todos flat`, `show`, `hide`, `view list`, `view dag` |
-| `/dag` | solid-line graph; ↑/↓, PgUp/PgDn, Home/End; Esc returns |
+| `/todos` | `add Title --after 1,2`, `start #2`, `done #2`, `pending #2`, `failed #2`, `cancelled #2`, `edit #2 New title`, `delete #2`, `clear [completed/closed/all]` |
+| Task display | `/todos paths`, `/todos flat`, `show`, `hide`, `view list/dag [full/pending/completed/failed/cancelled]` |
+| Full views | `/todos list [filter]`, `/dag [filter]`; no row truncation; ↑/↓, PgUp/PgDn, Home/End; Esc returns |
 | `/plan` | `start`, `off`, `status`, `tools name1,name2` to trust extra read-only tools; `tools none` clears |
-| `/goal` | `new Title`, `list`, `enable [ #1]`, `disable [ #1]`, `edit #1 Title`, `complete #1`, `delete #1`, `get #1`, `nopause [ #1]`, `config`, `reset` |
-| `/agents` | `wait a1`, `send a1 Message`, `reply requestId Answer`, `cancel a1`, `remove a1`, `pause`, `resume` |
+| `/goal` | `new Title`, `list`, `enable [ #1]`, `disable [ #1]`, `edit #1 Title`, `complete #1`, `delete #1`, `get #1`, `nopause [ #1]`, `nolimit [ #1]`, `config`, `reset` |
+| `/agents` | `wait a1`, `send a1 [--interrupt] Message`, `reply requestId Answer`, `cancel a1`, `remove a1`, `pause`, `resume` |
 | Profiles | `/agents profiles`, `profile name provider/model [thinking] [comma-tools]`, `unprofile name` |
 | Task fragments | `/todos presets`, `apply name [key=value …]`, `reset name [step]` |
 
 Each command family supports `help`; help does not call a model or change modes. Natural-language requests also drive the registered tools.
+
+### Filters and record cleanup
+
+`full` means all Todo statuses, not unlimited preview rows. `pending` includes pending/in-progress and work awaiting acceptance; `completed` requires Todo acceptance; `failed` and `cancelled` also use the newest non-stale child outcome. Cancelled includes interrupted children. The panel keeps 8 Todo rows, 4 Standalone rows, and an 11-line graph preview. Full windows apply the same filter without row truncation. DAG views include the same Standalone section; hidden prerequisites stay visible as ID references. In `full`, delivered successful Standalone jobs stay hidden; `completed` explicitly shows that history.
+
+`/todos clear` opens a user menu. `completed` clears accepted completion history; `closed` also clears failed/cancelled/interrupted and deleted records; `all` clears all eligible records. The `todo` tool uses the same `scope`. Active work, pending delivery/verification and required dependency anchors remain. Clearing never stops a child, edits project files, changes the Goal, or rewrites Pi conversation history. Task and Job IDs are not reused after cleanup, including reloads.
 
 ### Goal lifecycle
 
@@ -157,6 +165,10 @@ Successful compaction preserves the active Goal and remaining allowance; Pi's ow
 
 Use `complete` only after verifying every original requirement. In regular mode, try safe alternatives and continue independent work before asking about a verified external blocker. An empty `nextStep` clears the working note and continues the original objective; notes cannot narrow the goal or withdraw existing permission. Successful shell work counts as activity, while repeated status reports and unexecuted plans do not. The default no-progress threshold is eight rounds, followed by one replan attempt before a safety pause. Reviews spend the remaining allowance and cannot create new authorization.
 
+### `nolimit` control
+
+`/goal nolimit [ #id]` switches between the saved finite allowance and unlimited continuation turns. Omit the id for the current Goal. It is user-only, per-Goal, and passive: no start/pause, allowance refill, or reset of the used counter. Switching back to finite applies at the next normal admission; if usage already exceeds the saved limit, continuation stops there. Error recovery, user stops, Plan, restore, compaction failures, and regular-mode no-progress protections still apply.
+
 ### `nopause` control
 
 Run `/goal nopause #1` to toggle, while a Goal runs, whether the model may interrupt it: **Allow model interruption** (the default) or **Block model interruption**. Omit the id for the current Goal. The choice belongs to that Goal, is stored in its session snapshot, survives enable/reload/branch restore, and leaves other Goals and global configuration unchanged. Opening or cancelling the menu does not start, pause, or refill the Goal.
@@ -166,6 +178,12 @@ Blocking enables autonomous execution: reject model `disable`, `delete`, and bla
 The model cannot change `modelPause` through the Goal tool. `goal get` exposes it, continuation hints respect it, and rejected stop requests leave Goal state unchanged. `/goal nopause` is a user command, supported by the interactive and RPC selection UI.
 
 Every operation has exactly one spelling. An unrecognized first word is treated as natural language and forwarded to the model, the same as any other free-form request.
+
+### Observing and redirecting children
+
+Use `subagent_inspect` for current activity, pending questions and reportVersion without blocking. Profiles are brief by default; a selected Job omits them. `profiles: true` includes full instructions when needed. `subagent_wait` returns a full output snapshot with a reason: snapshot, update, question, finished, or timeout. Default update waits for the next report/question/end for up to 5 seconds; `after` selects a known reportVersion. Finish waits default to 30 seconds, capped at 300, and still return questions early. Do independent work rather than repeatedly polling.
+
+Normal `subagent_send` direction is queued at a safe boundary and does not interrupt a current tool. `interrupt: true` aborts the current local turn, clears obsolete queued directions/questions, and submits the new direction in the same child context. Delivery reports accepted/queued/answered; it is not proof the model obeyed. Already-triggered remote actions may continue: inspect their authoritative state before starting overlapping work. Use `subagent_cancel` to end the process entirely; finished jobs need a new spawn.
 
 ## Modules
 
@@ -211,7 +229,7 @@ Checkpoints list at most 12 unfinished tasks and 8 active jobs, without replayin
 ### Continuing a session that used rpiv-todo
 
 rpiv-todo stores its list in the `details` of its `todo` tool results, and this plugin writes the same shape:
-`tasks`, `nextId`, and the same task fields and status names. Each side therefore reads the other's list.
+`tasks`, `nextId`, and common task fields/statuses. Lists using pending/in_progress/completed/deleted remain readable in either direction; other plugins may not recognize the failed/cancelled attempt states added here.
 
 When this plugin finds no snapshot of its own on the active branch, it replays the last `todo` result from the
 branch and continues with the same ids, subjects, statuses, owners and `blockedBy` dependencies instead of

@@ -13,7 +13,7 @@
 - **一份任务清单，一张派生 DAG**：Todo 通过 `blockedBy` 携带前驱。前置未完成时，下游不能开始或完成；`/dag` 从同一份清单绘制真实依赖图，没有第二份队列或数据库。
 - **先规划再实施**：Plan 是只读模式，用于阅读、搜索、提问和整理 Todo；只读网络工具可通过 `planTools` 启用。实施、shell 命令和派发在退出 Plan 前都会被拦截。
 - **真实子进程**：最多运行八个 Pi 子进程。每个可带任务、可选的 Todo 关联和具名 Profile；支持发消息、回答提问、等待、取消或移除记录。执行结束后先显示“待交付”；报告交付后，关联的未完成 Todo 显示“待核验”，验收后才变为“已完成”。返回结果不会自动完成 Todo。
-- **有界目标**：一次聚焦一个 Goal。自动续跑与子报告唤醒共享默认 32 次额度。常规模式连续八轮未记录到工作进展时先重新规划，再一轮仍无进展才暂停；`nopause` 在额度内继续尝试。模型请求失败先自动重试（默认 5 次）。用户停止、会话恢复、Plan、预算耗尽与压缩失败仍保留安全停止。
+- **有界目标**：一次聚焦一个 Goal。自动续跑与子报告唤醒共享默认 32 次额度。常规模式连续八轮未记录到工作进展时先重新规划，再一轮仍无进展才暂停；`nopause` 在额度内继续尝试。模型请求失败先自动重试（默认 5 次）。可用每个 Goal 的 `/goal nolimit` 菜单取消续跑轮数上限，不重置已用次数。用户停止、会话恢复、Plan、有限额度耗尽与压缩失败仍保留安全停止。
 - **可读进度**：Nerd Font 面板展示任务树、实线 DAG 和真实的思考／工具／输出活动。工具执行超过 99 秒后仍持续刷新，以紧凑的秒／分／时显示。界面活动不会写入模型上下文或持久化的工作流状态。
 - **压缩后保留状态**：压缩、重载或分支导航后，通过尾部追加的检查点补充关键 Todo／Job 状态，以及原始 Goal 要求和执行策略；命令修改会合并，普通工具结果自行承载提醒。检查点不唤醒模型，也不替换记忆插件的摘要。
 - **会话内持久化**：Todo、Goal、预算和 Job 快照跟随 Pi 活动分支。恢复会话不会复活子进程，也不会自行重启自动工作。
@@ -99,13 +99,15 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 
 | 工具 | 用途 |
 |---|---|
-| `todo` | create/update/list/get/delete/clear；创建状态 pending（默认）或 in_progress；片段 apply/reset；数字编号与 `blockedBy` 前驱 |
+| `todo` | create/update/list/get/delete/clear；update 可记录 failed/cancelled；clear 范围 completed/closed/all；片段 apply/reset；数字编号与 `blockedBy` 前驱 |
 | `goal` | create/update/list/get/delete；enable；disable；complete，每个操作一个名称 |
 | `subagent_spawn` | 启动一个子进程，字段为 `task` 及可选 `todoId`/`profile`/`tools`/`timeout`/`context` |
-| `subagent_send` | 给 `recipient` 编号发消息，或回答 `requestId` |
-| `subagent_wait` | 结果或提问及关联 `todoStatus`；超时、取消等待不会停止子进程 |
-| `subagent_inspect` | 执行摘要、关联 `todoStatus` 与 Profile，不回传完整子对话 |
+| `subagent_send` | 给 recipient 发方向，可选 interrupt:true 在同一子会话调整；或回答 requestId |
+| `subagent_wait` | timeout:0 立即快照；until:update（默认5秒）／finish（默认30秒），可带 after 报告版本；超时／取消只影响等待 |
+| `subagent_inspect` | 当前工具／活动、时长、排队方向、问题ID、报告版本和todoStatus；默认简要Profile，profiles:true含完整指令 |
 | `subagent_cancel` | 停止子进程；可选 `remove` 移除记录，不撤销项目修改 |
+
+failed／cancelled 表示已结束的尝试，可显式回到 pending／in_progress 重试；它们不能满足前置依赖。子任务的失败／取消结果可让未完成 Todo 进入对应视图分组，但不代表 Todo 已验收。
 
 创建时填写 `status: "pending"` 会正常接受；填写 `status: "in_progress"` 仅在前置已完成且 Plan 已关闭时开始任务。创建为 `completed` 或 `deleted` 会明确拒绝：核验完成后用 `update`，移除任务用 `delete`。
 
@@ -113,16 +115,22 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 
 | 命令 | 示例 |
 |---|---|
-| `/todos` | `add 标题 --after 1,2`、`start #2`、`done #2`、`pending #2`、`edit #2 新标题`、`delete #2`、`clear` |
-| 任务展示 | `/todos paths`、`/todos flat`、`show`、`hide`、`view list`、`view dag` |
-| `/dag` | 实线依赖图；↑/↓、PgUp/PgDn、Home/End；Esc 返回 |
+| `/todos` | `add 标题 --after 1,2`、`start #2`、`done #2`、`pending #2`、`failed #2`、`cancelled #2`、`edit #2 新标题`、`delete #2`、`clear [completed/closed/all]` |
+| 任务展示 | `/todos paths`、`/todos flat`、`show`、`hide`、`view list/dag [full/pending/completed/failed/cancelled]` |
+| 完整查看 | `/todos list [筛选]`、`/dag [筛选]`，不截断行数；↑/↓、PgUp/PgDn、Home/End；Esc 返回 |
 | `/plan` | `start`、`off`、`status`；`tools 名称1,名称2` 明确信任额外只读工具，`tools none` 清空 |
-| `/goal` | `new 标题`、`list`、`enable [ #1]`、`disable [ #1]`、`edit #1 标题`、`complete #1`、`delete #1`、`get #1`、`nopause [ #1]`、`config`、`reset` |
-| `/agents` | `wait a1`、`send a1 消息`、`reply requestId 回答`、`cancel a1`、`remove a1`、`pause`、`resume` |
+| `/goal` | `new 标题`、`list`、`enable [ #1]`、`disable [ #1]`、`edit #1 标题`、`complete #1`、`delete #1`、`get #1`、`nopause [ #1]`、`nolimit [ #1]`、`config`、`reset` |
+| `/agents` | `wait a1`、`send a1 [--interrupt] 消息`、`reply requestId 回答`、`cancel a1`、`remove a1`、`pause`、`resume` |
 | 任务片段 | `/todos presets`、`apply 名称 [键=值 …]`、`reset 名称 [步骤键]` |
 | Profile | `/agents profiles`、`profile 名称 provider/model [thinking] [工具逗号列表]`、`unprofile 名称` |
 
 各命令组都支持 `help`；查看帮助不调用模型，也不切换模式。自然语言也能驱动已注册的工具。
+
+### 筛选与记录清理
+
+`full` 表示全部 Todo 状态，不是取消预览行数限制；`pending` 含待执行、进行中和待验收；`completed` 要求 Todo 已验收；`failed`／`cancelled` 也参考最新非历史子结果，后者含中断。面板保持8行Todo、4行Standalone与11行图形预览。完整窗口应用相同筛选、不截断行数。DAG复用Standalone块，隐藏的前置用编号引用保留。full沿用成功返回后自动隐藏的规则，completed可显式查看这类Standalone历史。
+
+`/todos clear` 打开用户菜单：completed清理已完成记录；closed再包含失败、取消／中断和已删除记录；all清空全部可清理记录。todo工具使用相同scope。运行中、待交付／待核验和必要依赖锚点保留。清理不停止子进程、不改项目文件和Goal，也不重写Pi对话历史；任务和Job编号在清理及重载后不复用。
 
 ### Goal 生命周期
 
@@ -134,6 +142,10 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 
 原始要求全部核验达成后才用 `complete`。常规模式先尝试安全替代路径并继续独立工作，仅真实外部阻塞时询问用户。空 `nextStep` 只清除工作建议，仍继续原始目标；建议不能缩小目标或撤销已有授权。成功的 shell 工作计为活动，重复汇报和未执行的计划不算进展。默认八轮无进展后先重新规划，再一轮仍无进展才安全暂停。目标检查消耗剩余额度，不能取得新的授权。
 
+### `nolimit` 轮数限制控制
+
+`/goal nolimit [ #编号]` 在原有限额度与不限续跑轮数之间切换，省略编号作用于当前Goal。此设置用户专属、按Goal保存；菜单不启动／暂停、不补充额度、不清已用计数。切回有限时在下一次正常准入生效，若已用次数超过原上限，就在该边界停止。错误重试、用户停止、Plan、会话恢复、压缩失败和常规模式的无进展保护仍有效。
+
 ### `nopause` 模型中断控制
 
 使用 `/goal nopause #1`，在 Goal 运行中切换是否允许模型自行中断：**允许模型中断**（默认）或**禁止模型中断**；省略编号时作用于当前 Goal。策略属于这个 Goal，随会话快照保存，启用、重载或分支恢复后保留，不改变其他 Goal 或全局配置。打开或取消菜单不会启动、暂停目标，也不重置预算。
@@ -143,6 +155,12 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 模型无法通过 Goal 工具修改 `modelPause`。`goal get` 会显示策略，续跑提示按策略给出指导，被拒绝的停用请求不改变 Goal 状态。`/goal nopause` 是用户命令，支持交互终端与 RPC 选择菜单。
 
 每个操作只有一个写法；首个词不属于命令动作时按自然语言处理，与其他自由描述走同一条路径。
+
+### 观察与调整子 Agent
+
+subagent_inspect可不等待地查看活动、待答问题和reportVersion。默认Profile简要，指定Job时不附Profile；profiles:true按需返回完整指令。subagent_wait返回完整输出和原因snapshot／update／question／finished／timeout。默认update等下一次报告、问题或结束，最多5秒；after使用已有reportVersion。finish默认30秒、上限300秒，提问仍提前返回。主模型应继续独立工作，避免重复轮询。
+
+普通subagent_send在安全边界消费，不中断当前工具；interrupt:true先中止本地当前回合，清除过期方向／问题，再在同一子上下文发送新方向。delivery为accepted／queued／answered，不代表模型已执行。已触发的远端动作仍可能继续，开始重叠工作前需核对真实外部状态。subagent_cancel彻底终止进程；已结束的Job需重新派发。
 
 ## 模块选择
 
@@ -184,7 +202,7 @@ Pi 会从该 GitHub 仓库安装插件；目前没有 npm 包。安装后重启 
 
 ### 接手使用过 rpiv-todo 的会话
 
-rpiv-todo 把任务清单保存在 `todo` 工具结果的 `details` 里，本插件写入相同结构：`tasks`、`nextId`，以及相同的任务字段与状态名。因此两边都能读对方的清单。
+rpiv-todo 把任务清单保存在 `todo` 工具结果的 `details` 里，本插件写入相同结构：`tasks`、`nextId`，以及共用的任务字段与状态。使用 pending／in_progress／completed／deleted 的清单仍双向可读；其他插件不一定识别本插件新增的 failed／cancelled 尝试状态。
 
 本插件在当前活动分支上找不到自己的快照时，会回放分支上最近一次 `todo` 结果，沿用相同的编号、标题、状态、属主与 `blockedBy` 依赖，而不是从空清单开始。分支上一旦存在本插件的快照，就以它为准；本插件写回的结果结构相同，所以切回 rpiv-todo 时那份清单仍然可用。
 

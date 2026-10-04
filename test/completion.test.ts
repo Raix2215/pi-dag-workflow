@@ -129,8 +129,14 @@ test('registered /todos, /plan and /goal expose argument completions over live s
 
   const todos = commands.get('todos').getArgumentCompletions;
   assert.equal(typeof todos, 'function');
-  assert.deepEqual(values(await todos('')), ['add', 'start', 'done', 'pending', 'delete', 'edit', 'list', 'view', 'paths', 'flat', 'show', 'hide', 'clear', 'presets', 'apply', 'reset', 'help']);
+  assert.deepEqual(values(await todos('')), ['add', 'start', 'done', 'pending', 'failed', 'cancelled', 'delete', 'edit', 'list', 'view', 'paths', 'flat', 'show', 'hide', 'clear', 'presets', 'apply', 'reset', 'help']);
   assert.deepEqual(values(await todos('view ')), ['view list', 'view dag']);
+  assert.deepEqual(values(await todos('view list ')), ['view list full', 'view list pending', 'view list completed', 'view list failed', 'view list cancelled']);
+  assert.deepEqual(values(await todos('view dag fa')), ['view dag failed']);
+  assert.equal(await todos('view list failed'), null);
+  assert.deepEqual(values(await todos('clear ')), ['clear completed', 'clear closed', 'clear all']);
+  assert.equal(await todos('clear closed'), null);
+  assert.deepEqual(values(await todos('list ')), ['list full', 'list pending', 'list completed', 'list failed', 'list cancelled']);
   assert.deepEqual(values(await todos('start ')), ['start #41', 'start #43']);
   assert.deepEqual(values(await todos('delete ')), ['delete #41', 'delete #42', 'delete #43']);
   assert.deepEqual(values(await todos('edit #4')), ['edit #41', 'edit #42', 'edit #43']);
@@ -153,9 +159,10 @@ test('registered /todos, /plan and /goal expose argument completions over live s
   const goal = commands.get('goal').getArgumentCompletions;
   assert.equal(typeof goal, 'function');
   // One spelling per operation: no alias candidates exist.
-  assert.deepEqual(values(await goal('')), ['new', 'list', 'enable', 'disable', 'complete', 'delete', 'edit', 'get', 'nopause', 'config', 'reset', 'help']);
+  assert.deepEqual(values(await goal('')), ['new', 'list', 'enable', 'disable', 'complete', 'delete', 'edit', 'get', 'nopause', 'nolimit', 'config', 'reset', 'help']);
   assert.deepEqual(values(await goal('enable ')), ['enable #1']);
   assert.deepEqual(values(await goal('nopause ')), ['nopause #1']);
+  assert.deepEqual(values(await goal('nolimit ')), ['nolimit #1']);
   assert.equal(await goal('nopause #1'), null, 'a complete nopause command submits without a second Enter');
   assert.equal(await goal('policy '), null, 'policy is not retained as a command alias');
   assert.deepEqual(values(await goal('delete ')), ['delete #1', 'delete #2']);

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { applyTodo, emptyState, newlyReady, restoreState, STATE_TYPE, type TodoParams, type WorkflowState } from "../todos/state.ts";
+import { applyTodo, clearTodoRecords, emptyState, newlyReady, restoreState, validateTodoFields, STATE_TYPE, type TodoFilter, type TodoParams, type WorkflowState } from "../todos/state.ts";
 import { PresetStore, type Preset } from "../todos/presets.ts";
 import { NORMAL_GUIDANCE, PLAN_GUIDANCE } from "../plan/policy.ts";
 import { clean, notify, renderDag, renderTasks } from "../ui/render.ts";
@@ -14,6 +14,7 @@ import { registerCheckpoints } from '../todos/checkpoints.ts';
 import { registerPlan } from '../plan/register.ts';
 import { loadLocale, configPaths } from '../shared/config.ts';
 import { createTranslator } from '../shared/i18n.ts';
+import { latestBoundJobs, taskFilterStatus } from '../ui/filter.ts';
 
 const WIDGET = "pi-dag-workflow.todos";
 export function createWorkflow(pi: ExtensionAPI) {
@@ -29,6 +30,7 @@ export function createWorkflow(pi: ExtensionAPI) {
   let warnedEphemeral = false;
   let detailOpen = false;
   let refreshDetail: (() => void) | undefined;
+  const userPromptTitles = new Set<string>();
   let agents: ReturnType<typeof registerAgents> | undefined;
   // Task fragments come from one user-level file, reloaded on demand so edits apply without a restart.
   const presetStore = new PresetStore({ path: configPaths().preset });
@@ -118,6 +120,18 @@ export function createWorkflow(pi: ExtensionAPI) {
 
   function mutate(params: TodoParams, ctx: ExtensionContext, source: 'tool' | 'command' = 'tool') {
     if (restoreError && params.action !== "list" && params.action !== "get") throw new Error(msg`状态恢复失败，不能修改：${restoreError}`);
+    if (params.action === 'clear') {
+      validateTodoFields(params, msg);
+      const before = state;
+      const scope = params.scope ?? 'all';
+      const protectedIds = agents?.cleanupProtection(before.tasks) ?? new Set<number>();
+      const latest = latestBoundJobs(jobs());
+      const outcomes = new Map(before.tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, taskFilterStatus(task, latest.get(task.id))]));
+      const result = clearTodoRecords(before, scope, protectedIds, outcomes, msg);
+      commit(result.state, ctx, source);
+      const removedJobs = agents?.cleanupRecords(scope, before.tasks, state.tasks) ?? 0;
+      return { ...result, text: `${result.text}\n${msg`已清理 ${removedJobs} 个已结束子 Agent 记录；运行及待交付／核验记录保留`}` };
+    }
     agents?.assertTodoMutation(params);
     const result = applyTodo(state, params, msg, presetStore);
     const ready = newlyReady(state, result.state);
@@ -153,16 +167,17 @@ export function createWorkflow(pi: ExtensionAPI) {
       }
     });
   }
-  async function show(ctx: ExtensionContext, view: "list" | "dag"): Promise<void> {
+  async function show(ctx: ExtensionContext, view: "list" | "dag", selectedFilter?: TodoFilter): Promise<void> {
+    const filter = selectedFilter ?? state.filter ?? 'full';
     if (!modules.ui || ctx.mode !== "tui") {
-      ctx.ui.notify((view === "dag" ? renderDag(state, 80, undefined, goals?.title(), jobs(), { msg }) : renderTasks(state, 80, { maxRows: Infinity, jobs: jobs(), msg, ...(goals?.title() ? { goalTitle: goals.title() } : {}) })).join('\n') || msg('暂无任务'), "info");
+      ctx.ui.notify((view === "dag" ? renderDag(state, 80, undefined, goals?.title(), jobs(), { msg, filter }) : renderTasks(state, 80, { maxRows: Infinity, jobs: jobs(), msg, filter, ...(goals?.title() ? { goalTitle: goals.title() } : {}) })).join('\n') || msg('暂无任务'), "info");
       return;
     }
     detailOpen = true;
     ctx.ui.setWidget(WIDGET, undefined); // The detail view replaces, rather than duplicates, the widget.
     try {
       await ctx.ui.custom<void>((tui, theme, _keys, done) => {
-        const panel = detailView((width) => view === "dag" ? renderDag(state, width, theme, goals?.title(), jobs(), { msg }) : renderTasks(state, width, { maxRows: Infinity, theme, jobs: jobs(), goalTitle: goals?.title(), msg }), () => tui.terminal.rows, () => tui.requestRender(), done, theme, msg);
+        const panel = detailView((width) => view === "dag" ? renderDag(state, width, theme, goals?.title(), jobs(), { msg, filter }) : renderTasks(state, width, { maxRows: Infinity, theme, jobs: jobs(), goalTitle: goals?.title(), msg, filter }), () => tui.terminal.rows, () => tui.requestRender(), done, theme, msg);
         refreshDetail = () => { panel.invalidate(); tui.requestRender(); };
         return panel;
       });
@@ -179,6 +194,7 @@ export function createWorkflow(pi: ExtensionAPI) {
         checkpoints = registerCheckpoints(owner, { state: activeState, jobs, protected: () => !!restoreError });
         registerTodos(owner, { msg, state: () => state, mutate, commit, show, protected: () => !!restoreError,
           presets: () => presetList, refreshPresets,
+          userPrompt: async (title, run) => { userPromptTitles.add(title); try { return await run(); } finally { userPromptTitles.delete(title); } },
           reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
         });
       }
@@ -195,6 +211,7 @@ export function createWorkflow(pi: ExtensionAPI) {
       });
       if (feature === 'goal') goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError,
         pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: warnEphemeral,
+        isUserPrompt: (title) => title !== undefined && userPromptTitles.has(title),
         beforeWake: (ctx) => checkpoints?.beforeWake(ctx),
       });
     },

@@ -8,7 +8,7 @@ import { renderTasks, type AgentView } from "../src/ui/render.ts";
 const task = (id: number, subject = "实现解析器"): Todo => ({ id, subject, status: "pending", blockedBy: [] });
 const base = { ...emptyState(), tasks: [task(1)], nextId: 2 };
 const free = (id: string, status: AgentView["status"] = "running", extra: Partial<AgentView> = {}): AgentView => ({ id, profile: "fast", status, label: "调研现有实现", ...extra });
-const lines = (jobs: readonly AgentView[], width = 80, state = base, translate: Translator | undefined = undefined) => renderTasks(state, width, { jobs, maxRows: Infinity, ...(translate ? { msg: translate } : {}) }).map(stripTerminalSequences).join("\n");
+const lines = (jobs: readonly AgentView[], width = 80, state = base, translate: Translator | undefined = undefined, maxRows = Infinity) => renderTasks(state, width, { jobs, maxRows, ...(translate ? { msg: translate } : {}) }).map(stripTerminalSequences).join("\n");
 
 test("a job spawned without a Todo gets its own section below the list", () => {
   const rendered = lines([free("a1")]);
@@ -52,7 +52,8 @@ test("delivered reports stay out while pending handoff, failures and interruptio
 
 test("live work is listed before closed jobs and the section is bounded", () => {
   const jobs = [free("a1", "failed"), free("a2"), free("a3"), free("a4"), free("a5"), free("a6", "completed", { reportDelivery: "pending" })];
-  const rendered = lines(jobs);
+  // The widget preview bounds the section at four rows; the complete view carries every job.
+  const rendered = lines(jobs, 80, base, undefined, 8);
   const positions = ["a2", "a3", "a4", "a5"].map((id) => rendered.indexOf(`─ ${id} `));
   assert.ok(positions.every((index) => index >= 0), `live work fills the section first: ${rendered}`);
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
@@ -61,6 +62,10 @@ test("live work is listed before closed jobs and the section is bounded", () => 
   // The clipped jobs are the closed one and the waiting handoff, never live work.
   assert.doesNotMatch(rendered, /a1 · fast/);
   assert.doesNotMatch(rendered, /a6 · fast/);
+  const complete = lines(jobs);
+  assert.doesNotMatch(complete, /隐藏/);
+  assert.match(complete, /a1 · fast/);
+  assert.match(complete, /a6 · fast/);
 });
 
 test("an unbound job alone still renders the panel when the task list is empty", () => {

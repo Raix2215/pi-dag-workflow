@@ -64,7 +64,7 @@ test("real child questions/requestId replies and reports travel through private 
     assert.match(completed.output, /Use the safe option/);
     assert.equal(completed.pendingRequests, 0);
     const reporting = await ctx.runtime.spawn({ task: 'TEST CALL subagent_send {"message":"Found a useful result"}' });
-    const result = await ctx.runtime.wait(reporting.id, { timeout: 15 });
+    const result = await ctx.runtime.wait(reporting.id, { timeout: 15, until: 'finish' });
     assert.equal(result.status, "completed");
     assert.ok(ctx.notices.some((item) => item.kind === "message" && item.message === "Found a useful result"));
   } finally { await ctx.close(); }
@@ -168,7 +168,7 @@ test("long child reports and >1 MiB output are delivered and stored whole", asyn
   const ctx = await setup(true, reportFixture);
   try {
     const report = await ctx.runtime.spawn({ task: "BIGREPORT" });
-    const reportResult = await ctx.runtime.wait(report.id, { timeout: 15 });
+    const reportResult = await ctx.runtime.wait(report.id, { timeout: 15, until: 'finish' });
     assert.equal(reportResult.status, "completed");
     assert.ok(reportResult.output.includes("r".repeat(1100000)));
     assert.equal(ctx.notices.find((item) => item.kind === "message")?.message, "r".repeat(1100000));

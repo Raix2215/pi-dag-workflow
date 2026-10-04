@@ -6,12 +6,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- Per-Goal `/goal nolimit` switches the continuation-turn cap without starting/pausing work or resetting usage. Finite limits remain saved; shared child-report wakes obey the same setting.
+- List/DAG filters `full`, `pending`, `completed`, `failed`, `cancelled`; full windows do not truncate rows. DAG views reuse the Standalone section, with external prerequisite references preserved under filtering.
+- Todo `failed`/`cancelled` attempt states and scoped cleanup `completed`/`closed`/`all`. Cleanup includes failed records while protecting active work, pending evidence and dependency anchors, and preserves Task/Job ID high-water marks.
+- Child inspection exposes activity/tools, elapsed time, pending questions, queued directions and reportVersion. Full profile instructions are opt-in. `subagent_send interrupt:true` redirects the same child after aborting the local turn and clearing obsolete queues/questions; accepted/queued/answered delivery is reported explicitly.
 - `/goal nopause [ #id]` opens a user-only menu that toggles, while a Goal runs, whether the model may interrupt it. The per-Goal `modelPause` choice defaults to allow; blocking rejects model disable/delete and blank nextStep, while verified completion, user commands, and safety pauses remain available. The menu neither starts nor pauses work nor resets its allowance.
 - Child inspect/wait results include the current linked `todoStatus`, derived at query time without changing retained Job state.
 - Append-only Goal checkpoints preserve the full original requirements and execution policy after compaction or policy changes. `goalNoPauseTools` configures disabled main-session tools in autonomous mode (default `ask_user_question`), with execution guards covering nested calls.
 
 ### Changed
 
+- `subagent_wait` defaults to the next report/question/end for up to 5 seconds; `until:finish` retains a 30-second default. Immediate snapshots, report-version waits and explicit return reasons avoid long main-session stalls and stale-report polling.
+- Default inspection omits full Profile instructions; selected Job queries omit profiles entirely. UI/menus do not introduce model-context messages.
 - Linked task rows now distinguish pending delivery, pending verification, and accepted completion. A completed Todo shows completed even though its Job stays execution-completed; standalone delivery semantics remain unchanged.
 - Newly ready task hints stay in the Todo tool result; remove the separate UI notification so users do not see the same dependency change twice.
 - An enabled Goal reviews and continues the same objective when the model ends a round without `nextStep` or completes its current Todo list. Only explicit completion/disable and existing safety limits stop it; completed Todos do not imply an achieved Goal.
@@ -21,12 +27,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- Intentional child interruption no longer races an old settled event into a failed Job; clearing retained history never stops live processes. Older report reads cannot discard newer versioned notices.
+- Filtered graph labels cannot overwrite borders when hidden-prerequisite references are long. User cleanup menus do not pause or refill an active Goal, and deleted tombstones do not pin completed history.
 - Retain continuation intent when slow compaction-completion handlers keep Pi busy beyond the first idle check; retry admission until the host becomes idle without spending extra wakes.
 - Successful shell work counts as activity, preventing real tests, calculations, and edits from being misclassified as no-progress rounds.
 - Real `subagent_wait` timeouts no longer count as stalled work while the exact waited child still runs. The exemption is local to that round and never bypasses the shared allowance, user pauses, or no-progress checks on actual execution.
 
 ### Tests
 
+- Cover infinite/finite menu transitions, filtered preview/full views, failed/cancelled dependencies, scoped cleanup/protected evidence, counter restoration, light/full profiles, and native Pi interruption of long tools and pending questions while preserving context.
 - Cover task-acceptance display across list/DAG/locales/themes/widths and real inspect/wait status projection; test the policy menu on an active Goal, cancellation, per-Goal persistence, stale sessions, model mutation rejection, and preserved user/safety controls.
 - Add generic compaction-tail race tests, autonomous question-tool and nested-call guards, tool restoration order, regular replanning, and original-objective/documentation guidance checks.
 - Add generic reproductions of a final answer after all Todos finish without a next step, objective continuation through real Pi in both locales, question priority and placeholder consumption, and repeated child-wait timeouts. Private project histories and task contents are not copied into public fixtures.

@@ -12,8 +12,8 @@ This reference distinguishes execution, report delivery, and model consumption. 
 | Todo completion | Newly ready task hints appended to the same Todo tool result | Following request; no duplicate UI notification |
 | Workflow checkpoint | Key task/Job state after compaction, restore, or command changes | Passive append before a normal request or safe boundary; no independent wake |
 | Goal checkpoint | Full original requirements, running/paused state, and execution policy after compaction or a Goal-policy change | Passive append; automatic wakes also carry the execution rules, without rewriting prior messages |
-| Parent `subagent_inspect` | Job execution summaries, linked `todoStatus`, and profiles, not full output | Ordinary result of the current tool call |
-| Parent `subagent_wait` | Full retained output, execution status, linked `todoStatus`, usage, and pending questions | Ordinary result of the current tool call |
+| Parent `subagent_inspect` | Lifecycle/activity/tools, timings, queued directions, question IDs, reportVersion and todoStatus; brief profiles or opt-in full instructions | Ordinary non-waiting tool result; no full output |
+| Parent `subagent_wait` | Full retained output, observation, reportVersion, todoStatus, usage and questions, with snapshot/update/question/finished/timeout reason | timeout:0 immediately; default update waits at most 5s; finish defaults to 30s; questions return early |
 | Parent `subagent_send` | Delivery confirmation; the instruction or answer goes to the child | Confirmation is the current tool result; later child replies use the report channel |
 | Parent `subagent_cancel` | Cancellation/removal confirmation | Ordinary result of the current tool call |
 | `/agents wait` | Nothing is added to model context; the result is shown to the user | UI notification only |
@@ -56,17 +56,23 @@ A successful `subagent_wait` consumes notices for the same job so its returned c
 
 A child uses `subagent_send({ message, question: true })` to ask a question and wait. The main model receives a `requestId`, then answers using parent `subagent_send({ requestId, message })`. That answer is sent through the child's pending input response; it does not start another child.
 
-Parent `subagent_send({ recipient, message })` submits direction with `streamingBehavior: "steer"`. Pi consumes it at its next safe steering boundary. It does not kill or interrupt a tool already executing. The parent tool's successful confirmation means the message was sent, not that the child has followed it yet.
+Parent `subagent_send({ recipient, message })` submits direction with `streamingBehavior: "steer"`. Pi consumes it at its next safe steering boundary; ordinary direction does not interrupt a running tool. `interrupt: true` marks a composite redirect before aborting the local turn, clears obsolete queue/questions, then submits direction in the same child context. Old settled events do not count as failure. Already-triggered external actions may continue, so inspect their real state before overlapping work. Delivery is accepted/queued/answered, not proof the child followed it.
+
+`subagent_wait` defaults to `until: "update"`, returning on a new report, question or end within five seconds. `after` uses reportVersion to wait beyond already observed reports. `until: "finish"` waits for terminal execution (default 30s, cap 300s), but questions still return early. Timeout/abort affects the wait only. Version-aware notice acknowledgement cannot drop a newer report that was not in the returned snapshot.
 
 ## Goal, pause, and restore
 
-Automatic report wakes and Goal continuations share the active Goal's allowance. Plan mode, a paused Goal, paused Agent delivery, or exhausted allowance prevent automatic wakes.
+Automatic report wakes and Goal continuations share the active Goal's allowance. User nolimit removes its turn cap without resetting used counts; other safety stops remain. Plan mode, a paused Goal, paused Agent delivery, or an exhausted finite allowance prevent automatic wakes.
 
 A model error temporarily holds queued reports without discarding them or starting a competing idle wake. Once native Pi or Goal recovery produces a successful turn, the report channel reopens and delivers the retained batch. If retries are exhausted, or the user explicitly pauses/aborts, normal pause suppression applies.
 
 Reports suppressed while paused are not replayed on resume. Their full output remains in Job records and can be retrieved with `subagent_wait`; pending delivery stays visible until a real handoff. `/agents resume` permits future arrivals rather than replaying old messages. Restoring a session never revives child processes or starts an automatic report loop.
 
 Notices are coalesced by job and notice kind or question ID. Completed output replaces a same-batch interim notice because it already contains that report; failure diagnostics retain interim reports. Already-answered questions are filtered at delivery. At most 32 notices are retained, with questions preferred. These are count limits, not character limits.
+
+## Retained-record cleanup
+
+Todo clear scope completed/closed/all also prunes eligible child history. Active bindings, pending delivery and successful reports awaiting Todo acceptance remain. Dependency anchors remain, and retryable failed tasks still keep their prerequisites. IDs keep their high-water marks across cleanup/reload. This only changes current records; it never stops a process, edits project files, or rewrites earlier conversation entries.
 
 ## Size and context
 

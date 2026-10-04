@@ -108,7 +108,7 @@ test("applyTodo speaks English while user-authored subjects stay untouched", () 
   const created = applyTodo(emptyState(), { action: "create", subject: "中文任务" }, en);
   assert.equal(created.text, "Created #1: 中文任务 [Pending]");
   assert.equal(applyTodo(created.state, { action: "list" }, en).text, "#1 [Pending] 中文任务");
-  assert.equal(applyTodo(created.state, { action: "clear" }, en).text, "Cleared 1 item(s); ids are not reused");
+  assert.equal(applyTodo(created.state, { action: "clear" }, en).text, "Cleared 1 item(s) (all); kept 0; IDs are not reused");
   // Validation errors are localized.
   assert.throws(() => applyTodo(emptyState(), { action: "create", subject: " " }, en), /subject/);
   assert.throws(() => applyTodo(created.state, { action: "update", id: 99 }, en), /Task #99 not found/);
@@ -141,7 +141,7 @@ test("applyGoal speaks English, keeps Chinese titles/descriptions and applies th
   assert.throws(() => applyGoal(emptyGoalState(), { action: "bogus" as never }, 20, en), /Unknown Goal action/);
   // A paused focused goal labels itself in English while preserving the title.
   const paused: GoalState = { ...created.state, focusId: 1, goals: [{ ...created.state.goals[0]!, status: "paused" }], run: { paused: true, used: 1, stalled: 0 } };
-  assert.equal(applyGoal(paused, { action: "list" }, 20, en).text, "#1 󰓾 [Paused] 中文目标");
+  assert.equal(applyGoal(paused, { action: "list" }, 20, en).text, "#1 󰓾 [Paused] 中文目标 · 20");
   // Chinese baseline default.
   assert.equal(applyGoal(emptyGoalState(), { action: "create", title: "目标" }).text, "Goal #1 create：目标");
 });
@@ -322,7 +322,7 @@ test("registerTodos/Plan/Goal/Agents localize command descriptions and completio
   assert.equal(goal["new"], "Create a goal (does not start): new title");
   assert.equal(goal["enable"], "Enable and advance a goal: enable [ #id]");
   assert.equal(goal["disable"], "Disable or pause a goal: disable [ #id]");
-  assert.deepEqual(Object.keys(goal), ["new", "list", "enable", "disable", "complete", "delete", "edit", "get", "nopause", "config", "reset", "help"]);
+  assert.deepEqual(Object.keys(goal), ["new", "list", "enable", "disable", "complete", "delete", "edit", "get", "nopause", "nolimit", "config", "reset", "help"]);
   const agents = roots("agents");
   assert.equal(agents["list"], "View Jobs and pause state");
   assert.equal(agents["profile"], "Save a Profile: profile name provider/model [thinking] [tools]");

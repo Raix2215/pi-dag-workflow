@@ -2,15 +2,20 @@ import { Type, type Static } from "typebox";
 import { dagStructure, reuseDagStructure } from "../dag/cache.ts";
 import { chinese, type Translator } from "../shared/i18n.ts";
 import { expand, nextRun, resetClosure, type PresetStore } from "./presets.ts";
+import { planTaskCleanup } from './cleanup.ts';
 
-const Status = Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("deleted")]);
+const Status = Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("failed"), Type.Literal("cancelled"), Type.Literal("deleted")]);
+export const TODO_FILTERS = ['full', 'pending', 'completed', 'failed', 'cancelled'] as const;
+export type TodoFilter = typeof TODO_FILTERS[number];
+export type ClearScope = 'all' | 'completed' | 'closed';
 export const TodoParamsSchema = Type.Object({
   action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("list"), Type.Literal("get"), Type.Literal("delete"), Type.Literal("clear"), Type.Literal("apply"), Type.Literal("reset")]),
   id: Type.Optional(Type.Integer({ minimum: 1, description: "Required for update/get/delete" })),
   subject: Type.Optional(Type.String({ description: "Short title; required for create" })),
   description: Type.Optional(Type.String({ description: "Task instructions or evidence" })),
   activeForm: Type.Optional(Type.String({ description: "Current activity label" })),
-  status: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("deleted")], { description: "Create: pending (default) or in_progress; update sets status; list filters status" })),
+  status: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("failed"), Type.Literal("cancelled"), Type.Literal("deleted")], { description: "Create: pending (default) or in_progress; update records verified status, failed or cancelled; list filters status" })),
+  scope: Type.Optional(Type.Union([Type.Literal('all'), Type.Literal('completed'), Type.Literal('closed')], { description: 'clear: all (default), completed, or closed (completed/failed/cancelled/deleted); protected work and required dependencies remain' })),
   blockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Initial prerequisite ids, create only" })),
   addBlockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Update: add prerequisites" })),
   removeBlockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Update: remove prerequisites" })),
@@ -43,6 +48,7 @@ export interface WorkflowState {
   visible: boolean;
   view: "list" | "dag";
   treeStyle?: "paths" | "flat";
+  filter?: TodoFilter;
 }
 export const STATE_TYPE = "pi-dag-workflow.state";
 export const emptyState = (): WorkflowState => ({ version: 1, tasks: [], nextId: 1, plan: false, planTools: [], visible: true, view: "list", treeStyle: "paths" });
@@ -50,18 +56,20 @@ export const emptyState = (): WorkflowState => ({ version: 1, tasks: [], nextId:
 const fields: Record<string, readonly string[]> = {
   create: ["subject", "description", "activeForm", "owner", "metadata", "blockedBy", "status"],
   update: ["id", "subject", "description", "activeForm", "owner", "metadata", "status", "addBlockedBy", "removeBlockedBy"],
-  list: ["status", "includeDeleted"], get: ["id"], delete: ["id"], clear: [],
+  list: ["status", "includeDeleted"], get: ["id"], delete: ["id"], clear: ['scope'],
   apply: ["preset", "vars"], reset: ["preset", "run", "step"],
 };
 const transitions: Record<TodoStatus, readonly TodoStatus[]> = {
-  pending: ["pending", "in_progress", "completed", "deleted"],
-  in_progress: ["pending", "in_progress", "completed", "deleted"],
+  pending: ["pending", "in_progress", "completed", "failed", "cancelled", "deleted"],
+  in_progress: ["pending", "in_progress", "completed", "failed", "cancelled", "deleted"],
+  failed: ["pending", "in_progress", "completed", "failed", "cancelled", "deleted"],
+  cancelled: ["pending", "in_progress", "completed", "failed", "cancelled", "deleted"],
   completed: ["completed", "deleted"], deleted: ["deleted"],
 };
 export function todoRef(todo: Todo): string {
   return `#${todo.id}${todo.blockedBy.length ? `<-${todo.blockedBy.map((id) => `#${id}`).join(",")}` : ""}`;
 }
-export const statusLabel: Record<TodoStatus, string> = { pending: "待执行", in_progress: "进行中", completed: "已完成", deleted: "已删除" };
+export const statusLabel: Record<TodoStatus, string> = { pending: "待执行", in_progress: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消", deleted: "已删除" };
 const textFields = ["subject", "description", "activeForm", "owner"] as const;
 
 function validateTask(task: Todo, msg: Translator = chinese): void {
@@ -80,6 +88,7 @@ export function validateState(state: WorkflowState, msg: Translator = chinese): 
   if (!state || state.version !== 1 || !Array.isArray(state.tasks) || !Number.isSafeInteger(state.nextId) || state.nextId < 1) throw new Error(msg("不支持或损坏的工作流状态"));
   if (typeof state.plan !== "boolean" || typeof state.visible !== "boolean" || !["list", "dag"].includes(state.view)) throw new Error(msg("损坏的模式／视图状态"));
   if (state.treeStyle !== undefined && !["paths", "flat"].includes(state.treeStyle)) throw new Error(msg("损坏的任务树样式"));
+  if (state.filter !== undefined && !TODO_FILTERS.includes(state.filter)) throw new Error(msg('损坏的任务过滤器'));
   if (!Array.isArray(state.planTools) || state.planTools.some((name) => typeof name !== "string" || !/^[\w-]+$/.test(name))) throw new Error(msg("损坏的 Plan 工具列表"));
   for (const task of state.tasks) {
     validateTask(task, msg);
@@ -88,11 +97,24 @@ export function validateState(state: WorkflowState, msg: Translator = chinese): 
   dagStructure(state.tasks);
 }
 
-/** Atomic pure mutation: errors never modify the current state. */
-export function applyTodo(state: WorkflowState, params: TodoParams, msg: Translator = chinese, presets?: PresetStore): { state: WorkflowState; text: string } {
+/** Pure task cleanup. The runtime coordinator supplies job protections/outcomes and prunes jobs. */
+export function clearTodoRecords(state: WorkflowState, scope: ClearScope = 'all', protectedIds: ReadonlySet<number> = new Set(), outcomes?: ReadonlyMap<number, string>, msg: Translator = chinese) {
+  const result = planTaskCleanup(state.tasks, scope, protectedIds, outcomes);
+  if (!result.removedIds.length) return { state, text: msg`没有可清理任务；保留 ${result.keptIds.length} 项（运行／待核验／依赖必需）`, ...result };
+  const next = { ...state, tasks: result.tasks };
+  validateState(next, msg);
+  return { state: next, text: msg`已清理 ${result.removedIds.length} 项（${scope}）；保留 ${result.keptIds.length} 项，编号不复用`, ...result };
+}
+
+export function validateTodoFields(params: TodoParams, msg: Translator = chinese): void {
   const allowed = fields[params.action];
   if (!allowed) throw new Error(msg("未知 Todo 操作"));
   for (const key of Object.keys(params)) if (key !== "action" && !allowed.includes(key)) throw new Error(msg`${params.action} 不接受字段 ${key}`);
+}
+
+/** Atomic pure mutation: errors never modify the current state. */
+export function applyTodo(state: WorkflowState, params: TodoParams, msg: Translator = chinese, presets?: PresetStore): { state: WorkflowState; text: string } {
+  validateTodoFields(params, msg);
   if (params.action === "apply" || params.action === "reset") {
     const name = params.preset ?? "";
     if (!presets || !name) throw new Error(msg("apply/reset 需要 preset，且需配置片段文件"));
@@ -126,10 +148,7 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
   if (["get", "update", "delete"].includes(params.action) && !current) throw new Error(msg`找不到任务 #${params.id ?? "?"}`);
   if (params.action === "get") return { state, text: JSON.stringify(current, null, 2) };
   if (state.plan && params.status && ["in_progress", "completed"].includes(params.status)) throw new Error(msg("Plan 只允许整理任务，不允许开始或完成；先 /plan off"));
-  if (params.action === "clear") {
-    if (!state.tasks.length) return { state, text: msg("暂无任务") };
-    return { state: { ...state, tasks: [] }, text: msg`已清空 ${state.tasks.length} 项，编号不复用` };
-  }
+  if (params.action === "clear") return clearTodoRecords(state, params.scope ?? 'all', new Set(), undefined, msg);
   let task: Todo;
   if (params.action === "create") {
     if (!params.subject?.trim()) throw new Error(msg("create 需要 subject"));

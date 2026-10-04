@@ -135,7 +135,7 @@ test("corrupt native state stays protected until an explicit confirmed reset, wi
   const blocked = await client.prompt('TEST CALL todo {"action":"create","subject":"不应创建"}');
   assert.match(resultText(blocked), /状态恢复失败/);
   const start = client.records.length;
-  const clearing = client.prompt("/todos clear");
+  const clearing = client.prompt("/todos clear all");
   await client.until(() => client.records.slice(start).some((event) => event.type === "extension_ui_request" && event.method === "confirm"));
   const question = client.records.slice(start).find((event) => event.type === "extension_ui_request" && event.method === "confirm")!;
   client.child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: question.id, confirmed: true })}\n`);

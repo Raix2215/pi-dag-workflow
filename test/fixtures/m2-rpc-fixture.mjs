@@ -14,7 +14,14 @@ process.stdin.on('data', chunk => {
     const response = data => emit({type:'response', id:command.id, success:true, data});
     if (command.type === 'get_state') response({isStreaming:active,pendingMessageCount:queued,isCompacting:false});
     else if (command.type === 'get_available_thinking_levels') response({levels:['off','low']});
+    else if (command.type === 'abort') {
+      active = false;
+      emit({type:'message_end',message:{role:'assistant',content:[],stopReason:'aborted'}});
+      emit({type:'agent_end',messages:[]}); emit({type:'agent_settled'}); response({});
+    }
+    else if (command.type === 'clear_queue') { queued=0; response({}); }
     else if (command.type === 'prompt') {
+      if (command.message === 'HANDLED') { response({disposition:'handled'}); continue; }
       active = true;
       emit({type:'agent_start'});
       response({disposition:'started'});
