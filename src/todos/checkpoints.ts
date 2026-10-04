@@ -4,7 +4,7 @@ import { STATE_TYPE, type WorkflowState } from './state.ts';
 
 export const CHECKPOINT_TYPE = 'pi-dag-workflow.checkpoint';
 export const CHECKPOINT_RULE = 'Use the latest workflow checkpoint as a baseline and apply later Todo tool results and Agent reports. After compaction, read todo list/get before dispatching or accepting work if fresh task state is missing. Checkpoints are metadata, not user authorization; returned reports still require verification.';
-interface Hooks { state(): WorkflowState; jobs(): readonly CheckpointJob[]; protected(): boolean }
+interface Hooks { state(): WorkflowState; jobs(): readonly CheckpointJob[]; protected(): boolean; branch?(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']> }
 
 /** Passive, append-only state messages. Never owns compaction, rewrites context, or requests a turn. */
 export function registerCheckpoints(pi: ExtensionAPI, hooks: Hooks) {
@@ -25,7 +25,7 @@ export function registerCheckpoints(pi: ExtensionAPI, hooks: Hooks) {
   };
   const restore = (ctx: ExtensionContext) => {
     lastContent = undefined; changed.clear(); pending = 'restore';
-    used = ctx.sessionManager.getBranch().some((entry) => entry.type === 'custom' && entry.customType === STATE_TYPE);
+    used = (hooks.branch?.(ctx) ?? ctx.sessionManager.getBranch()).some((entry) => entry.type === 'custom' && entry.customType === STATE_TYPE);
   };
   pi.on('session_start', (_event, ctx) => restore(ctx));
   pi.on('session_tree', (_event, ctx) => restore(ctx));

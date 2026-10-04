@@ -5,14 +5,12 @@ import { applyTodo, clearTodoRecords, emptyState, newlyReady, restoreState, vali
 import { PresetStore, type Preset } from "../todos/presets.ts";
 import { NORMAL_GUIDANCE, PLAN_GUIDANCE } from "../plan/policy.ts";
 import { clean, notify, renderDag, renderTasks } from "../ui/render.ts";
-import { registerAgents } from "../agents/register.ts";
-import { registerGoal } from "../goal/register.ts";
+import type { registerAgents } from "../agents/register.ts";
+import type { registerGoal } from "../goal/register.ts";
 import { detailView } from "../ui/detail.ts";
 import { noFeatures, type Feature } from './features.ts';
-import { registerTodos } from '../todos/register.ts';
-import { registerCheckpoints } from '../todos/checkpoints.ts';
-import { registerPlan } from '../plan/register.ts';
-import { loadLocale, configPaths } from '../shared/config.ts';
+import type { registerCheckpoints } from '../todos/checkpoints.ts';
+import { loadConfig, loadLocale, configPaths, type WorkflowConfig } from '../shared/config.ts';
 import { createTranslator } from '../shared/i18n.ts';
 import { latestBoundJobs, taskFilterStatus } from '../ui/filter.ts';
 
@@ -28,6 +26,19 @@ export function createWorkflow(pi: ExtensionAPI) {
   let state = emptyState();
   let restoreError: string | undefined;
   let warnedEphemeral = false;
+  let restoredState: WorkflowState | undefined;
+  let restoreEpoch = 0;
+  let configPromise: Promise<WorkflowConfig> | undefined;
+  const readConfig = () => configPromise ??= loadConfig(msg);
+  let branchCache: { manager: ExtensionContext['sessionManager']; leaf: string | null; entries: ReturnType<ExtensionContext['sessionManager']['getBranch']> } | undefined;
+  const readBranch = (ctx: ExtensionContext) => {
+    const manager = ctx.sessionManager;
+    const leaf = typeof manager.getLeafId === 'function' ? manager.getLeafId() : undefined;
+    if (leaf !== undefined && branchCache?.manager === manager && branchCache.leaf === leaf) return branchCache.entries;
+    const entries = manager.getBranch();
+    if (leaf !== undefined) branchCache = { manager, leaf, entries };
+    return entries;
+  };
   let detailOpen = false;
   let refreshDetail: (() => void) | undefined;
   const userPromptTitles = new Set<string>();
@@ -43,16 +54,23 @@ export function createWorkflow(pi: ExtensionAPI) {
     return `${shown.join(', ')}${more}`.slice(0, 400);
   }
   const jobs = () => agents?.summaries() ?? [];
-  const activeState = () => modules.todos ? state : { ...state, tasks: [] };
+  const noTasks: WorkflowState['tasks'] = [];
+  const activeState = () => modules.todos ? state : { ...state, tasks: noTasks };
+  let lastPaint: { tasks: WorkflowState['tasks']; state: string; jobs: string; ui: ExtensionContext['ui']; theme: ExtensionContext['ui']['theme'] } | undefined;
   let goals: ReturnType<typeof registerGoal> | undefined;
   let checkpoints: ReturnType<typeof registerCheckpoints> | undefined;
 
   function paint(ctx: ExtensionContext): void {
     if (!modules.ui) return;
-    if (detailOpen) { refreshDetail?.(); return; }
     const snapshotJobs = jobs();
     const displayedState = activeState();
     const goalTitle = goals?.title();
+    const stateKey = JSON.stringify([state.plan, state.visible, state.view, state.treeStyle, state.filter, goalTitle, restoreError, detailOpen, ctx.mode, ctx.hasUI]);
+    const now = Date.now();
+    const jobKey = JSON.stringify(snapshotJobs.map((job) => [job.id, job.todoId, job.profile, job.status, job.reportDelivery, job.taskReportStale, job.label, job.activity?.kind, job.activity?.tool, job.activity?.since, job.activity?.kind === 'tool' && job.activity.since !== undefined ? Math.floor((now - job.activity.since) / 1000) : undefined]));
+    if (lastPaint?.tasks === displayedState.tasks && lastPaint.state === stateKey && lastPaint.jobs === jobKey && lastPaint.ui === ctx.ui && lastPaint.theme === ctx.ui.theme) return;
+    lastPaint = { tasks: displayedState.tasks, state: stateKey, jobs: jobKey, ui: ctx.ui, theme: ctx.ui.theme };
+    if (detailOpen) { refreshDetail?.(); return; }
     if (!state.visible && !state.plan || !displayedState.tasks.some((task) => task.status !== "deleted") && !state.plan && !restoreError && !goalTitle && !snapshotJobs.length) {
       ctx.ui.setWidget(WIDGET, undefined);
       return;
@@ -103,12 +121,9 @@ export function createWorkflow(pi: ExtensionAPI) {
   }
 
   function restore(ctx: ExtensionContext): void {
-    warnedEphemeral = false;
-    // A broken fragment file must not block the workflow: report it and keep the last good list.
-    void refreshPresets().then(() => paint(ctx)).catch((error) => notify(ctx, msg`Todo 片段（preset）配置无效：${error instanceof Error ? error.message : String(error)}`, 'error'));
     try {
-      state = modules.todos || modules.plan ? restoreState(ctx.sessionManager.getBranch(), msg) : emptyState();
-      if (!modules.plan) state = { ...state, plan: false }; // Disabled Plan cannot strand a read-only session.
+      restoredState = modules.todos || modules.plan ? restoreState(readBranch(ctx), msg) : emptyState();
+      state = !modules.plan && restoredState.plan ? { ...restoredState, plan: false } : restoredState;
       restoreError = undefined;
     } catch (error) {
       state = { ...emptyState(), plan: true };
@@ -147,16 +162,35 @@ export function createWorkflow(pi: ExtensionAPI) {
   // Personal extensions may load before project trust, then be filtered out.
   // Every included resource contributes lifecycle hooks; activate only entries
   // whose session_start actually runs, not every factory from the pre-trust pass.
+  async function restorePresets(ctx: ExtensionContext): Promise<void> {
+    if (!modules.todos) return;
+    // One read per lifecycle, only when Todos actually participates after project filtering.
+    const epoch = restoreEpoch;
+    try { await refreshPresets(); if (epoch === restoreEpoch) paint(ctx); }
+    catch (cause) { if (epoch === restoreEpoch) notify(ctx, msg`Todo 片段（preset）配置无效：${cause instanceof Error ? cause.message : String(cause)}`, 'error'); }
+  }
   function registerLifecycle(owner: ExtensionAPI, feature: Feature): void {
-    owner.on('session_start', (event, ctx) => {
-      if (!started.has(event)) { started.add(event); Object.assign(modules, noFeatures()); }
+    owner.on('session_start', async (event, ctx) => {
+      if (!started.has(event)) {
+        started.add(event); Object.assign(modules, noFeatures()); restoreEpoch++;
+        restoredState = undefined; restoreError = undefined; warnedEphemeral = false; branchCache = undefined; configPromise = undefined; lastPaint = undefined;
+      }
       modules[feature] = true;
-      restore(ctx);
+      if (feature === 'todos' || feature === 'plan') {
+        if (!restoredState && !restoreError) restore(ctx);
+        else if (feature === 'plan' && restoredState && !restoreError) state = restoredState;
+      }
+      if (feature === 'todos') await restorePresets(ctx);
+      paint(ctx);
     });
-    owner.on('session_tree', (event, ctx) => { if (!restored.has(event)) { restored.add(event); restore(ctx); } });
+    owner.on('session_tree', async (event, ctx) => {
+      if (restored.has(event)) return;
+      restored.add(event); restoreEpoch++; branchCache = undefined; configPromise = undefined; warnedEphemeral = false; lastPaint = undefined;
+      restore(ctx); await restorePresets(ctx);
+    });
     owner.on('session_shutdown', (event, ctx) => {
       if (stopped.has(event)) return;
-      stopped.add(event); dispose();
+      stopped.add(event); dispose(); restoreEpoch++; branchCache = undefined; configPromise = undefined; restoredState = undefined; lastPaint = undefined;
       state = emptyState(); restoreError = undefined;
       if (modules.ui) ctx.ui.setWidget(WIDGET, undefined);
     });
@@ -186,34 +220,44 @@ export function createWorkflow(pi: ExtensionAPI) {
 
   return {
     onDispose(off: () => void) { dispose = off; },
-    attach(feature: Feature, owner: ExtensionAPI): void {
+    async attach(feature: Feature, owner: ExtensionAPI): Promise<void> {
       if (attached.has(feature)) throw new Error(msg`重复加载工作流模块：${feature}`);
       attached.add(feature);
       registerLifecycle(owner, feature);
       if (feature === 'todos') {
-        checkpoints = registerCheckpoints(owner, { state: activeState, jobs, protected: () => !!restoreError });
+        const [{ registerTodos }, { registerCheckpoints }] = await Promise.all([import('../todos/register.ts'), import('../todos/checkpoints.ts')]);
+        checkpoints = registerCheckpoints(owner, { state: activeState, jobs, protected: () => !!restoreError, branch: readBranch });
         registerTodos(owner, { msg, state: () => state, mutate, commit, show, protected: () => !!restoreError,
           presets: () => presetList, refreshPresets,
           userPrompt: async (title, run) => { userPromptTitles.add(title); try { return await run(); } finally { userPromptTitles.delete(title); } },
           reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
         });
       }
-      if (feature === 'plan') registerPlan(owner, { msg, state: () => state, commit, protected: () => !!restoreError,
-        assertCanEnter: () => agents?.assertPlanEntry(), onEnter: (ctx) => goals?.pause(msg('进入 Plan'), ctx),
-      });
-      if (feature === 'agents') agents = registerAgents(owner, { msg, state: activeState, mutate, paint, protected: () => !!restoreError, ui: () => modules.ui,
+      if (feature === 'plan') {
+        const { registerPlan } = await import('../plan/register.ts');
+        registerPlan(owner, { msg, state: () => state, commit, protected: () => !!restoreError, loadConfig: readConfig,
+          assertCanEnter: () => agents?.assertPlanEntry(), onEnter: (ctx) => goals?.pause(msg('进入 Plan'), ctx),
+        });
+      }
+      if (feature === 'agents') {
+        const { registerAgents } = await import('../agents/register.ts');
+        agents = registerAgents(owner, { msg, state: activeState, mutate, paint, protected: () => !!restoreError, ui: () => modules.ui, branch: readBranch,
         canWake: () => !modules.goal || (goals?.canWake() ?? false),
         reserveWake: (ctx) => !modules.goal || (goals?.reserveWake(ctx, true) ?? false),
         pauseAuto: (ctx) => { if (modules.goal) goals?.pause(msg('用户暂停自动工作'), ctx); },
         resumeAuto: () => !modules.goal || (goals?.resumeAgentReports() ?? false),
         beforeWake: (ctx) => goals ? goals.beforeWake(ctx) : checkpoints?.beforeWake(ctx),
         compacting: () => goals?.isCompacting() ?? false,
-      });
-      if (feature === 'goal') goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError,
+        });
+      }
+      if (feature === 'goal') {
+        const { registerGoal } = await import('../goal/register.ts');
+        goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError, branch: readBranch, loadConfig: readConfig,
         pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: warnEphemeral,
         isUserPrompt: (title) => title !== undefined && userPromptTitles.has(title),
         beforeWake: (ctx) => checkpoints?.beforeWake(ctx),
-      });
+        });
+      }
     },
   };
 }

@@ -7,7 +7,7 @@ interface Request { workflow?: ReturnType<typeof createWorkflow> }
 
 /** Pi's runtime-owned bus subscriptions are removed on invalidation/reload.
  * No global singleton, required core entry, or dependency on factory load order. */
-export function connectFeature(pi: ExtensionAPI, feature: Feature): void {
+export async function connectFeature(pi: ExtensionAPI, feature: Feature): Promise<void> {
   const request: Request = {};
   pi.events.emit(CHANNEL, request);
   if (!request.workflow) {
@@ -16,5 +16,5 @@ export function connectFeature(pi: ExtensionAPI, feature: Feature): void {
     workflow.onDispose(off);
     request.workflow = workflow;
   }
-  request.workflow.attach(feature, pi);
+  await request.workflow.attach(feature, pi);
 }

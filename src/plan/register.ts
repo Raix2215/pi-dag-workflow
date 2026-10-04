@@ -3,9 +3,9 @@ import type { WorkflowState } from '../todos/state.ts';
 import { planViolation } from './policy.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
-import { loadConfig } from '../shared/config.ts';
+import { loadConfig, type WorkflowConfig } from '../shared/config.ts';
 
-interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; commit(next: WorkflowState, ctx: ExtensionContext): void; assertCanEnter(): void; onEnter(ctx: ExtensionContext): void }
+interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; commit(next: WorkflowState, ctx: ExtensionContext): void; assertCanEnter(): void; onEnter(ctx: ExtensionContext): void; loadConfig?(): Promise<WorkflowConfig> }
 /** Plan's policy is shared with the coordinator, not a second execution runtime. */
 export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
   const msg = hooks.msg ?? chinese;
@@ -13,7 +13,7 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
   /** Machine-wide extra read-only tools from the config file; session tools are added on top. */
   let configTools: string[] = [];
   const loadPlanConfig = async () => {
-    try { configTools = (await loadConfig(msg)).planTools; }
+    try { configTools = (await (hooks.loadConfig?.() ?? loadConfig(msg))).planTools; }
     catch { configTools = []; } // A broken config is reported by the other modules; Plan falls back to built-ins.
   };
   pi.on('session_start', () => loadPlanConfig());

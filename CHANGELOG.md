@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04
+
 ### Added
 
 - Per-Goal `/goal nolimit` switches the continuation-turn cap without starting/pausing work or resetting usage. Finite limits remain saved; shared child-report wakes obey the same setting.
@@ -27,10 +29,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- Todo row ownership follows explicit main-session takeover after a child expires or fails. Historical output remains queryable, while list/DAG rows use the current task owner and state; a wait timeout alone never transfers a still-running child.
 - Intentional child interruption no longer races an old settled event into a failed Job; clearing retained history never stops live processes. Older report reads cannot discard newer versioned notices.
 - Filtered graph labels cannot overwrite borders when hidden-prerequisite references are long. User cleanup menus do not pause or refill an active Goal, and deleted tombstones do not pin completed history.
 - Retain continuation intent when slow compaction-completion handlers keep Pi busy beyond the first idle check; retry admission until the host becomes idle without spending extra wakes.
 - Successful shell work counts as activity, preventing real tests, calculations, and edits from being misclassified as no-progress rounds.
+- A model error retired by a successful compaction no longer blocks Goal continuation. Recovery boundaries are honored in both directions: an error recorded before the compaction no longer suppresses later wakes, while an error after it still earns its bounded retry.
 - Real `subagent_wait` timeouts no longer count as stalled work while the exact waited child still runs. The exemption is local to that round and never bypasses the shared allowance, user pauses, or no-progress checks on actual execution.
 
 ### Tests
@@ -39,6 +43,15 @@ All notable changes to this project are documented in this file. The format is b
 - Cover task-acceptance display across list/DAG/locales/themes/widths and real inspect/wait status projection; test the policy menu on an active Goal, cancellation, per-Goal persistence, stale sessions, model mutation rejection, and preserved user/safety controls.
 - Add generic compaction-tail race tests, autonomous question-tool and nested-call guards, tool restoration order, regular replanning, and original-objective/documentation guidance checks.
 - Add generic reproductions of a final answer after all Todos finish without a next step, objective continuation through real Pi in both locales, question priority and placeholder consumption, and repeated child-wait timeouts. Private project histories and task contents are not copied into public fixtures.
+- Cover repeated native context-overflow recovery inside one continuous Goal, retired pre-compaction failures, append-only state folding (versions, offsets, corruption, pruning and ID high-water marks), and the long-conversation hot paths below.
+- Verify all 32 module combinations, reverse order and project filtering; test single lifecycle reads, bounded render caches, mutable theme colors, live timer restarts, and timed-out child takeover. Node 22, Node 24 and Pi 1.0.2 pass 445 tests; unchanged rendering matches the pre-optimization renderer across 11,150 cases.
+
+### Performance
+
+- **Child state is appended, not rewritten.** Persisted Job state now records only the jobs that changed and the appended output tail, while still writing immediately and keeping every report complete. A 128-job stress case with 64 KiB outputs drops from an ~8.4 MB rewrite per change to a few hundred bytes, and a six-child session's state log shrinks from roughly 371 KB to 39 KB with identical restored output. Version-1 snapshots remain readable, and a full snapshot supersedes earlier data.
+- **Todo rendering reuses geometry.** Theme-independent row plans, cleaned static labels, header counts, and preview windows are cached with bounded variants and snapshot counts. In a 4096-task hot-cache benchmark, full list rendering fell from 53.5 ms to 0.70 ms, graph fallback from 53.8 ms to 1.13 ms, and list previews from 0.148 ms to 0.021 ms. Colors, live elapsed time, chronological order and alignment stay current.
+- **Loaded modules share restoration.** Register modules are imported only for selected features. A session lifecycle shares one branch read, one Todo restoration, one preset read when Todos is enabled, and one configuration read for Plan/Goal; unchanged display state avoids redundant widget registration. A 30,000-entry/4096-task restore benchmark fell from 30.3 ms to 8.7 ms. Pi/Node cold startup remains outside this optimization's claimed gains.
+- **Hot paths stop repeating work.** Empty-output checks, unchanged task-status serialization, goal-definition comparisons, and the failure lookup are cached or skipped instead of re-scanning: inspection of 128 long-output jobs fell from 2.19 ms to 0.29 ms, an ordinary input with 30,000 history entries from 0.103 ms to 0.0003 ms, and a 4096-task continuation reservation from 0.170 ms to 0.001 ms. Rendering, menus, tool results, and prompts are unchanged.
 
 ## [0.2.1] - 2026-10-03
 

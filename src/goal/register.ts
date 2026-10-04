@@ -11,7 +11,7 @@ import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, localizeSavedMessage, type Translator } from '../shared/i18n.ts';
 
-interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void; retryDelayMs?: number; beforeWake?(ctx: ExtensionContext): void; resumeDelayMs?: number; isUserPrompt?(title: string | undefined): boolean }
+interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void; retryDelayMs?: number; beforeWake?(ctx: ExtensionContext): void; resumeDelayMs?: number; isUserPrompt?(title: string | undefined): boolean; branch?(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']>; loadConfig?(): Promise<WorkflowConfig> }
 /** One shared budget for plugin continuations and child-report wakes. No goal dispatcher. */
 export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const msg = hooks.msg ?? chinese;
@@ -172,7 +172,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const manager = ctx.sessionManager;
     const leaf = typeof manager.getLeafId === 'function' ? manager.getLeafId() : undefined;
     if (leaf !== undefined && failureCache?.manager === manager && failureCache.leaf === leaf) return failureCache.failure;
-    const branch = manager.getBranch();
+    const branch = hooks.branch?.(ctx) ?? manager.getBranch();
     let failure: string | undefined;
     for (let index = branch.length - 1; index >= 0; index--) {
       const entry = branch[index];
@@ -371,10 +371,10 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     if (resumeTimer) clearTimeout(resumeTimer);
     resumeTimer = undefined; compacting = false; resumeWanted = false; stepAck = undefined; activeStep = undefined; rejectedWakes = 0; interruptedGoalId = undefined;
     try {
-      state = releaseGoalWake(restoreGoalState(ctx.sessionManager.getBranch(), msg));
+      state = releaseGoalWake(restoreGoalState(hooks.branch?.(ctx) ?? ctx.sessionManager.getBranch(), msg));
       state = pauseGoal(state, focusedGoal(state) ? msg('会话恢复') : state.run.reason ?? '');
       if (!focusedGoal(state) && !state.run.reason) delete state.run.reason;
-      config = await loadConfig(msg);
+      config = await (hooks.loadConfig?.() ?? loadConfig(msg));
     } catch (cause) { error = String(cause); state = emptyGoalState(); notify(ctx, msg`Goal／配置恢复失败：${error}；保留历史，/goal reset 明确清除 Goal，配置错误请修复后重载`, 'error'); }
     standaloneReports = !state.run.reason;
     checkpointPending = Boolean(focusedGoal(state)); lastCheckpoint = undefined;

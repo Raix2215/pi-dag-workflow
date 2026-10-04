@@ -16,7 +16,7 @@ import { chinese, type Translator } from '../shared/i18n.ts';
 import { AgentJournal, AGENTS_ENTRY_TYPE, foldAgentEntries } from './persistence.ts';
 
 export const AGENTS_TYPE = AGENTS_ENTRY_TYPE;
-interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean; beforeWake?(ctx: ExtensionContext): void; compacting?(): boolean }
+interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean; beforeWake?(ctx: ExtensionContext): void; compacting?(): boolean; branch?(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']> }
 const active = (job: JobSummary) => ["starting", "running", "waiting"].includes(job.status);
 const fingerprint = (state: WorkflowState, id?: number) => {
   const task = state.tasks.find((item) => item.id === id);
@@ -200,7 +200,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         }),
       });
       // Fold the active branch once: version-1 snapshots replace, version-2 deltas continue.
-      const folded = foldAgentEntries(ctx.sessionManager.getBranch());
+      const folded = foldAgentEntries(hooks.branch?.(ctx) ?? ctx.sessionManager.getBranch());
       await runtime.importSummaries(folded.records, folded.nextId);
       // The confirmed base is what was actually saved, before import normalizes metadata
       // and interrupts old live jobs. Persist those changes on the next real update.

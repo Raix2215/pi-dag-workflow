@@ -5,6 +5,7 @@ import { dagLayout } from "../dag/layout.ts";
 import { statusLabel, type Todo, type TodoFilter, type WorkflowState } from "../todos/state.ts";
 import { chinese, type Translator } from "../shared/i18n.ts";
 import { filteredView, type TaskView } from "./filter.ts";
+import { objectId, snapshotCache, weakMemo } from "./render-cache.ts";
 
 // Failed and cancelled are native Todo outcomes: a cross and a slash keep the row honest without
 // inventing a new shape for the three original states.
@@ -35,7 +36,16 @@ const bounded = (line: string, width: number, theme?: Theme): string => {
   return theme ? result : stripTerminalSequences(result);
 };
 const reference = (task: Todo, dependencies: readonly number[]): string => `#${task.id}${dependencies.length ? `<-${dependencies.map((id) => `#${id}`).join(",")}` : ""}`;
-const rootMark = (tasks: readonly Todo[]): string => tasks.some((task) => task.status === 'pending' || task.status === 'in_progress') ? "●" : "○";
+/** Completed/active scan shared by every header of one immutable snapshot. */
+const headerCounts = weakMemo((tasks: readonly Todo[]) => {
+  let completed = 0;
+  let active = false;
+  for (const task of tasks) {
+    if (task.status === "completed") completed++;
+    else if (task.status === "pending" || task.status === "in_progress") active = true;
+  }
+  return { completed, root: active ? "●" : "○" };
+});
 /** Fragment instances carry their preset name, run and step position in task metadata. */
 function fragmentTag(task: Todo): string {
   const preset = task.metadata?.preset;
@@ -49,6 +59,10 @@ function fragmentTag(task: Todo): string {
   return `${clean(preset)}#${position}${suffix}`;
 }
 
+interface TaskStatics { subject: string; active: string; owner: string; fragment: string }
+/** Cleaned per-task text, tied to Todo identity: an unchanged task is reused by the next snapshot. */
+const staticsFor = weakMemo((task: Todo): TaskStatics => ({ subject: clean(task.subject), active: clean(task.activeForm ?? ""), owner: clean(task.owner ?? ""), fragment: fragmentTag(task) }));
+
 function projection(tasks: readonly Todo[]): DagStructure { return dagStructure(tasks); }
 
 /** Goal is display input from a real focus controller, not a second Goal state store. */
@@ -56,13 +70,14 @@ function header(state: WorkflowState, tasks: readonly Todo[], width: number, the
   const goal = clean(goalTitle ?? "");
   // An active filter keeps the header visible when nothing matches, so the empty list explains itself.
   if (!tasks.length && !state.plan && !goal && filter === "full") return [];
-  const done = tasks.filter((task) => task.status === "completed").length;
-  let todoBlock = `${rootMark(tasks)} \uf0ae Todo (${done}/${tasks.length})${dag ? " DAG" : ""}`;
+  const counts = headerCounts(tasks);
+  const done = counts.completed;
+  let todoBlock = `${counts.root} \uf0ae Todo (${done}/${tasks.length})${dag ? " DAG" : ""}`;
   let planBlock = state.plan ? msg("󰏫 Plan [只读]") : "";
   let goalBlock = goal ? `󰓾 Goal: ${goal}` : "";
   const size = () => visibleWidth([todoBlock, planBlock, goalBlock].filter(Boolean).join(" · "));
   if (size() > width) {
-    todoBlock = `${rootMark(tasks)} \uf0ae Todo ${done}/${tasks.length}${dag ? " DAG" : ""}`;
+    todoBlock = `${counts.root} \uf0ae Todo ${done}/${tasks.length}${dag ? " DAG" : ""}`;
     if (planBlock) planBlock = "󰏫 Plan";
     if (goalBlock) {
       const used = visibleWidth([todoBlock, planBlock].filter(Boolean).join(" · ")) + 3;
@@ -275,61 +290,112 @@ function agentSection(jobs: readonly AgentView[], width: number, theme: Theme | 
   if (ordered.length > shown.length) lines.push(tint(clip(msg`└─ … 隐藏 ${ordered.length - shown.length} 项`, width), "dim", theme));
   return lines;
 }
-function drawRows(rows: readonly TreeRow[], width: number, theme: Theme | undefined, jobs: readonly AgentView[], msg: Translator, view: TaskView): string[] {
+interface RowSegment { readonly color?: ThemeColor; readonly text: string }
+interface RowPlan { readonly segments: readonly RowSegment[]; readonly fits: boolean }
+interface RowGeometry { readonly byTodo: Map<number, AgentView>; readonly refWidth: number; readonly prefixWidth: number; readonly align: boolean }
+interface RowFrame extends RowGeometry { readonly plans: readonly (RowPlan | null)[] }
+
+const planOf = (segments: RowSegment[], width: number): RowPlan => {
+  let plain = "";
+  for (const segment of segments) plain += segment.text;
+  return { segments, fits: visibleWidth(plain) <= width };
+};
+/**
+ * Theme-independent row geometry: tree+id+refs, icon, title and the right-aligned owner/status
+ * suffix are laid out (and clipped) once per frame. Only `tint` runs per paint, so a theme change
+ * repaints colors without recomputing widths and truncation.
+ */
+function planRow(row: TreeRow, job: AgentView | undefined, frame: RowGeometry, width: number, msg: Translator, view: TaskView, now: number): RowPlan {
+  const { task, prefix, dependencies } = row;
+  const statics = staticsFor(task);
+  // A job failure or cancellation overrides an unfinished Todo; otherwise the Todo owns the row.
+  const effective = view.effective.get(task.id);
+  const display = effective === "failed" || effective === "cancelled" ? effective : task.status;
+  const icon = icons[display];
+  const iconColor = job ? boundColor(task, job) : colors[display];
+  // Three blocks: (1) tree+id+refs rendered exactly as-is, byte-identical to the compact form;
+  // (2) status icon+title merged as one unit starting at a unified column (fill sits after
+  // the reference, never inside block 1); (3) right-aligned [owner][status] suffix.
+  const refBudget = Math.max(0, width - (frame.align ? frame.prefixWidth : visibleWidth(prefix)) - visibleWidth(icon) - 2);
+  const budget = Math.min(refBudget, frame.align ? frame.refWidth : Math.max(visibleWidth(`#${task.id}`), Math.floor(width * 0.38)));
+  const ref = clip(reference(task, dependencies), budget);
+  const lead = frame.align ? " ".repeat(frame.prefixWidth - visibleWidth(prefix) + Math.max(0, budget - visibleWidth(ref))) : "";
+  const head: RowSegment[] = [{ color: "dim", text: prefix + ref + lead }, { text: " " }, { color: iconColor, text: icon }];
+  const available = width - visibleWidth(prefix + ref + lead) - visibleWidth(icon) - 2;
+  if (available <= 0) return planOf(head, width);
+  const title = statics.subject || msg("(无标题)");
+  const owner = job && !job.taskReportStale ? `${clean(job.id)} · ${clean(job.profile)}` : statics.owner || msg("主会话");
+  const fragmentText = statics.fragment ? `[${statics.fragment}]` : "";
+  // A completed Todo owns the label: late live or terminal job states must not contradict the task.
+  const live = job && task.status !== "completed" && job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
+  const label = job ? live ? activityLabel(live, now, msg) : boundLabel(task, job, msg) : msg(statusLabel[task.status]);
+  const minTitle = Math.min(6, visibleWidth(title));
+  const statusBudget = available - minTitle - 1;
+  const variants = live?.kind === "tool" ? [label, label.replace(/ (?:\d+[hms])+$/, ""), "󰆍"] : [label];
+  const ownerText = `[${owner}]`;
+  // Tail order is fragment, owner, status; narrow terminals drop the fragment first, then the
+  // owner, and keep the state that explains the row.
+  const tails = [
+    ...(statics.fragment ? [[fragmentText, ownerText]] : []),
+    [ownerText],
+    [],
+  ];
+  let suffixHead = "";
+  let status = "";
+  for (const parts of tails) {
+    const prefixText = parts.length ? parts.join(" ") + " " : "";
+    const value = variants.find((candidate) => visibleWidth(prefixText) + visibleWidth(candidate) + 2 <= statusBudget);
+    if (value !== undefined) { suffixHead = prefixText; status = `[${value}]`; break; }
+  }
+  const suffix = suffixHead + status;
+  const titleBudget = available - (suffix ? visibleWidth(suffix) + 1 : 0);
+  let body = clip(title, titleBudget);
+  const active = display === "in_progress" ? statics.active : "";
+  const activeBudget = titleBudget - visibleWidth(title) - visibleWidth(" · ");
+  if (active && activeBudget >= 1) body = `${title} · ${clip(active, activeBudget)}`;
+  const gap = suffix ? frame.align ? " ".repeat(Math.max(1, available - visibleWidth(body) - visibleWidth(suffix))) : " " : "";
+  return planOf([
+    ...head,
+    { text: " " },
+    { color: "accent", text: body },
+    ...(gap ? [{ text: gap }] : []),
+    { color: "muted", text: suffixHead },
+    { color: job ? boundColor(task, job) : "muted", text: status },
+  ], width);
+}
+const paintPlan = (plan: RowPlan, width: number, theme: Theme | undefined): string => {
+  const line = plan.segments.map((segment) => segment.color ? tint(segment.text, segment.color, theme) : segment.text).join("");
+  // Geometry already fit; only a defensive truncation of the (possibly pathological) overflow runs.
+  return plan.fits ? line : bounded(line, width, theme);
+};
+function buildFrame(rows: readonly TreeRow[], width: number, jobs: readonly AgentView[], msg: Translator, view: TaskView): RowFrame {
   const byTodo = new Map(jobs.filter((job) => job.todoId !== undefined).map((job) => [job.todoId!, job]));
   const refWidth = rows.reduce((max, row) => Math.max(max, visibleWidth(reference(row.task, row.dependencies))), 0);
   const prefixWidth = rows.reduce((max, row) => Math.max(max, visibleWidth(row.prefix)), 0);
   // Alignment is optional presentation, never worth sacrificing the path or readable text.
   const align = prefixWidth + refWidth + 4 + 6 + visibleWidth(`[${msg('主会话')}] [${msg('进行中')}]`) <= width;
-  return rows.map(({ task, prefix, dependencies }) => {
-    // A job failure or cancellation overrides an unfinished Todo; otherwise the Todo owns the row.
-    const effective = view.effective.get(task.id);
-    const display = effective === "failed" || effective === "cancelled" ? effective : task.status;
-    const job = byTodo.get(task.id);
-    const icon = icons[display];
-    // Three blocks: (1) tree+id+refs rendered exactly as-is, byte-identical to the compact form;
-    // (2) status icon+title merged as one unit starting at a unified column (fill sits after
-    // the reference, never inside block 1); (3) right-aligned [owner][status] suffix.
-    const refBudget = Math.max(0, width - (align ? prefixWidth : visibleWidth(prefix)) - visibleWidth(icon) - 2);
-    const budget = Math.min(refBudget, align ? refWidth : Math.max(visibleWidth(`#${task.id}`), Math.floor(width * 0.38)));
-    const ref = clip(reference(task, dependencies), budget);
-    const lead = align ? " ".repeat(prefixWidth - visibleWidth(prefix) + Math.max(0, budget - visibleWidth(ref))) : "";
-    const left = tint(prefix + ref + lead, "dim", theme) + " " + tint(icon, job ? boundColor(task, job) : colors[display], theme);
-    const available = width - visibleWidth(left) - 1;
-    if (available <= 0) return bounded(left, width, theme);
-    const title = clean(task.subject) || msg("(无标题)");
-    const owner = job ? `${clean(job.id)} · ${clean(job.profile)}` : clean(task.owner ?? "") || msg("主会话");
-    const fragment = fragmentTag(task);
-    const fragmentText = fragment ? `[${fragment}]` : "";
-    // A completed Todo owns the label: late live or terminal job states must not contradict the task.
-    const live = job && task.status !== "completed" && job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
-    const label = job ? live ? activityLabel(live, Date.now(), msg) : boundLabel(task, job, msg) : msg(statusLabel[task.status]);
-    const minTitle = Math.min(6, visibleWidth(title));
-    const statusBudget = available - minTitle - 1;
-    const variants = live?.kind === "tool" ? [label, label.replace(/ (?:\d+[hms])+$/, ""), "󰆍"] : [label];
-    const ownerText = `[${owner}]`;
-    // Tail order is fragment, owner, status; narrow terminals drop the fragment first, then the
-    // owner, and keep the state that explains the row.
-    const tails = [
-      ...(fragment ? [[fragmentText, ownerText]] : []),
-      [ownerText],
-      [],
-    ];
-    let head = "";
-    let status = "";
-    for (const parts of tails) {
-      const prefix = parts.length ? parts.join(" ") + " " : "";
-      const value = variants.find((candidate) => visibleWidth(prefix) + visibleWidth(candidate) + 2 <= statusBudget);
-      if (value !== undefined) { head = prefix; status = `[${value}]`; break; }
-    }
-    const suffix = head + status;
-    const titleBudget = available - (suffix ? visibleWidth(suffix) + 1 : 0);
-    let body = clip(title, titleBudget);
-    const active = display === "in_progress" ? clean(task.activeForm ?? "") : "";
-    const activeBudget = titleBudget - visibleWidth(title) - visibleWidth(" · ");
-    if (active && activeBudget >= 1) body = `${title} · ${clip(active, activeBudget)}`;
-    const gap = suffix ? align ? " ".repeat(Math.max(1, available - visibleWidth(body) - visibleWidth(suffix))) : " " : "";
-    return bounded(left + " " + tint(body, "accent", theme) + gap + tint(head, "muted", theme) + tint(status, job ? boundColor(task, job) : 'muted', theme), width, theme);
+  const geometry: RowGeometry = { byTodo, refWidth, prefixWidth, align };
+  const plans = rows.map((row) => {
+    const job = byTodo.get(row.task.id);
+    // A live tool label embeds elapsed time, so that one row is laid out again on every paint.
+    const live = job && row.task.status !== "completed" && job.activity && ACTIVE_LIVE.has(job.status);
+    return live ? null : planRow(row, job, geometry, width, msg, view, 0);
+  });
+  return { ...geometry, plans };
+}
+const frameCache = snapshotCache<RowFrame>(4);
+/** Only bound jobs draw on a row; their display-affecting fields (never elapsed time) key the frame. */
+const boundJobSignature = (jobs: readonly AgentView[]): string => JSON.stringify(jobs.filter((job) => job.todoId !== undefined).map((job) => [job.id, job.todoId, job.status, job.reportDelivery ?? null, job.taskReportStale ? 1 : 0, job.profile, job.label ?? null, job.activity?.kind ?? null, job.activity?.tool ?? null, job.activity?.since ?? null]));
+function frameFor(rows: readonly TreeRow[], width: number, jobs: readonly AgentView[], msg: Translator, view: TaskView): RowFrame {
+  return frameCache(rows, `${width}\u0000${objectId(msg)}\u0000${objectId(view)}\u0000${boundJobSignature(jobs)}`, () => buildFrame(rows, width, jobs, msg, view));
+}
+function paintRows(rows: readonly TreeRow[], frame: RowFrame, width: number, theme: Theme | undefined, msg: Translator, view: TaskView): string[] {
+  // No live row means no clock read, exactly like the uncached renderer.
+  const now = frame.plans.some((plan) => plan === null) ? Date.now() : 0;
+  return rows.map((row, index) => {
+    const planned = frame.plans[index];
+    const plan = planned ?? planRow(row, frame.byTodo.get(row.task.id), frame, width, msg, view, now);
+    return paintPlan(plan, width, theme);
   });
 }
 
@@ -354,6 +420,25 @@ function previewTasks(tasks: readonly Todo[], limit: number): Todo[] {
   // Selection decides the window; rendering keeps the canonical creation order.
   return tasks.filter((task) => chosen.has(task));
 }
+interface RowSelection { readonly selected: readonly Todo[]; readonly more: boolean; readonly rows: TreeRow[] }
+const selectionCache = snapshotCache<RowSelection>(4);
+/** Bounded preview window and its structural rows, reused while the snapshot and width stay put. */
+function selectionFor(tasks: readonly Todo[], style: string, width: number, limit: number): RowSelection {
+  return selectionCache(tasks, `${style}\u0000${width}\u0000${limit}`, () => {
+    const selected = previewTasks(tasks, limit);
+    const more = tasks.length > selected.length;
+    return { selected, more, rows: style === "flat" ? flatRows(selected, more) : pathRows(selected, width, more) };
+  });
+}
+const fallbackCache = snapshotCache<RowSelection>(4);
+/** Flat list the DAG uses when its layout degrades; same window rules as the uncached path. */
+function fallbackFor(tasks: readonly Todo[], limit: number): RowSelection {
+  return fallbackCache(tasks, `flat\u0000${limit}`, () => {
+    const selected = tasks.slice(0, limit === Infinity ? tasks.length : Math.max(1, limit - 2));
+    const more = selected.length < tasks.length;
+    return { selected, more, rows: flatRows(selected, more) };
+  });
+}
 /** Default: main dependency paths. Flat mode retains all predecessor references. */
 export function renderTasks(state: WorkflowState, width: number, options?: TaskViewOptions): string[] {
   width = columns(width);
@@ -366,11 +451,9 @@ export function renderTasks(state: WorkflowState, width: number, options?: TaskV
   const lines = header(state, tasks, width, options?.theme, options?.goalTitle, false, msg, filter);
   const requested = options?.maxRows ?? 8;
   const limit = requested === Infinity ? tasks.length : Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 8;
-  const selected = previewTasks(tasks, limit);
-  const more = tasks.length > selected.length;
-  const rows = state.treeStyle === "flat" ? flatRows(selected, more) : pathRows(selected, width, more);
-  lines.push(...drawRows(rows, width, options?.theme, jobs, msg, view));
-  if (more) lines.push(tint(clip(msg`└─ … 隐藏 ${tasks.length - selected.length} 项`, width), "dim", options?.theme));
+  const selection = selectionFor(tasks, state.treeStyle === "flat" ? "flat" : "chain", width, limit);
+  lines.push(...paintRows(selection.rows, frameFor(selection.rows, width, jobs, msg, view), width, options?.theme, msg, view));
+  if (selection.more) lines.push(tint(clip(msg`└─ … 隐藏 ${tasks.length - selection.selected.length} 项`, width), "dim", options?.theme));
   // The bounded widget keeps four standalone rows; the complete view carries every job it shows.
   lines.push(...agentSection(jobs, width, options?.theme, msg, view, requested === Infinity ? Infinity : AGENT_ROWS));
   return lines;
@@ -392,9 +475,10 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
   const result = dagLayout(projection(view.dagTasks), width, msg);
   if (!result.layout) {
     lines.push(tint(clip(msg`图已降级为列表：${result.reason}；左编号保留完整前驱`, width), "dim", theme));
-    const selected = tasks.slice(0, limit === Infinity ? tasks.length : Math.max(1, limit - 2));
-    const rows = flatRows(selected, selected.length < tasks.length);
-    const rendered = drawRows(rows, width, theme, jobs, msg, view);
+    const selection = fallbackFor(tasks, limit);
+    const rendered = paintRows(selection.rows, frameFor(selection.rows, width, jobs, msg, view), width, theme, msg, view);
+    const rows = selection.rows;
+    const selected = selection.selected;
     for (const [index, row] of rows.entries()) {
       if (lines.length >= limit) break;
       lines.push(rendered[index]!);
@@ -429,7 +513,7 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
     const rawFirst = tint(icons[display], colors[display], theme) + " " + tint(idText, "dim", theme) + tint(title, "accent", theme);
     const first = bounded(rawFirst, budget, theme);
     if (hidden.length && visibleWidth(prefix) > budget) overflowRefs.push(reference(task, hidden));
-    const owner = job ? `${clean(job.id)} · ${clean(job.profile)}` : clean(task.owner ?? "") || msg("主会话");
+    const owner = job && !job.taskReportStale ? `${clean(job.id)} · ${clean(job.profile)}` : staticsFor(task).owner || msg("主会话");
     const live = job && display !== "completed" && job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
     const label = job ? live ? activityLabel(live, Date.now(), msg) : boundLabel(task, job, msg) : msg(statusLabel[display]);
     const content = [first, tint(clip(`[${owner}]`, budget), "muted", theme), tint(clip(`[${label}]`, budget), job ? boundColor(task, job) : colors[display], theme)];
