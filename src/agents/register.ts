@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext, SessionBoundaryDraft } from "@eare
 import { configPaths } from "../shared/config.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { AgentRuntime, type JobSummary } from "./runtime.ts";
-import { ProfileStore, type Profile } from "./profiles.ts";
+import { CORE_TOOLS, ProfileStore, type Profile } from "./profiles.ts";
 import { fragmentContext } from "./context.ts";
 import { resetClosure } from "../todos/presets.ts";
 import { AgentNotices, type Notice } from "./notices.ts";
@@ -20,7 +20,7 @@ interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; muta
 const active = (job: JobSummary) => ["starting", "running", "waiting"].includes(job.status);
 const fingerprint = (state: WorkflowState, id?: number) => {
   const task = state.tasks.find((item) => item.id === id);
-  return task ? JSON.stringify([task.id, task.subject, task.description, task.blockedBy]) : "";
+  return task ? JSON.stringify([task.id, task.subject, task.description, task.blockedBy, task.metadata?.preset, task.metadata?.run, task.metadata?.step, task.metadata?.key]) : "";
 };
 const idSchema = Type.String({ minLength: 1, maxLength: 80 });
 const seconds = Type.Number({ exclusiveMinimum: 0, maximum: 86400 });
@@ -185,10 +185,11 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     // Restores never wake the model or resume processes. New explicit work re-enables delivery.
     paused = true;
     try {
-      profiles = new ProfileStore({ path: configPaths().profile, registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write"] });
+      profiles = new ProfileStore({ path: configPaths().profile, registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write", "powershell"] });
       await profiles.load();
       const provider = pi.getFlag("dag-workflow-test-child-provider");
-      runtime = new AgentRuntime({ cwd: ctx.cwd, profiles, getInheritedModel: () => context?.model ? { provider: context.model.provider, id: context.model.id } : undefined, onChanged, onNotice, onActivity,
+      runtime = new AgentRuntime({ cwd: ctx.cwd, profiles, getInheritedModel: () => context?.model ? { provider: context.model.provider, id: context.model.id } : undefined,
+        getInheritedThinking: () => pi.getThinkingLevel?.() ?? 'off', getInheritedTools: () => pi.getActiveTools?.() ?? CORE_TOOLS, onChanged, onNotice, onActivity,
         ...(typeof provider === "string" && provider ? { testExtensions: [provider] } : {
           getModelBootstrap: async (ref) => {
             const model = context?.modelRegistry.find(ref.provider, ref.id);
@@ -266,19 +267,21 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const reply = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data });
   const fail = (cause: unknown) => ({ isError: true, content: [{ type: "text" as const, text: String(cause) }], details: { error: String(cause) } });
 
-  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Optional todoId must be unblocked; profile selects a named model/tools config; context:true attaches the task's fragment state and earlier step reports. Returns jobId. No grandchildren; maximum eight active jobs.",
+  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child. Omitted profile or inherit uses the current parent model, thinking and active supported built-in tools; a named profile overrides declared fields, and tools overrides the tool list. Extensions, skills and full parent history are not copied. Supply a self-contained task with inputs/paths, constraints and expected evidence. Optional todoId must be unblocked; context:true adds a fragment brief, not full history. Returns jobId. No grandchildren; maximum eight active jobs.",
     promptSnippet: "Use subagent_spawn to start one isolated child agent for independent work",
     promptGuidelines: [
       "Delegate work that is independent and verifiable, such as research or isolated edits; keep the critical path and final verification in the main session.",
-      "Pass todoId to bind a job to its task and choose the profile that fits the job. A returned report never completes the task by itself: verify the work first.",
+      "Pass todoId to bind a job to its task. Omit profile or use inherit for parent model/thinking/supported built-in tools; choose a named profile for overrides. Give the child a self-contained task with inputs, constraints and expected evidence. Returned work must be verified before completing a Todo.",
       "Give one child a serial chain (A then B then C) when its steps share context, bind its last task only if it is already unblocked; otherwise bind the first ready task, and ask it to send a short interim message as each step finishes. Start parallel children for independent branches, and dispatch a task only when its prerequisites are completed: never ask a child to wait on work another child is doing.",
       "Set context:true when the task belongs to a task fragment, so the child receives its step position, the whole fragment with statuses, and the report heads of earlier steps instead of rediscovering them.",
     ],
-    parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(idSchema), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach the task's fragment state and earlier step report heads" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
-    async execute(_id, params, _signal, _update, ctx) {
+    parameters: Type.Object({ task: text, todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: 'Omit or use inherit for parent configuration; otherwise a saved profile name' })), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach the task's fragment state and earlier step report heads" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
+    async execute(_id, params, signal, _update, ctx) {
       try {
+        if (signal?.aborted) throw new Error('Dispatch aborted');
         const agent = ready(ctx);
         await profiles!.load();
+        if (signal?.aborted) throw new Error('Dispatch aborted');
         const before = hooks.state();
         const task = before.tasks.find((item) => item.id === params.todoId);
         if (params.todoId !== undefined) {
@@ -296,16 +299,18 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
           ...(params.tools === undefined ? {} : { tools: params.tools }),
           ...(params.timeout === undefined ? {} : { timeout: params.timeout }),
           ...(context ? { context } : {}),
+          ...(signal ? { signal } : {}),
         });
+        if (signal?.aborted) { await agent.cancel(job.id); throw new Error('Dispatch aborted; child stopped'); }
         if (ownGeneration !== generation) throw new Error(msg("会话已切换，派发已停止"));
         original.set(job.id, fingerprint(before, params.todoId));
-        if (task && job.status !== "failed") {
+        if (task && !['failed', 'cancelled', 'interrupted'].includes(job.status)) {
           claiming = task.id;
           try { hooks.mutate({ action: "update", id: task.id, status: "in_progress" }, ctx); }
           finally { claiming = undefined; }
         }
         const result = reply({ jobId: job.id, status: job.status, ...(task ? { todoId: task.id, todoStatus: hooks.state().tasks.find((item) => item.id === task.id)?.status } : {}), ...(job.error ? { error: job.error } : {}) });
-        return job.status === "failed" ? { ...result, isError: true } : result;
+        return ['failed', 'cancelled', 'interrupted'].includes(job.status) ? { ...result, isError: true } : result;
       } catch (cause) { return fail(cause); }
     },
   });
@@ -315,11 +320,15 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   });
   pi.registerTool({ name: "subagent_send", label: "Agent message", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Send direction to recipient jobId or answer requestId; exactly one target. Normal direction queues at the next safe boundary and does not stop a running tool. interrupt:true aborts the current local turn, clears old queued directions/questions, then resumes the same child context with the new direction. External actions may still run. Delivery is accepted/queued/answered, not proof the child followed it.",
     promptSnippet: "Use subagent_send to direct a child job or answer its question", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text, interrupt: Type.Optional(Type.Boolean({ description: 'recipient only: interrupt local turn, discard old queue, and continue the same child with this direction' })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
-    async execute(_id, params, _signal, _update, ctx) { try {
+    async execute(_id, params, signal, _update, ctx) { try {
       const agent = ready(ctx);
       if (!!params.recipient === !!params.requestId) throw new Error(msg("recipient 与 requestId 需且只能提供一个"));
-      const result = await agent.send(params);
-      if (params.recipient) adjusted.add(params.recipient);
+      const previousVersion = params.interrupt && params.recipient ? agent.inspect(params.recipient)[0]!.reportVersion : undefined;
+      const result = await agent.send({ ...params, ...(signal ? { signal } : {}) });
+      if (params.recipient) {
+        adjusted.add(params.recipient);
+        if (params.interrupt) notices.drop(params.recipient, previousVersion);
+      }
       return reply(result);
     } catch (cause) { return fail(cause); } },
   });
@@ -413,7 +422,15 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         if (claimedBy(job, params, { adjusted, reported })) throw new Error(msg`任务 #${job.todoId} 关联活动 ${job.id}；内容修改先发送明确调整信息；未收到它的汇报前不能完成，删除／清空请先停止该 Agent`);
       }
     },
-    afterTodoMutation(params: TodoParams) {
+    afterTodoMutation(params: TodoParams, before?: WorkflowState) {
+      if (params.action === 'update' && params.id !== undefined && (params.subject !== undefined || params.description !== undefined || params.metadata !== undefined || Boolean(params.addBlockedBy?.length || params.removeBlockedBy?.length))) {
+        const definition = fingerprint(hooks.state(), params.id);
+        const changed = before ? fingerprint(before, params.id) !== definition : undefined;
+        for (const job of runtime?.inspect() ?? []) if (job.todoId === params.id && active(job) && (changed ?? original.get(job.id) !== definition)) {
+          runtime?.invalidateReports(job.id); notices.drop(job.id);
+        }
+        if (changed) runtime?.invalidateTaskReports([params.id]);
+      }
       if (params.action === 'reset') runtime?.invalidateTaskReports(resetClosure(hooks.state().tasks, params.preset ?? '', params.step, params.run));
       else if (params.action === 'update' && ['pending', 'in_progress'].includes(params.status ?? '') && params.id !== undefined) runtime?.invalidateTaskReports([params.id]);
       if (adjusted.size === 0) return;

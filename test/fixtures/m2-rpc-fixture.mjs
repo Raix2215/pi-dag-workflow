@@ -12,6 +12,13 @@ process.stdin.on('data', chunk => {
     if (!line) continue;
     const command = JSON.parse(line);
     const response = data => emit({type:'response', id:command.id, success:true, data});
+    if (command.type === process.env.PI_DAG_TEST_FAIL_COMMAND) {
+      emit({type:'response',id:command.id,success:false,error:`fixture ${command.type} rejected`}); continue;
+    }
+    if (command.type === process.env.PI_DAG_TEST_STALL_COMMAND || command.type === 'prompt' && command.message === 'STALL_DIRECTION') {
+      emit({type:'tool_execution_start',toolCallId:'stall-command',toolName:`stall:${command.type}`});
+      continue;
+    }
     if (command.type === 'get_state') response({isStreaming:active,pendingMessageCount:queued,isCompacting:false});
     else if (command.type === 'get_available_thinking_levels') response({levels:['off','low']});
     else if (command.type === 'abort') {
@@ -21,6 +28,20 @@ process.stdin.on('data', chunk => {
     }
     else if (command.type === 'clear_queue') { queued=0; response({}); }
     else if (command.type === 'prompt') {
+      if (command.message === 'LATE_REPORT_DIRECTION') {
+        response({disposition:'queued'});
+        setTimeout(() => {
+          emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-message:OLD-BATCH-REPORT'});
+          emit({type:'tool_execution_start',toolCallId:'old-batch',toolName:'old-batch-seen'});
+        }, 20);
+        continue;
+      }
+      if (command.message === 'CONSUME_REPORT_DIRECTION') {
+        emit({type:'message_start',message:{role:'user',content:'LATE_REPORT_DIRECTION'}});
+        emit({type:'message_start',message:{role:'user',content:'CONSUME_REPORT_DIRECTION'}});
+        emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-message:NEW-BATCH-REPORT'});
+        response({disposition:'started'}); continue;
+      }
       if (command.message === 'HANDLED') { response({disposition:'handled'}); continue; }
       active = true;
       emit({type:'agent_start'});

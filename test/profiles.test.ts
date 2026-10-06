@@ -14,6 +14,23 @@ test("default profile inherits an exact registered model and read-only core tool
   assert.throws(() => store.resolve(), /parent model/);
   assert.throws(() => store.resolve(undefined, { provider: "local", id: "model" }), /Unknown model/);
 });
+test('inherit accepts its explicit name and captures thinking and only active supported built-ins', () => {
+  const store = new ProfileStore({ registry, trustedTools: ['bash', 'write', 'powershell'] });
+  const parent = { thinking: 'high' as const, tools: ['read', 'bash', 'write', 'powershell', 'custom_search', 'subagent_spawn'] };
+  const resolved = store.resolve(undefined, model, undefined, parent);
+  assert.deepEqual(resolved, { name: 'inherit', model, thinking: 'high', tools: ['read', 'bash', 'write', 'powershell'] });
+  assert.deepEqual(store.resolve('inherit', model, undefined, parent), resolved);
+  assert.deepEqual(store.resolve('inherit', model, [], parent).tools, []);
+  assert.deepEqual(store.resolve(undefined, model, undefined, { tools: [] }).tools, []);
+  store.set({ name: 'partial' });
+  assert.deepEqual(store.resolve('partial', model, undefined, parent), { ...resolved, name: 'partial' });
+  store.set({ name: 'explicit', thinking: 'off', tools: ['read'] });
+  assert.equal(store.resolve('explicit', model, undefined, parent).thinking, 'off');
+  assert.deepEqual(store.resolve('explicit', model, ['write'], parent).tools, ['write']);
+  const nonReasoning = new ProfileStore({ registry: { find: () => ({ reasoning: false }) } });
+  assert.equal(nonReasoning.resolve(undefined, model, undefined, parent).thinking, 'off');
+});
+
 test("named profiles validate thinking, exact model names and unknown fields", () => {
   const store = new ProfileStore({ registry });
   store.set({ name: "reader", model, thinking: "low" });

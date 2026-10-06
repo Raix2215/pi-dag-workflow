@@ -16,7 +16,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
   const prefix = Date.now();
   pi.registerProvider("dag-test", {
     api: "dag-test-api", baseUrl: "http://offline.invalid", apiKey: "offline-test-only",
-    models: [{ id: "scripted", name: "Offline scripted test (no LLM)", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 65536, maxTokens: 4096 }],
+    models: ['scripted', 'reasoned'].map((id) => ({ id, name: 'Offline scripted test (no LLM)', reasoning: id === 'reasoned', input: ['text' as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 65536, maxTokens: 4096 })),
     streamSimple(model, context, options) {
       const stream = createAssistantMessageEventStream();
       queueMicrotask(async () => {
@@ -77,7 +77,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
             else if (prompt === 'CONTROL OLD QUEUE') calls.push({ name: 'write', arguments: { path: 'old-direction.txt', content: 'UNEXPECTED' } });
             else if (prompt === 'CONTROL QUESTION') calls.push({ name: 'subagent_send', arguments: { message: 'CONTROL decision?', question: true } });
             else if (prompt === 'CONTROL REDIRECT QUESTION') calls.push({ name: 'write', arguments: { path: 'redirect-question.txt', content: 'CONTROL-SELF-DECIDED' } });
-            else if (prompt === 'CONTROL REPORT HOLD') calls.push({ name: 'subagent_send', arguments: { message: 'CONTROL-PROGRESS' } });
+            else if (prompt === 'CONTROL REPORT HOLD' || prompt === 'CONTROL FRESH REPORT HOLD') calls.push({ name: 'subagent_send', arguments: { message: prompt === 'CONTROL REPORT HOLD' ? 'CONTROL-PROGRESS' : 'FRESH-CURRENT-PROGRESS' } });
             else if (prompt.startsWith('子 Agent 报告') && prompt.includes('RECOVERY-CHILD-RESULT')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (goalWork && prompt.includes('出错重试测试') && flaky >= 2) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
@@ -96,7 +96,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
             else if (prompt.includes("写入测试文件")) calls.push({ name: "write", arguments: { path: "should-not-exist.txt", content: "forbidden" } });
             else if (prompt.includes("查看待办")) calls.push({ name: "todo", arguments: { action: "list" } });
           }
-          if (last?.role === 'toolResult' && prompt === 'CONTROL REPORT HOLD' && last.toolName === 'subagent_send') calls.push({ name: 'bash', arguments: { command: 'sleep 45', timeout: 60 } });
+          if (last?.role === 'toolResult' && (prompt === 'CONTROL REPORT HOLD' || prompt === 'CONTROL FRESH REPORT HOLD') && last.toolName === 'subagent_send') calls.push({ name: 'bash', arguments: { command: 'sleep 45', timeout: 60 } });
           if (last?.role === 'toolResult' && pi.getFlag('dag-test-plain-goal') === true) {
             if (plainGoalPhase === 2 && last.toolName === 'goal') { calls.push({ name: 'write', arguments: { path: 'objective-evidence.txt', content: 'GOAL-CONTINUED\n' } }); plainGoalPhase++; }
             else if (plainGoalPhase === 3 && last.toolName === 'write') { calls.push({ name: 'goal', arguments: { action: 'complete', id: 1 } }); plainGoalPhase++; }
@@ -114,7 +114,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
             message.content.push({ type: "text", text: "" });
             stream.push({ type: "text_start", contentIndex: 0, partial: message });
             const hadOriginal = relevant.some((item) => item.role === 'user' && (typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n')) === 'CONTROL LONG CALL');
-            const text = prompt === 'CONTROL REDIRECT' ? `CONTROL-REDIRECT-SUCCESS original-context=${hadOriginal}` : prompt === 'CONTROL REDIRECT QUESTION' ? 'CONTROL-QUESTION-REDIRECTED' : last?.role === "toolResult" ? `离线模拟已收到工具结果：${last.content.filter((item) => item.type === "text").map((item) => item.text).join("\n")}` : "离线模拟：仅支持验收用语，不进行真实模型推理。";
+            const text = prompt === 'INHERIT SETTINGS SNAPSHOT' ? JSON.stringify({ model: model.id, thinking: options?.reasoning ?? 'off' }) : prompt === 'CONTROL REDIRECT' ? `CONTROL-REDIRECT-SUCCESS original-context=${hadOriginal}` : prompt === 'CONTROL REDIRECT QUESTION' ? 'CONTROL-QUESTION-REDIRECTED' : last?.role === "toolResult" ? `离线模拟已收到工具结果：${last.content.filter((item) => item.type === "text").map((item) => item.text).join("\n")}` : "离线模拟：仅支持验收用语，不进行真实模型推理。";
             message.content[0] = { type: "text", text };
             stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
             stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });

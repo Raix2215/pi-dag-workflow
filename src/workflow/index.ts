@@ -148,10 +148,11 @@ export function createWorkflow(pi: ExtensionAPI) {
       return { ...result, text: `${result.text}\n${msg`已清理 ${removedJobs} 个已结束子 Agent 记录；运行及待交付／核验记录保留`}` };
     }
     agents?.assertTodoMutation(params);
+    const before = state;
     const result = applyTodo(state, params, msg, presetStore);
     const ready = newlyReady(state, result.state);
     commit(result.state, ctx, source);
-    agents?.afterTodoMutation(params);
+    agents?.afterTodoMutation(params, before);
     if (ready.length) {
       const hint = msg`前置已完成，可开始：${ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、')}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`;
       result.text += `\n${hint}`;

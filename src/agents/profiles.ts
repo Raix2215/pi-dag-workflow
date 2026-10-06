@@ -78,15 +78,19 @@ export class ProfileStore {
   get(name: string): Profile | undefined { const value = this.profiles.get(name); return value ? structuredClone(value) : undefined; }
   set(profile: Profile): Profile { const value = this.validate(profile); this.profiles.set(value.name, value); return structuredClone(value); }
   delete(name: string): boolean { return this.profiles.delete(name); }
-  resolve(name?: string, inheritedModel?: ModelRef, toolsOverride?: string[]): ResolvedProfile {
-    const profile = name ? this.get(name) : undefined;
-    if (name && !profile) throw new Error(`Unknown profile: ${name}`);
+  resolve(name?: string, inheritedModel?: ModelRef, toolsOverride?: string[], inherited?: { thinking?: ThinkingLevel | undefined; tools?: readonly string[] | undefined }): ResolvedProfile {
+    const profile = name && name !== 'inherit' ? this.get(name) : undefined;
+    if (name && name !== 'inherit' && !profile) throw new Error(`Unknown profile: ${name}`);
     const selected = profile?.model ?? inheritedModel;
     if (!selected) throw new Error("Select a parent model or configure a named profile model before spawning");
     const model = this.model(selected);
-    const thinking = profile?.thinking ?? 'off';
-    if (thinking !== 'off' && (this.options.registry.find(model.provider, model.id) as { reasoning?: boolean } | undefined)?.reasoning === false) throw new Error('Selected model does not support thinking; use off');
-    return { name: profile?.name ?? "inherit", model, thinking, tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...CORE_TOOLS]), ...(profile?.instructions ? { instructions: profile.instructions } : {}) };
+    const reasoning = (this.options.registry.find(model.provider, model.id) as { reasoning?: boolean } | undefined)?.reasoning;
+    const thinking = profile?.thinking ?? (reasoning === false ? 'off' : inherited?.thinking ?? 'off');
+    if (!THINKING_LEVELS.includes(thinking)) throw new Error('Invalid inherited thinking level');
+    if (thinking !== 'off' && reasoning === false) throw new Error('Selected model does not support thinking; use off');
+    const allowed = new Set<string>([...CORE_TOOLS, ...(this.options.trustedTools ?? [])]);
+    const inheritedTools = inherited?.tools === undefined ? [...CORE_TOOLS] : inherited.tools.filter((tool) => allowed.has(tool));
+    return { name: profile?.name ?? "inherit", model, thinking, tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...new Set(inheritedTools)]), ...(profile?.instructions ? { instructions: profile.instructions } : {}) };
   }
   async load(): Promise<void> {
     if (!this.options.path) return;

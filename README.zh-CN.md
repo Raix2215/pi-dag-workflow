@@ -259,13 +259,19 @@ Plan 模式、Goal 与子 Agent Job 并不共享：它们各自保存在本插�
 }
 ```
 
-- `name` —— 1–48 个字母、数字、`_` 或 `-`，以字母或数字开头；`inherit` 为保留名。
+`subagent_spawn` 省略 `profile`，或填写 `profile: "inherit"`，都会使用**派发当时**主会话的模型、思考等级，以及已启用工具中受支持的内置工具；GUI 和检查结果显示 `inherit`。命名 Profile 只覆盖明确填写的字段，调用中的 `tools` 则覆盖整个工具列表。主会话之后切换配置，不会改变已派生的子 Agent。
+
+- `name` —— 1–48 个字母、数字、`_` 或 `-`，以字母或数字开头；`inherit` 是内置选择，不能保存为命名 Profile。
 - `model` —— 必须是 Pi 已认识的 `provider` 与 `id`，写法与 `/model` 中显示的一致（`anthropic/claude-sonnet-4-5` 只是示例）。省略 `model` 表示继承主会话当前所选模型，如上面的 `research`。
-- `thinking` —— `off`（默认）、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；不支持推理的模型只能用 `off`。
-- `tools` —— 最多 8 个子 Agent 工具。`read`、`grep`、`find`、`ls` 始终可用，`edit`、`write`、`bash` 是可选的额外内置工具；主会话中的任意扩展工具不会被复制。
-- `instructions` —— 可选提示词，上限 2000 字符，会成为该 profile 派发的每个子 Agent 的一个系统提示词段（`dag_profile`，与内置子 Agent 规则并列）。用来固化“这类活该怎么干”；它不会赋予任务之外的权限。文本通过子进程环境变量传递、读取一次即删除，也不会经 `subagent_inspect` 出现在模型上下文里。
+- `thinking` —— `off`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`。省略时继承主会话等级，必要时向下适配子模型支持的等级。不支持推理的子模型使用 `off`；明确配置了不支持的等级时会报错，不会静默替换。
+- `tools` —— 最多 8 个受支持内置工具：`read`、`grep`、`find`、`ls`、`edit`、`write`、`bash`，以及 Pi 提供时的 `powershell`。省略时继承主会话已启用工具中的受支持子集，`[]` 表示不选执行工具；子 Agent 另有 `subagent_send` 与父会话通信。任意扩展工具不会被复制。
+- `instructions` —— 可选提示词，上限 2000 字符，会成为该 profile 派发的每个子 Agent 的一个系统提示词段（`dag_profile`，与内置子 Agent 规则并列）。用来固化“这类活该怎么干”；它不会赋予任务之外的权限。文本通过子进程环境变量传递、读取一次即删除，只有在 `subagent_inspect` 明确指定 `profiles: true` 请求完整 Profile 时才返回。
 
 同一份 Profile 也可以在会话里用 `/agents profile 名称 provider/model [thinking] [工具逗号列表]` 修改，用 `/agents unprofile 名称` 删除。文件最多保存 64 个 Profile、上限 64 KiB、不允许未知字段，从 `/agents` 保存时以仅属主可读写的权限写入。
+
+子 Agent 使用独立的会话历史。派发时应给出目标、输入路径、约束和预期核验证据。工作区规则会按工作目录重新发现，但不会复制主会话的扩展、技能、动态提示词、Goal 执行或完整历史。`context: true` 只为绑定片段任务附加有界简报；子 Agent 的自动模型重试仍关闭。
+
+在鉴权或启动阶段取消派发，会停止子进程并让 Todo 保持未接管。派发成功返回后，中止父会话等待或普通回合不会停止后台子 Agent。若方向消息在取消时可能已到达子进程，运行时会停止该子 Agent，避免未确认的指令继续执行。已经触发的外部动作仍需检查实际状态；取消不会撤销文件修改。
 
 ### `pi-dag-workflow-preset.json`
 

@@ -2,6 +2,12 @@
 
 This reference distinguishes execution, report delivery, and model consumption. A child finishing does not mean its report has reached the next main-model request, and receiving a report does not complete its Todo.
 
+## Dispatch configuration and child context
+
+Omitting `profile` or selecting `inherit` captures the parent's current model, thinking level, and active supported built-in tools. A saved profile overrides only declared fields; a call's `tools` overrides the list. Unsupported inherited thinking adapts down; an explicit unsupported profile level fails. Existing jobs keep their captured configuration. Extensions, skills, the parent's full history and dynamic prompt sections are not copied; workspace rules are discovered independently in the same working directory. Children receive their assignment, child rules, optional profile instructions and optional fragment brief, and do not run the parent's Goal or automatic model retries.
+
+Give a child a self-contained assignment: goal, inputs/paths, constraints and verification evidence. `context: true` is not full context inheritance. It provides a bounded brief for a bound fragment task, preserving real failed/cancelled states, the current step's instructions, and prioritized prerequisite report heads, including forward references. Only the latest valid report in that fragment instance contributes; stale or failed/interrupted evidence is not substituted with an older attempt.
+
 ## When the main model sees information
 
 | Route | What reaches the main model | Timing |
@@ -56,9 +62,13 @@ A successful `subagent_wait` consumes notices for the same job so its returned c
 
 A child uses `subagent_send({ message, question: true })` to ask a question and wait. The main model receives a `requestId`, then answers using parent `subagent_send({ requestId, message })`. That answer is sent through the child's pending input response; it does not start another child.
 
-Parent `subagent_send({ recipient, message })` submits direction with `streamingBehavior: "steer"`. Pi consumes it at its next safe steering boundary; ordinary direction does not interrupt a running tool. `interrupt: true` marks a composite redirect before aborting the local turn, clears obsolete queue/questions, then submits direction in the same child context. Old settled events do not count as failure. Already-triggered external actions may continue, so inspect their real state before overlapping work. Delivery is accepted/queued/answered, not proof the child followed it.
+Parent `subagent_send({ recipient, message })` submits direction with `streamingBehavior: "steer"`. Pi consumes it at its next safe steering boundary; ordinary direction does not interrupt a running tool. `interrupt: true` marks a composite redirect, clears queued work before aborting the local turn, clears obsolete queue/questions again at the idle boundary, then submits direction in the same child context. Old settled events do not count as failure. Already-triggered external actions may continue, so inspect their real state before overlapping work. Delivery is accepted/queued/answered, not proof the child followed it.
 
 `subagent_wait` defaults to `until: "update"`, returning on a new report, question or end within five seconds. `after` uses reportVersion to wait beyond already observed reports. `until: "finish"` waits for terminal execution (default 30s, cap 300s), but questions still return early. Timeout/abort affects the wait only. Version-aware notice acknowledgement cannot drop a newer report that was not in the returned snapshot.
+
+Changing a task's subject, description, dependencies or fragment identity invalidates prior acceptance evidence. Interrupting a child also starts a new report scope. Old output stays queryable, but old tool-batch reports arriving before the new direction is consumed are labeled historical and cannot unlock Todo completion. New reports can unlock the existing status-only acceptance guard; the parent must still verify their work. `outputStart` is a UTF-16 offset into retained `output`, separating current-assignment text from earlier history; restoration validates it, and fragment briefs use only its current tail.
+
+A parent abort during authentication/startup cancels dispatch, stops any child process and leaves the Todo unclaimed. Cancellation after successful dispatch does not retroactively stop the background job. Sending direction honors cancellation: a canceled observation leaves the job alone, while a canceled mutating RPC whose outcome is unknown stops the child. A failed composite interruption closes as failed rather than leaving a half-redirected job. Explicit cancel always completes process cleanup, even if its caller is interrupted. These controls do not roll back files or prove that already-triggered external actions have stopped.
 
 ## Goal, pause, and restore
 

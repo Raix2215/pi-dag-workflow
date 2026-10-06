@@ -293,15 +293,21 @@ read-only researcher and an explicitly configured writer:
 }
 ```
 
-- `name` — 1–48 letters, digits, `_` or `-`, starting with a letter or digit. `inherit` is reserved.
+Omitting `profile` in `subagent_spawn`, or passing `profile: "inherit"`, uses the parent model, thinking level and active supported built-in tools **at dispatch time**. The GUI and inspection label this `inherit`. Named profiles override only the fields they declare; a call's `tools` overrides the entire tool list. Existing children do not follow later parent configuration changes.
+
+- `name` — 1–48 letters, digits, `_` or `-`, starting with a letter or digit. `inherit` is built in and cannot be saved as a named profile.
 - `model` — `provider` and `id` of a model Pi already knows, spelled exactly as `/model` shows it (`anthropic/claude-sonnet-4-5` is an example). Omit `model` to inherit the model selected in the main session, as `research` does above.
-- `thinking` — `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. A model without reasoning support must use `off`.
-- `tools` — up to 8 child tools. `read`, `grep`, `find`, and `ls` are always available; `edit`, `write`, and `bash` are the optional built-ins. Arbitrary extension tools from the main session are never copied.
-- `instructions` — optional guidance, up to 2000 characters, that becomes a system prompt section in every child this profile dispatches (`dag_profile`, next to the built-in child rules). Use it for how this kind of work is done; it cannot grant permissions the task does not have. It travels through the child's environment, is read once and removed there, and never reaches the model through `subagent_inspect`.
+- `thinking` — `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Omit it to inherit the parent level, adapting down to a supported child level when necessary. A non-reasoning child uses `off`; an explicitly configured unsupported level is rejected rather than silently changed.
+- `tools` — up to 8 supported built-ins: `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`, and `powershell` where provided by Pi. Omit it to inherit the supported subset of the parent's active tools; `[]` selects none. The child additionally receives `subagent_send` for parent communication. Arbitrary extension tools are never copied.
+- `instructions` — optional guidance, up to 2000 characters, that becomes a system prompt section in every child this profile dispatches (`dag_profile`, next to the built-in child rules). Use it for how this kind of work is done; it cannot grant permissions the task does not have. It travels through the child's environment, is read once and removed there, and appears in `subagent_inspect` only when full profiles are explicitly requested with `profiles: true`.
 
 The same profiles are editable from a session with `/agents profile name provider/model [thinking] [comma-tools]`
 and `/agents unprofile name`. The file holds at most 64 profiles, is limited to 64 KiB, allows no unknown
 fields, and is written with owner-only permissions when you save from `/agents`.
+
+Children have independent conversation history. Give each assignment its goal, input paths, constraints, and expected verification evidence. Workspace rules are discovered from the working directory, but parent extensions, skills, dynamic prompt sections, Goal execution and full conversation history are not copied. `context: true` adds a bounded fragment brief only for a bound fragment task. Child automatic model retries remain disabled.
+
+Canceling a dispatch during authentication or startup stops its child and leaves the Todo unclaimed. Once dispatch has returned, canceling a parent wait or ordinary turn does not stop the background child. If a canceled direction may already have reached the child, the runtime stops that child instead of leaving an unconfirmed instruction running. Already-triggered external actions can still require inspection; cancellation does not undo file changes.
 
 ### `pi-dag-workflow-preset.json`
 

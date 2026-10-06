@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-06
+
+### Fixed
+
+- **Default child configuration now inherits consistently.** Omitting `profile` and selecting `inherit` both capture the parent's current model, thinking level and active supported built-in tools. Named profiles override declared fields, and a call's `tools` takes precedence. Inherited thinking adapts down to the selected child's capabilities; explicitly configured unsupported levels still fail. Extensions, skills and full parent history are not copied.
+- **Startup cancellation releases its resources.** Parent aborts during authentication or startup stop dispatch without claiming the Todo. Explicit cancellation and the job deadline also release a stalled authentication wait. Abortable RPC commands clean up listeners and timers; already-dispatched background jobs survive a parent wait/ordinary-turn abort.
+- **Interrupted directions cannot leave half-redirected jobs.** Clear old queued work before aborting, then clear again at the idle boundary. Cancellation after a mutating direction RPC stops unknown work; a failed composite redirect closes as failed. Explicit cancellation still completes cleanup and does not roll back files or guarantee external actions stopped.
+- **Old reports cannot verify a changed assignment.** Interrupting or changing task definitions, including fragment identity, invalidates the prior report count. Late reports from an old tool batch stay historical until the new direction is consumed. Current output offsets preserve all earlier text while excluding it from new fragment evidence, and are validated on restoration.
+- **Fragment briefs preserve real state and relevant evidence.** Failed/cancelled states stay distinct; forward and transitive prerequisites in the same fragment instance contribute valid report heads. Stale, failed and interrupted attempts never fall back to an older report. Bounded Unicode-safe briefs prioritize the current instructions and direct prerequisites over long titles and lower-priority history.
+
+### Changed
+
+- Parent and child guidance explicitly describe configuration inheritance, independent histories, self-contained assignments and current-scope verification. `inherit` remains the GUI/inspection label for the built-in selection.
+- English and Chinese profile documentation and the communication reference describe overrides, startup cancellation, historical evidence and unchanged single-tier execution limits.
+
+### Tests
+
+- Add real offline Pi regressions for high-thinking inheritance, inherited editing tools, profile overrides, aborted startup with an unclaimed Todo, queued scope changes, fresh-report acceptance and retained-output offsets. Cover authentication deadlines, failed interruption commands, delayed historical reports, metadata changes, forward dependencies and tight Unicode-safe brief budgets.
+
 ## [0.3.0] - 2026-10-04
 
 ### Added

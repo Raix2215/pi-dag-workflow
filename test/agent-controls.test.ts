@@ -55,6 +55,16 @@ test('a rejected post-interruption direction cannot mark the aborted assignment 
   assert.equal(result.status, 'failed');
 });
 
+test('a failed interruption command terminates uncertainty instead of stranding report acceptance', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-failed-interrupt-'));
+  const runtime = new AgentRuntime({ cwd: root, profiles: new ProfileStore({ registry: { find: () => model } }), getInheritedModel: () => model, testCliPath: fileURLToPath(new URL('./fixtures/m2-rpc-fixture.mjs', import.meta.url)), childEnv: { PI_DAG_TEST_FAIL_COMMAND: 'clear_queue' } });
+  t.after(async () => { await runtime.shutdown(); await rm(root, { recursive: true, force: true }); });
+  const job = await runtime.spawn({ task: 'HOLD' });
+  await assert.rejects(runtime.send({ recipient: job.id, message: 'replacement', interrupt: true }), /fixture clear_queue rejected/);
+  assert.equal(runtime.activeCount(), 0); assert.equal(runtime.inspect(job.id)[0]!.status, 'failed');
+  assert.equal(runtime.inspect(job.id)[0]!.error, 'Child redirection failed');
+});
+
 test('real Pi: redirect cancels an unanswered child question and resumes the same job', { timeout: 30000 }, async (t) => {
   const h = await setup(); t.after(() => h.close());
   const job = await h.runtime.spawn({ task: 'CONTROL QUESTION', tools: ['bash', 'write'], timeout: 20 });
@@ -69,6 +79,25 @@ test('real Pi: redirect cancels an unanswered child question and resumes the sam
   assert.equal(result.status, 'completed'); assert.match(result.output, /CONTROL-QUESTION-REDIRECTED/);
   assert.equal(await readFile(join(h.root, 'redirect-question.txt'), 'utf8'), 'CONTROL-SELF-DECIDED');
   assert.equal(result.pendingRequests, 0); assert.equal(h.notices.some((notice) => notice.kind === 'failed'), false);
+});
+
+test('old tool-batch reports stay historical until a changed queued direction is actually consumed', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-report-barrier-'));
+  const notices: AgentNotice[] = [];
+  const runtime = new AgentRuntime({ cwd: root, profiles: new ProfileStore({ registry: { find: () => model } }), getInheritedModel: () => model, testCliPath: fileURLToPath(new URL('./fixtures/m2-rpc-fixture.mjs', import.meta.url)), onNotice: (notice) => notices.push(notice) });
+  t.after(async () => { await runtime.shutdown(); await rm(root, { recursive: true, force: true }); });
+  const job = await runtime.spawn({ task: 'HOLD' });
+  await runtime.send({ recipient: job.id, message: 'LATE_REPORT_DIRECTION' }); runtime.invalidateReports(job.id);
+  await until(() => runtime.inspect(job.id)[0]!.activeTools.some((tool) => tool.tool === 'old-batch-seen'));
+  assert.equal(runtime.reports(job.id), 0); assert.equal(notices.length, 0);
+  const historical = await runtime.wait(job.id, { timeout: 0 });
+  assert.match(historical.output, /Historical report.*OLD-BATCH-REPORT/);
+  assert.equal(historical.output.slice(historical.outputStart), '', 'old output cannot masquerade as current evidence');
+  await runtime.send({ recipient: job.id, message: 'CONSUME_REPORT_DIRECTION' });
+  assert.equal(runtime.reports(job.id), 1); assert.equal(notices[0]!.message, 'NEW-BATCH-REPORT');
+  const result = await runtime.wait(job.id, { after: 0 });
+  assert.match(result.output.slice(result.outputStart), /NEW-BATCH-REPORT/);
+  assert.doesNotMatch(result.output.slice(result.outputStart), /OLD-BATCH-REPORT/);
 });
 
 test('real Pi: wait update returns an interim report while finish waits; snapshots and versions remain explicit', { timeout: 30000 }, async (t) => {

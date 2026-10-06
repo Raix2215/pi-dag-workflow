@@ -57,7 +57,7 @@ function sameRecord(a: JobResult, b: JobResult): boolean {
   if (a.id !== b.id || a.todoId !== b.todoId || a.profile !== b.profile || a.thinking !== b.thinking || a.status !== b.status) return false;
   if (a.startedAt !== b.startedAt || a.endedAt !== b.endedAt || a.error !== b.error || a.pendingRequests !== b.pendingRequests) return false;
   if (a.label !== b.label || a.reportDelivery !== b.reportDelivery || a.taskReportStale !== b.taskReportStale) return false;
-  if (a.reportVersion !== b.reportVersion || a.timedOut !== b.timedOut) return false;
+  if (a.reportVersion !== b.reportVersion || a.timedOut !== b.timedOut || a.outputStart !== b.outputStart) return false;
   if (a.model.provider !== b.model.provider || a.model.id !== b.model.id) return false;
   return a.output === b.output && sameStrings(a.tools, b.tools) && sameRequests(a.requests, b.requests) && sameUsage(a.usage, b.usage);
 }
