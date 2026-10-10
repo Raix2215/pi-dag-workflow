@@ -98,8 +98,8 @@ test('switching back to finite is passive and stops only at the next admission',
   assert.deepEqual(after.run, before.run, 'the switch clears no budget and does not pause');
   assert.equal(after.focusId, before.focusId);
   assert.equal(h.wakes.length, 0, 'the menu is not a start or resume');
-  // Only the next normal admission observes the restored finite cap.
-  assert.equal(await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false }), undefined);
+  // Only the next normal admission observes the restored finite cap; metadata is not a wake.
+  assert.notEqual((await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false }))?.continue, true);
   assert.equal(h.controller.snapshot().run.paused, true);
   assert.match(h.controller.snapshot().run.reason!, /上限/);
   assert.equal(h.controller.snapshot().run.used, 3);
@@ -134,7 +134,7 @@ test('an un-enabled Goal stays asleep after switching back to finite and Plan/re
   await h.fire('session_tree');
   assert.equal(h.controller.snapshot().goals[0]!.nolimit, false, 'the user choice is restored from the branch');
   assert.equal(h.controller.snapshot().run.paused, true, 'restore keeps the Goal paused');
-  assert.equal(await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false }), undefined);
+  assert.notEqual((await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false }))?.continue, true);
   await h.fire('session_shutdown');
 });
 

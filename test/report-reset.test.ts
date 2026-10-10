@@ -29,7 +29,7 @@ test('real Pi: fragment reset invalidates every reopened task report and redispa
   for (const todoId of [1, 2]) {
     const spawned = await call(client, 'subagent_spawn', { task: 'Offline retained evidence', todoId });
     ids.push(spawned.jobId);
-    const result = await call(client, 'subagent_wait', { jobId: spawned.jobId });
+    const result = await call(client, 'subagent_inspect', { jobId: spawned.jobId, output: true });
     assert.equal(result.status, 'completed');
     await call(client, 'todo', { action: 'update', id: todoId, status: 'completed' });
   }
@@ -41,7 +41,7 @@ test('real Pi: fragment reset invalidates every reopened task report and redispa
     assert.ok(job.output.length > 0, 'reset does not delete historical output');
   }
   const fresh = await call(client, 'subagent_spawn', { task: 'Fresh offline evidence', todoId: 1 });
-  await call(client, 'subagent_wait', { jobId: fresh.jobId });
+  await call(client, 'subagent_inspect', { jobId: fresh.jobId, output: true });
   const jobs = savedJobs(await client.entries() as any[]);
   assert.equal(jobs.find((job) => job.id === fresh.jobId).taskReportStale, undefined);
   assert.equal(jobs.find((job) => job.id === ids[0]).taskReportStale, true);

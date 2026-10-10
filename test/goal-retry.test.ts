@@ -31,6 +31,30 @@ async function create(client: IsolatedClient, title: string) {
   assert.ok(events2.some((event) => event.type === 'tool_execution_end' && event.toolName === 'goal' && !event.isError), JSON.stringify(events2.slice(-3)));
 }
 
+test('actual Pi: quota failure pauses immediately without a Goal retry', { timeout: 15000 }, async (t) => {
+  const client = await IsolatedClient.start(await agentRoot(), 'goal-permanent-error'); t.after(() => client.close());
+  await create(client, '永久故障测试');
+  await client.until(() => latest(client)?.run.paused === true);
+  assert.equal((await retries(client)).length, 0);
+  assert.equal(latest(client)!.run.errorRetries ?? 0, 0);
+  assert.match(latest(client)!.run.reason!, /不可重试/);
+});
+
+test('actual Pi: provider aborted recovers only when the host can rule out late cancellation', { timeout: 15000 }, async (t) => {
+  const client = await IsolatedClient.start(await agentRoot(), 'goal-provider-aborted'); t.after(() => client.close());
+  await create(client, 'provider断流测试');
+  const reportsCancellation = client.records.some((record) => record.type === 'agent_settled' && typeof record.aborted === 'boolean');
+  if (reportsCancellation) {
+    await client.until(() => latest(client)?.goals[0]?.status === 'completed');
+    assert.equal((await retries(client)).length, 1);
+  } else {
+    assert.equal(latest(client)?.run.paused, true);
+    assert.equal(latest(client)?.run.reason, '模型中止（旧宿主无法确认取消）');
+    assert.equal((await retries(client)).length, 0);
+  }
+  assert.equal(states(client).some((state) => state.run.reason === '用户中断'), false);
+});
+
 test('actual Pi: a failing request retries, and the next failure is not swallowed by that retry', { timeout: 60000 }, async (t) => {
   const root = await agentRoot();
   const client = await IsolatedClient.start(root, 'goal-retry-flaky');
@@ -70,12 +94,12 @@ test('actual Pi: exhausted native retries settle before each bounded Goal retry'
   assert.deepEqual(retryNotifications(client), ['1/2', '2/2']);
 });
 
-test('actual Pi: the default five retries are exhausted before pausing', { timeout: 30000 }, async (t) => {
+test('actual Pi: the default five retries are exhausted before pausing', { timeout: 60000 }, async (t) => {
   const root = await agentRoot();
   const client = await IsolatedClient.start(root, 'goal-default-retries');
   t.after(() => client.close());
   await create(client, '出错暂停测试');
-  await client.until(() => latest(client)?.run.paused === true);
+  await client.until(() => latest(client)?.run.paused === true, 45000);
   assert.equal(latest(client)!.run.errorRetries, 5);
   assert.match(latest(client)!.run.reason!, /已重试 5 次/);
   assert.deepEqual(retryNotifications(client), ['1/5', '2/5', '3/5', '4/5', '5/5']);

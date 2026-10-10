@@ -12,15 +12,41 @@ import { GOAL_CHECKPOINT_TYPE } from '../src/goal/prompt.ts';
 
 const memory = fileURLToPath(new URL('./fixtures/goal-compaction.ts', import.meta.url));
 const latestGoal = (entries: any[]): GoalState => entries.findLast((entry) => entry.type === 'custom' && entry.customType === GOAL_TYPE)?.data;
-async function setup(extraArgs: string[] = [], useMemoryFixture = true) {
+const messageText = (message: any) => typeof message.content === 'string' ? message.content : (message.content ?? []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n');
+function assertFirstRecovery(entries: any[], nopause = false) {
+  const compactions = entries.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry.type === 'compaction');
+  assert.ok(compactions.length);
+  for (const { index } of compactions) {
+    const first = entries.slice(index + 1).find((entry) => entry.customType === 'dag-test.context-export');
+    assert.ok(first, 'every compaction has a first provider request');
+    const messages = first.data.context.messages;
+    assert.ok(messages.some((message: any) => messageText(message).includes('The conversation history before this point was compacted')), 'first recovery retains the native/memory summary');
+    const contract = messages.findLast((message: any) => messageText(message).startsWith('Goal contract ('));
+    assert.ok(contract, 'not merely some later request: the first recovery has the current contract');
+    assert.match(messageText(contract), /FINAL-REQUIREMENT/);
+    assert.match(messageText(contract), /verify every requirement/);
+    assert.match(messageText(contract), /"paused":false/);
+    if (nopause) { assert.match(messageText(contract), /"modelPause":"deny"/); assert.match(messageText(contract), /do not ask questions/); }
+    assert.ok(messages.every((message: any) => !Object.keys(message.sections ?? {}).some((key) => key.startsWith('dag_workflow'))));
+  }
+}
+async function setup(extraArgs: string[] = [], useMemoryFixture = true, memoryFirst = false) {
   const root = await mkdtemp(join(tmpdir(), 'pi-dag-compact-goal-'));
   await mkdir(join(root, 'agent'), { recursive: true });
   await writeFile(join(root, 'agent', 'settings.json'), JSON.stringify({ compaction: { enabled: true, reserveTokens: 35000, keepRecentTokens: 1 }, retry: { enabled: false } }));
-  return IsolatedClient.start(root, 'goal-compaction', useMemoryFixture ? [memory] : [], extraArgs);
+  return IsolatedClient.start(root, 'goal-compaction', useMemoryFixture && !memoryFirst ? [memory] : [], extraArgs, false, memoryFirst ? [memory, fileURLToPath(new URL('../', import.meta.url))] : undefined);
 }
 async function create(client: IsolatedClient) {
   await client.prompt('TEST CALL todo {"action":"create","subject":"saved open task"}');
-  await client.prompt('TEST CALL goal {"action":"create","title":"预算测试","maxTurns":2}');
+  await client.prompt(`TEST CALL goal ${JSON.stringify({ action: 'create', title: '预算测试', maxTurns: 2, description: `${'Complete every original requirement. '.repeat(160)}FINAL-REQUIREMENT` })}`);
+}
+async function denyPolicy(client: IsolatedClient) {
+  const offset = client.records.length;
+  const configuring = client.prompt('/goal nopause #1');
+  await client.until(() => client.records.slice(offset).some((record) => record.type === 'extension_ui_request' && record.method === 'select'));
+  const menu = client.records.slice(offset).find((record) => record.type === 'extension_ui_request' && record.method === 'select')!;
+  client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: (menu.options as string[])[1] })}\n`);
+  await configuring;
 }
 async function ended(client: IsolatedClient) {
   await client.until(() => client.records.some((record) => record.method === 'notify' && String(record.message).includes('轮上限')));
@@ -35,12 +61,13 @@ async function ended(client: IsolatedClient) {
   const calls = (await readFile(join(client.root, 'goal-compaction-context.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as any[]);
   assert.ok(calls.some((messages) => messages.some((message) => message.role === 'compactionSummary' && message.summary.startsWith('MEMORY PROJECTION:')) && messages.some((message) => message.customType === CHECKPOINT_TYPE && message.content.includes('saved open task'))), 'the resumed provider context gets both memory-owned summary projection and the workflow state');
   assert.ok(calls.some((messages) => messages.some((message) => message.role === 'compactionSummary') && messages.some((message) => message.customType === GOAL_CHECKPOINT_TYPE && message.content.includes('"paused":false') && message.content.includes('full original objective'))), 'compacted provider context receives the authoritative Goal and execution rules even if its system section is absent');
+  assert.ok(calls.some((messages) => messages.some((message) => message.role === 'compactionSummary') && messages.some((message) => message.customType === GOAL_CHECKPOINT_TYPE && message.content.includes('FINAL-REQUIREMENT'))), 'long original requirements survive compaction, independent of the wake reminder');
   return entries;
 }
 
 for (const [reason, flag] of [['threshold', '--dag-test-compaction-pressure'], ['overflow', '--dag-test-overflow']]) {
   test(`real Pi without memory extensions: native ${reason} compaction resumes Goal and restores Todo context`, { timeout: 30000 }, async (t) => {
-    const client = await setup([flag!], false); t.after(() => client.close());
+    const client = await setup([flag!, '--dag-test-context-export'], false); t.after(() => client.close());
     await create(client); await client.prompt('/goal enable #1');
     await client.until(() => client.records.some((record) => record.method === 'notify' && String(record.message).includes('轮上限')));
     const entries = await client.entries() as any[];
@@ -55,6 +82,7 @@ for (const [reason, flag] of [['threshold', '--dag-test-compaction-pressure'], [
     assert.ok(client.records.some((record) => record.type === 'compaction_start' && record.reason === reason));
     assert.ok(entries.some((entry) => entry.customType === CHECKPOINT_TYPE && entry.details?.reason === 'compaction' && entry.content.includes('saved open task')));
     assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-retry').length, 0);
+    assertFirstRecovery(entries);
   });
 }
 
@@ -74,14 +102,25 @@ test('real Pi: one continuous Goal recovers three separate context overflows wit
   assert.ok(entries.filter((entry) => entry.customType === GOAL_CHECKPOINT_TYPE && entry.content.includes('"paused":false')).length >= 3);
 });
 
-test('real Pi: threshold compaction keeps Goal continuation and delivers a passive state checkpoint', { timeout: 30000 }, async (t) => {
-  const client = await setup(['--dag-test-compaction-pressure']); t.after(() => client.close());
+for (const memoryFirst of [false, true]) test(`real Pi: threshold compaction keeps Goal continuation and checkpoints (memory ${memoryFirst ? 'before' : 'after'} workflow)`, { timeout: 30000 }, async (t) => {
+  const client = await setup(['--dag-test-compaction-pressure'], true, memoryFirst); t.after(() => client.close());
   await create(client);
   await client.prompt('/goal enable #1');
   const entries = await ended(client);
   assert.equal(entries.filter((entry) => entry.type === 'compaction').length, 1);
   assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-continue').length, 1);
   assert.equal(entries.filter((entry) => entry.customType === CHECKPOINT_TYPE && entry.details?.reason === 'compaction').length, 1);
+});
+
+for (const memoryFirst of [false, true]) for (const [reason, flag] of [['threshold', '--dag-test-compaction-pressure'], ['overflow', '--dag-test-overflow']]) test(`first ${reason} recovery preserves nopause and full requirements with memory ${memoryFirst ? 'before' : 'after'} workflow`, { timeout: 30000 }, async (t) => {
+  const client = await setup([flag!, '--dag-test-context-export'], true, memoryFirst); t.after(() => client.close());
+  await create(client); await denyPolicy(client); await client.prompt('/goal enable #1');
+  await client.until(() => client.records.some((record) => record.method === 'notify' && String(record.message).includes('轮上限')));
+  const entries = await client.entries() as any[];
+  assertFirstRecovery(entries, true);
+  assert.equal(latestGoal(entries).run.used, 2);
+  assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-continue').length, 1);
+  assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-retry').length, 0);
 });
 
 test('real Pi: native overflow recovery wins over fallback continuation and preserves the budget', { timeout: 30000 }, async (t) => {

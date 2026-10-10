@@ -40,7 +40,7 @@ test('actual Pi: regular research replans after eight repeated reports and compl
   const entries = await client.entries(); const state = goals(entries)!;
   assert.equal(state.run.paused, true); assert.match(state.run.reason!, /无新进展/);
   assert.equal(state.run.stalled, 9); assert.equal(continuations(entries).length, 10);
-  assert.match(continuations(entries).at(-1).content, /choose a different feasible approach/);
+  assert.match(continuations(entries).at(-1).content, /execute a different feasible approach now/);
   assert.ok(!entries.some((entry: any) => entry.customType === STATE_TYPE), 'research does not require Todo creation');
   await call(client, { action: 'create', title: '完成测试' }); await call(client, { action: 'enable', id: 2 });
   const completed = goals(await client.entries())!;

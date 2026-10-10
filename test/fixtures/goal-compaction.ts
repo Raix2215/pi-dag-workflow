@@ -7,6 +7,8 @@ export default function goalCompaction(pi: ExtensionAPI): void {
   let rejectOnce = false;
   let compactAfterSettle = false;
   let slowCompletion = false;
+  let hideContracts = false;
+  pi.registerCommand('test-hide-goal-contract', { description: 'Offline test: ordinary memory hides Goal contracts', handler: async () => { hideContracts = true; } });
   pi.registerCommand('test-compact-slow-race', { description: 'Compact with slow completion handlers after discarding a wake', handler: async () => { rejectOnce = true; slowCompletion = true; } });
   pi.on('session_compact', async () => {
     if (!slowCompletion) return;
@@ -31,7 +33,7 @@ export default function goalCompaction(pi: ExtensionAPI): void {
   pi.on('context', (event, ctx) => {
     // Stand in for a memory owner: project only its own summary. A real transform may filter
     // any other messages; the workflow must neither replace this projection nor replay reports.
-    const messages = event.messages.map((message) => message.role === 'compactionSummary' ? { ...message, summary: `MEMORY PROJECTION: ${message.summary}` } : message);
+    const messages = event.messages.filter((message) => !hideContracts || (message as { customType?: string }).customType !== 'pi-dag-workflow.goal-checkpoint').map((message) => message.role === 'compactionSummary' ? { ...message, summary: `MEMORY PROJECTION: ${message.summary}` } : message);
     appendFileSync(join(ctx.cwd, 'goal-compaction-context.jsonl'), JSON.stringify(messages) + '\n');
     return { messages };
   });

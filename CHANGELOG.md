@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-10
+
+### Added
+
+- Paged Todo queries with continuation arguments, ready-task filtering, and direct dependency details.
+- Atomic batches of up to 50 task-definition operations with call-local references.
+- Explicit same-Todo child continuation through `resumeFrom`, with profile selection, retained assignments, and task-definition checks.
+- On-demand profile and task-fragment discovery.
+- Bounded, credential-sanitized child failure summaries, startup stderr diagnostics, and recovery guidance.
+
+### Changed
+
+- Child queries use `subagent_inspect`: short status by default, `output: true` for reports or bounded waiting.
+- Task previews adapt to terminal height and prioritize active work, questions, and results awaiting verification. Full views remain scrollable.
+- Goal progress records important verified results and execution decisions. Short continuation messages use the current complete Goal contract.
+- Task-mode and Goal guidance is supplied through event messages and recovery context. Selected profile instructions and fragment briefs arrive as child task context.
+- Todo results carry the queried page or affected tasks. Task state remains branch-local and authoritative.
+- Status updates keep task descriptions focused on requirements; verification summaries belong in the conversation or referenced artifacts.
+- English and Chinese READMEs cover installation, current tools, continuation, configuration, and safety boundaries.
+
+### Fixed
+
+- Respect final user cancellation before Goal retry or continuation. Hosts without explicit cancellation evidence conservatively pause unresolved provider-aborted runs.
+- Pause on explicit permanent model errors; keep recoverable errors within bounded exponential retry limits.
+- Preserve complete prerequisite references or an explicit truncation notice in small DAG previews.
+- Keep Standalone activity visible when Todo previews are hidden or a graph needs a smaller representation.
+- Use the latest child attempt consistently across task filters and cleanup; historical failures cannot replace a retired latest attempt.
+- Preserve late acknowledgement of a paid continuation step without replaying a filtered message.
+- Protect undelivered successful reports from ordinary cancellation and retained-record pruning.
+
 ## [0.3.1] - 2026-10-06
 
 ### Fixed

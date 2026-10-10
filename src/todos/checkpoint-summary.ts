@@ -38,7 +38,7 @@ function clipLabel(text: string, limit: number = MAX_LABEL): string {
 function guidance(): string[] {
   return [
     "Notes: this checkpoint is a baseline snapshot; later tool results take precedence.",
-    "A returned report is not an accepted Todo; call subagent_wait only when a report is missing.",
+    "A returned report is not an accepted Todo; use subagent_inspect output:true only when a report is missing.",
   ];
 }
 

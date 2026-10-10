@@ -18,13 +18,13 @@ test('actual Pi: cancelling tree navigation stops live children but does not str
   await client.prompt('/todos add 原任务');
   const target = (await client.entries()).find((entry: any) => entry.customType === 'pi-dag-workflow.state') as any;
   const job = await call(client, 'subagent_spawn', { task: 'TEST CALL subagent_send {"message":"保持等待","question":true}', todoId: 1 });
-  await call(client, 'subagent_wait', { jobId: job.details.jobId, timeout: 10 });
+  await call(client, 'subagent_inspect', { jobId: job.details.jobId, output: true, timeout: 10 });
   await client.prompt('/test-cancel-tree'); await client.prompt(`/test-tree ${target.id}`);
   const summary = await call(client, 'subagent_inspect', {});
   assert.equal(summary.details.jobs[0].status, 'interrupted');
   const next = await call(client, 'subagent_spawn', { task: '只读检查', todoId: 1 });
   assert.equal(next.isError, false);
-  assert.equal((await call(client, 'subagent_wait', { jobId: next.details.jobId, timeout: 10 })).details.status, 'completed');
+  assert.equal((await call(client, 'subagent_inspect', { jobId: next.details.jobId, output: true, timeout: 10 })).details.status, 'completed');
 });
 test('actual Pi: Profile saves at the requested user path; malformed Goal history needs confirmed reset', { timeout: 30000 }, async (t) => {
   const client = await start(); t.after(() => client.close());

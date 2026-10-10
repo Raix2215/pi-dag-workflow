@@ -14,9 +14,9 @@ test('actual Pi: workflow tools are listed with snippets and their usage rules r
   const entries = await client.entries() as any[];
   const system = entries.findLast((entry) => entry.message?.role === 'system' && entry.message.sections?.rules);
   assert.ok(system, 'the session must persist the rendered system prompt sections');
-  const { tools, rules, dag_workflow_mode: mode, dag_workflow_agents: agents } = system.message.sections;
+  const { tools, rules } = system.message.sections;
 
-  for (const name of ['todo', 'subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_wait', 'subagent_cancel', 'goal']) {
+  for (const name of ['todo', 'subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_cancel', 'goal']) {
     assert.match(tools, new RegExp(`^- ${name}: \\S`, 'm'), `${name} must appear in the Available tools section`);
   }
   assert.doesNotMatch(tools, /todo: Track optional/);
@@ -24,8 +24,9 @@ test('actual Pi: workflow tools are listed with snippets and their usage rules r
     assert.ok(rules.includes(rule), `the Guidelines section must carry: ${rule}`);
   }
 
-  assert.match(mode, /Plan multi-step work in the one todo list/);
-  assert.doesNotMatch(mode, /Todos are optional/);
-  assert.match(agents, /single-tier/);
-  assert.doesNotMatch(agents, /useful independent work/);
+  assert.ok(!Object.keys(system.message.sections).some((key) => key.startsWith('dag_workflow')), 'no extra workflow system sections');
+  assert.ok(!entries.some((entry) => entry.customType === 'pi-dag-workflow.guidance'), 'an empty Normal chat adds no mode message');
+  const declared = system.message.toolsAdded.find((tool: any) => tool.name === 'subagent_spawn');
+  assert.match(declared.description, /no grandchildren/i);
+  assert.match(rules, /Returned work must be verified before completing a Todo/);
 });

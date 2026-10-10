@@ -70,12 +70,14 @@ test('real Pi: cleanup menus do not pause, wake or refill an active Goal and do 
   assert.ok(entries.some((entry) => entry.customType === AGENTS_ENTRY_TYPE));
 });
 
-test('real Pi: inspect defaults to short profiles and explicit profiles:true retains instructions', { timeout: 30000 }, async (t) => {
+test('real Pi: inspect discovers profile summaries only on demand and explicit true retains instructions', { timeout: 30000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dag-inspection-profile-'));
   await mkdir(join(root, 'agent', 'pi-dag-workflow'), { recursive: true });
   await writeFile(join(root, 'agent', 'pi-dag-workflow', 'pi-dag-workflow-profile.json'), JSON.stringify({ profiles: [{ name: 'probe', thinking: 'off', tools: ['read'], instructions: 'PROFILE-LONG-INSTRUCTIONS '.repeat(30) }] }));
   const client = await IsolatedClient.start(root, 'inspection-profile', [], ['--dag-workflow-test-child-provider', offline]); t.after(() => client.close());
-  const short = (await tools(client, 'subagent_inspect', {})).result as any;
+  const ordinary = (await tools(client, 'subagent_inspect', {})).result as any;
+  assert.equal(ordinary.details.profiles, undefined);
+  const short = (await tools(client, 'subagent_inspect', { profiles: 'summary' })).result as any;
   assert.equal(short.details.profiles[0].name, 'probe'); assert.equal(short.details.profiles[0].instructions, undefined);
   assert.equal(short.details.profilePath, undefined);
   const full = (await tools(client, 'subagent_inspect', { profiles: true })).result as any;

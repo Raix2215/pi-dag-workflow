@@ -30,11 +30,11 @@ test("actual Pi delegates an unblocked Todo, shows real waiting/profile state, g
   result = await call(client, "subagent_spawn", { task: 'TEST CALL subagent_send {"message":"请选择方向","question":true}', todoId: 1, profile: "research" });
   assert.ok(!result.isError, JSON.stringify(result));
   const jobId = result.details.jobId as string;
-  result = await call(client, "subagent_wait", { jobId, timeout: 10 });
+  result = await call(client, "subagent_inspect", { jobId, output: true, timeout: 10 });
   assert.equal(result.details.status, "waiting");
   const requestId = result.details.requests[0].requestId;
   assert.match(widgets(client), /a1 · research/); assert.match(widgets(client), /等待回复/);
-  const inspect = await call(client, "subagent_inspect", {});
+  const inspect = await call(client, "subagent_inspect", { jobId, profiles: 'summary' });
   assert.doesNotMatch(JSON.stringify(inspect.details.jobs), /\"output\"|\"requests\"/);
   assert.equal(inspect.details.jobs[0].questions[0].message, '请选择方向');
   assert.equal(inspect.details.jobs[0].questions[0].requestId, requestId);
@@ -52,7 +52,7 @@ test("actual Pi delegates an unblocked Todo, shows real waiting/profile state, g
   assert.ok(!result.isError);
   result = await call(client, "subagent_send", { requestId, message: "只做只读调查" });
   assert.ok(!result.isError, JSON.stringify(result));
-  result = await call(client, "subagent_wait", { jobId, timeout: 10 });
+  result = await call(client, "subagent_inspect", { jobId, output: true, timeout: 10 });
   assert.equal(result.details.status, "completed");
   assert.match(result.details.output, /离线模拟/);
   assert.ok(!result.details.requests.length);
@@ -68,28 +68,28 @@ test("actual Pi cancels/removes jobs, preserves terminal output on reload and ne
   await client.prompt("开始持久化验收");
   let result = await call(client, "subagent_spawn", { task: "完成只读调查" });
   const done = result.details.jobId;
-  result = await call(client, "subagent_wait", { jobId: done, timeout: 10 });
+  result = await call(client, "subagent_inspect", { jobId: done, output: true, timeout: 10 });
   const output = result.details.output; assert.equal(result.details.status, "completed");
   result = await call(client, "subagent_spawn", { task: 'TEST CALL subagent_send {"message":"等待暂停","question":true}' });
   const pending = result.details.jobId;
-  await call(client, "subagent_wait", { jobId: pending, timeout: 10 });
+  await call(client, "subagent_inspect", { jobId: pending, output: true, timeout: 10 });
   await client.prompt("/test-reload");
   let jobs = (await call(client, "subagent_inspect", {})).details.jobs;
   assert.equal(jobs.find((job: any) => job.id === pending).status, "interrupted");
-  result = await call(client, "subagent_wait", { jobId: done, timeout: 0 }); assert.equal(result.details.output, output);
+  result = await call(client, "subagent_inspect", { jobId: done, output: true, timeout: 0 }); assert.equal(result.details.output, output);
   await call(client, "subagent_cancel", { jobId: pending, remove: true });
   jobs = (await call(client, "subagent_inspect", {})).details.jobs; assert.equal(jobs.length, 1);
   const entries = await client.entries(); assert.ok(entries.some((entry: any) => entry.customType === AGENTS_TYPE));
   await client.close(false); client = await start(client.root);
   assert.ok(!client.records.some((item) => item.type === "agent_start"));
-  result = await call(client, "subagent_wait", { jobId: done, timeout: 0 }); assert.equal(result.details.output, output);
+  result = await call(client, "subagent_inspect", { jobId: done, output: true, timeout: 0 }); assert.equal(result.details.output, output);
 });
 
 test("actual Pi consumes wait results without duplicate auto reports and suppresses paused old wakes", { timeout: 30000 }, async (t) => {
   const client = await start(); t.after(() => client.close());
   const result = await call(client, "subagent_spawn", { task: 'TEST CALL subagent_send {"message":"请求核验","question":true}' });
   const jobId = result.details.jobId;
-  const pending = await call(client, "subagent_wait", { jobId, timeout: 10 });
+  const pending = await call(client, "subagent_inspect", { jobId, output: true, timeout: 10 });
   assert.equal(pending.details.status, "waiting");
   assert.match(JSON.stringify(pending.details.requests), /请求核验/);
   const entries = await client.entries();
@@ -115,7 +115,7 @@ test("actual Pi keeps paused terminal reports pending until an explicit wait ack
   // A UI-only /agents wait never enters model context and must not acknowledge the report.
   await client.prompt(`/agents wait ${jobId}`);
   assert.equal(jobs(await client.entries()).find((job) => job.id === jobId)!.reportDelivery, "pending");
-  const waited = await call(client, "subagent_wait", { jobId, timeout: 0 });
+  const waited = await call(client, "subagent_inspect", { jobId, output: true, timeout: 0 });
   assert.equal(waited.details.status, "completed");
   assert.equal(waited.details.reportDelivery, "delivered");
   await client.until(() => client.records.some((item) => item.type === "entry_appended" && (item.entry as any)?.data?.jobs?.some((job: any) => job.id === jobId && job.reportDelivery === "delivered")));
@@ -148,7 +148,7 @@ test("actual Pi lists a child spawned without a Todo in its own panel section un
   assert.match(widgets(client), /Standalone Subagents · 1/);
   assert.match(widgets(client), new RegExp(`${jobId} · inherit`));
   assert.match(widgets(client), /调研不需要绑定任务的场景/);
-  const waited = await call(client, "subagent_wait", { jobId, timeout: 10 });
+  const waited = await call(client, "subagent_inspect", { jobId, output: true, timeout: 10 });
   assert.equal(waited.details.status, "completed");
   // The wait hands the report to this context, so nothing is left for the section to carry.
   await client.prompt("/todos list");

@@ -7,6 +7,7 @@ import { createWorkflow } from '../src/workflow/index.ts';
 import { FEATURE_NAMES, type Feature } from '../src/workflow/features.ts';
 import { emptyState, STATE_TYPE } from '../src/todos/state.ts';
 import { PresetStore } from '../src/todos/presets.ts';
+import { widgetHeightBudget } from '../src/ui/render.ts';
 
 async function host(features: readonly Feature[], branch: any[] = [], tui = false) {
   const root = await mkdtemp(join(tmpdir(), 'dag-lifecycle-'));
@@ -98,3 +99,22 @@ for (const tui of [false, true]) {
     } finally { await h.close(); }
   });
 }
+
+test('the widget adapts to height-only resize without a new registration or task change', async () => {
+  const state = { ...emptyState(), nextId: 31, tasks: Array.from({ length: 30 }, (_, index) => ({ id: index + 1, subject: `task ${index + 1}`, status: 'pending', blockedBy: [] })) };
+  const h = await host(['todos', 'ui'], [{ type: 'custom', customType: STATE_TYPE, data: state }], true);
+  try {
+    await h.fire('session_start');
+    const terminal = { rows: 36 };
+    const component = h.widget()({ terminal });
+    const mark = h.widgets();
+    const tall = component.render(80);
+    terminal.rows = 9;
+    const short = component.render(80);
+    assert.ok(short.length <= widgetHeightBudget(9));
+    assert.ok(tall.length > short.length);
+    terminal.rows = 36;
+    assert.deepEqual(component.render(80), tall);
+    assert.equal(h.widgets(), mark);
+  } finally { await h.close(); }
+});

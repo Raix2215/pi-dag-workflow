@@ -32,8 +32,8 @@ test('packed package loads all five resources and spawns a child without a priva
   const spawnResult = spawned.find((item) => item.type === 'tool_execution_end' && item.toolName === 'subagent_spawn')!;
   assert.equal(spawnResult.isError, false, JSON.stringify(spawnResult.result));
   const jobId = (spawnResult.result as { details: { jobId: string } }).details.jobId;
-  const waited = await client.prompt(`TEST CALL subagent_wait ${JSON.stringify({ jobId, timeout: 10 })}`);
-  const result = waited.find((item) => item.type === 'tool_execution_end' && item.toolName === 'subagent_wait')!;
+  const waited = await client.prompt(`TEST CALL subagent_inspect ${JSON.stringify({ jobId, output: true, timeout: 10 })}`);
+  const result = waited.find((item) => item.type === 'tool_execution_end' && item.toolName === 'subagent_inspect')!;
   assert.equal(result.isError, false, JSON.stringify(result.result));
   assert.equal((result.result as { details: { status: string } }).details.status, 'completed');
 });

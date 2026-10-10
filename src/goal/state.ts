@@ -2,13 +2,13 @@ import { Type, type Static } from 'typebox';
 import { chinese, type Translator } from '../shared/i18n.ts';
 
 export const GoalParamsSchema = Type.Object({
-  action: Type.Union([Type.Literal('create'), Type.Literal('update'), Type.Literal('list'), Type.Literal('get'), Type.Literal('delete'), Type.Literal('enable'), Type.Literal('disable'), Type.Literal('complete')]),
+  action: Type.Enum(['create', 'update', 'list', 'get', 'delete', 'enable', 'disable', 'complete'] as const, { type: 'string' }),
   id: Type.Optional(Type.Integer({ minimum: 1 })),
   title: Type.Optional(Type.String({ description: 'Short title; create requires it' })),
   description: Type.Optional(Type.String({ description: 'Objective and acceptance criteria' })),
   maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
-  progress: Type.Optional(Type.String({ description: 'Update: brief new verified progress, including research without Todos' })),
-  nextStep: Type.Optional(Type.String({ description: 'Update: concrete next action, a working note that cannot narrow the original objective; empty clears the note (forbidden under nopause)' })),
+  progress: Type.Optional(Type.String({ description: 'update only: verified milestone/finding/decision/blocker, not routine status; optional' })),
+  nextStep: Type.Optional(Type.String({ description: 'Update only when the next action materially changes; notes cannot narrow the objective. Empty clears it, forbidden under nopause' })),
 }, { additionalProperties: false });
 export type GoalParams = Static<typeof GoalParamsSchema>;
 export type ModelPausePolicy = 'allow' | 'deny';
@@ -89,9 +89,9 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
       if (params.maxTurns !== undefined) goal.maxTurns = params.maxTurns;
       if (params.progress !== undefined || params.nextStep !== undefined) {
         if (goal.id !== next.focusId || next.run.paused) throw new Error(msg('先启用此目标，再报告进展／下一步'));
-        if (params.progress !== undefined) next.run.progress = params.progress;
+        if (params.progress !== undefined) next.run.progress = params.progress.trim();
         if (params.nextStep !== undefined) {
-          if (params.nextStep.trim()) next.run.nextStep = params.nextStep;
+          if (params.nextStep.trim()) next.run.nextStep = params.nextStep.trim();
           else delete next.run.nextStep;
         }
       }
@@ -117,8 +117,8 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
   const goal = params.action === 'create' ? next.goals.at(-1)! : next.goals.find((item) => item.id === current!.id)!;
   const waitHint = goal.modelPause === 'deny' ? msg('自主解决缺口并继续执行；禁止提问和模型停用') : msg('先尝试替代路径并继续独立工作；仅真实外部阻塞时请求用户');
   const hint = activates(params.action) ? goalNolimit(goal)
-    ? msg`；不限续跑轮数，研究可 update progress/nextStep，${waitHint}`
-    : msg`；自动续跑上限 ${goal.maxTurns}，研究可 update progress/nextStep，${waitHint}` : '';
+    ? msg`；不限续跑轮数，仅重要新证据或执行方向变化时 update progress/nextStep，${waitHint}`
+    : msg`；自动续跑上限 ${goal.maxTurns}，仅重要新证据或执行方向变化时 update progress/nextStep，${waitHint}` : '';
   return { state: next, text: msg`Goal #${goal.id} ${params.action}：${goal.title}${hint}` };
 }
 /** User command only: policy belongs to a Goal, survives enable, and never edits its run. */

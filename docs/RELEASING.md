@@ -4,7 +4,7 @@ Maintainer checklist for a public release. Run checks on Node.js 22 and 24.
 
 ## 1. Prepare metadata
 
-- Set the intended version in both `package.json` and `package-lock.json`, for example with `npm version 0.2.1 --no-git-tag-version`. Keep `license: MIT`.
+- Set the approved release version in both `package.json` and `package-lock.json`, using `npm version <version> --no-git-tag-version`. Keep `license: MIT`.
 - Add a dated `CHANGELOG.md` section matching that version, and update both READMEs for behavior and configuration changes.
 - Keep repository URLs in the manifest and README install examples consistent.
 - Keep distributed files limited to `src`, both READMEs, `LICENSE`, `CHANGELOG.md`, and the explicitly approved documents in `docs`. Update the release check's document allowlist when adding a public document. Tests, fixtures, scripts, development dependencies, `.github`, and local artifacts must not ship.
@@ -20,7 +20,7 @@ npm run test:performance
 
 `check:release` verifies metadata, package contents, and machine-trace hygiene. It rejects personal home paths, private model literals, personal emails, real credential formats, `.env` files, session records, or a tracked `AGENTS.md`. Findings show only the file and rule, never the matched secret.
 
-The default test suite requires no credentials or network model. Its integration tests launch isolated Pi processes with scripted providers, including transient failures and native/Goal retry coexistence. The packed-install test loads all five entry points and launches a child without bundled Pi dependencies.
+The default test suite requires no credentials or network model. Its integration tests launch isolated Pi processes with scripted providers, including transient failures and native/Goal retry coexistence. The packed-install test loads all five entry points and launches a child using the host's Pi dependencies. To validate another installed host, run `PI_DAG_TEST_CLI="<host dist/bundle/cli.js>" npm test` and record that host version separately.
 
 With a caller-selected registered model, also run the bounded opt-in acceptance scripts:
 
@@ -51,7 +51,7 @@ git push origin main
 git push origin "v${VERSION}"
 ```
 
-Create the GitHub Release for the tag using its CHANGELOG section. Confirm the tag resolves to the reviewed commit and the Node 22/24 CI jobs succeed. These steps publish to GitHub; npm publication is a separate approval and operation.
+Create a non-prerelease GitHub Release for the tag using its CHANGELOG section. Confirm the tag resolves to the reviewed commit and the main/tag Node 22/24 CI jobs succeed. If attaching an npm package archive, run `npm pack --ignore-scripts` outside the source tree, inspect its contents, and record its SHA-256. Confirm the published asset matches that checksum. GitHub and npm publication are separate operations.
 
 ## 4. Confirm installation
 

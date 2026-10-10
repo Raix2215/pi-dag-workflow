@@ -7,8 +7,8 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { IsolatedClient } from "./fixtures/isolated-client.ts";
 import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
 
-/** A real Pi session with a configured fragment file: apply, panel tag, prompt advert, reset. */
-test("actual Pi: fragments apply from one call, advertise in the prompt, and reset on request", { timeout: 30000 }, async (t) => {
+/** A real Pi session with explicit fragment discovery, apply, panel tags and reset. */
+test("actual Pi: fragments are discovered on demand, apply from one call and reset on request", { timeout: 30000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "pi-dag-preset-"));
   await mkdir(join(root, "agent", "pi-dag-workflow"), { recursive: true });
   await writeFile(join(root, "agent", "pi-dag-workflow", "pi-dag-workflow-preset.json"), JSON.stringify({
@@ -28,7 +28,7 @@ test("actual Pi: fragments apply from one call, advertise in the prompt, and res
     const events = await client.prompt(`TEST CALL ${name} ${JSON.stringify(args)}`);
     const event = events.find((item) => item.type === "tool_execution_end" && item.toolName === name);
     assert.ok(event, `expected ${name}`);
-    return event.result as { isError?: boolean; content: { text: string }[] };
+    return event.result as { isError?: boolean; content: { text: string }[]; details: { presets: { name: string; description?: string }[] } };
   };
   const state = async () => {
     const entries = await client.entries() as { customType?: string; data?: WorkflowState }[];
@@ -48,10 +48,13 @@ test("actual Pi: fragments apply from one call, advertise in the prompt, and res
   assert.match(widget, /\[release#1\] \[fast\] \[待执行\]/);
   assert.match(widget, /\[release#2\] \[主会话\] \[待执行\]/);
 
-  // The prompt advertises names and descriptions only, like Pi's skill list.
-  const prompt = (await client.entries() as { message?: { role?: string; sections?: Record<string, string> } }[])
-    .findLast((entry) => entry.message?.role === "system" && entry.message.sections?.dag_workflow_mode)!.message!.sections!;
-  assert.match(prompt.dag_workflow_mode!, /Presets \(todo action=apply preset=NAME\): release \(Ship a version\)\./);
+  // Configured directories are discovered explicitly, not injected into any prompt.
+  const entries = await client.entries() as any[];
+  assert.ok(!entries.some((entry) => entry.customType === 'pi-dag-workflow.guidance' && /Available Todo presets/.test(entry.content)));
+  assert.ok(!entries.some((entry) => Object.keys(entry.message?.sections ?? {}).some((key) => key.startsWith('dag_workflow'))));
+  const directory = await call('todo', { action: 'presets' });
+  assert.equal(directory.details.presets[0]!.name, 'release');
+  assert.equal(directory.details.presets[0]!.description, 'Ship a version');
 
 
   await call("todo", { action: "update", id: 1, status: "in_progress" });

@@ -38,7 +38,7 @@ test('actual Pi joint: Plan DAG, blocked dispatch, child files, manual acceptanc
     const result = await call(client, 'subagent_spawn', { task: `TEST CALL write ${JSON.stringify({ path, content })}`, todoId, tools: ['read', 'write'], timeout: 20 });
     assert.equal(result.isError, false); ids.push(result.details.jobId);
   }
-  for (const jobId of ids) assert.equal((await call(client, 'subagent_wait', { jobId, timeout: 10 })).details.status, 'completed');
+  for (const jobId of ids) assert.equal((await call(client, 'subagent_inspect', { jobId, output: true, timeout: 10 })).details.status, 'completed');
   assert.equal(await readFile(`${client.root}/left.txt`, 'utf8'), 'LEFT\n');
   assert.equal(await readFile(`${client.root}/right.txt`, 'utf8'), 'RIGHT\n');
   const tasks = (await state(client, STATE_TYPE)).tasks;
@@ -53,9 +53,11 @@ test('actual Pi joint: Plan DAG, blocked dispatch, child files, manual acceptanc
   await client.prompt('/todos view dag');
   const widget = client.records.findLast((record) => record.method === 'setWidget' && Array.isArray(record.widgetLines))!;
   const displayed = (widget.widgetLines as string[]).map(stripTerminalSequences).join('\n');
-  assert.match(displayed, /图预览/); assert.doesNotMatch(displayed, /<-/);
+  assert.match(displayed, /图已降级为列表：终端高度不足/);
+  assert.match(displayed, /#4<-#2/); // A cropped path preserves the additional prerequisite.
+  assert.ok((widget.widgetLines as string[]).length <= 12);
   const messages = (await client.send('get_messages')).data as any;
-  assert.ok(!JSON.stringify(messages).includes('图预览'), 'UI is not model context');
+  assert.ok(!JSON.stringify(messages).includes('图已降级为列表'), 'UI is not model context');
   await client.close(false); client = await start(client.root);
   assert.ok(!client.records.some((record) => record.type === 'agent_start'));
   assert.equal((await state(client, STATE_TYPE)).tasks.filter((task: any) => task.status === 'completed').length, 4);

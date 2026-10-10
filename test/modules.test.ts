@@ -35,7 +35,7 @@ test('native Pi package filters cover all 32 resource combinations with no dupli
       assert.equal(result.extensions.length, modules.length);
       const tools = result.extensions.flatMap((item) => [...item.tools.keys()]);
       const commands = result.extensions.flatMap((item) => [...item.commands.keys()]);
-      const expected = [...modules.includes('todos') ? ['todo'] : [], ...modules.includes('agents') ? ['subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_wait', 'subagent_cancel'] : [], ...modules.includes('goal') ? ['goal'] : []];
+      const expected = [...modules.includes('todos') ? ['todo'] : [], ...modules.includes('agents') ? ['subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_cancel'] : [], ...modules.includes('goal') ? ['goal'] : []];
       assert.deepEqual(tools.sort(), expected.sort()); assert.equal(new Set(commands).size, commands.length);
       assert.equal(commands.includes('plan'), modules.includes('plan')); assert.equal(commands.includes('dag'), modules.includes('todos'));
       result.runtime.invalidate();
@@ -66,7 +66,7 @@ test('actual Pi: standalone Agents spawn/return without Goal gates or Todo links
   const client = await start(['agents']); t.after(() => client.close());
   const job = await call(client, 'subagent_spawn', { task: '独立只读调查' });
   assert.equal(job.isError, false);
-  const result = await call(client, 'subagent_wait', { jobId: job.details.jobId, timeout: 10 });
+  const result = await call(client, 'subagent_inspect', { jobId: job.details.jobId, output: true, timeout: 10 });
   assert.equal(result.details.status, 'completed');
   assert.equal((await call(client, 'subagent_spawn', { task: '不允许关联未启用任务', todoId: 1 })).isError, true);
   assert.ok(!client.records.some((item) => item.method === 'setWidget'));
@@ -116,7 +116,7 @@ test('actual Pi: reverse factory order retains Todo links, Plan guard and shared
   const client = await IsolatedClient.start(undefined, 'reverse', [], ['--dag-workflow-test-child-provider', provider], false, entries); t.after(() => client.close());
   await call(client, 'todo', { action: 'create', subject: '反序派发' });
   const job = await call(client, 'subagent_spawn', { task: '反序独立调查', todoId: 1 }); assert.equal(job.isError, false);
-  assert.equal((await call(client, 'subagent_wait', { jobId: job.details.jobId, timeout: 10 })).details.status, 'completed');
+  assert.equal((await call(client, 'subagent_inspect', { jobId: job.details.jobId, output: true, timeout: 10 })).details.status, 'completed');
   await client.prompt('/plan start'); assert.equal((await call(client, 'write', { path: 'blocked', content: 'no' })).isError, true);
   await client.prompt('/plan off'); assert.equal((await call(client, 'goal', { action: 'create', title: '反序目标' })).isError, false);
 });

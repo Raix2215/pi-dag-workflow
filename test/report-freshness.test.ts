@@ -21,7 +21,7 @@ test('real Pi: redirected or redefined tasks reject old interim evidence, accept
   await call('todo', { action: 'create', subject: 'original work', metadata: { preset: 'check', run: 1, key: 'first', step: 1 } });
   await call('todo', { action: 'create', subject: 'next step', blockedBy: [1], metadata: { preset: 'check', run: 1, key: 'second', step: 2 } });
   const first = await call('subagent_spawn', { task: 'CONTROL REPORT HOLD', todoId: 1 });
-  const report = await call('subagent_wait', { jobId: first.jobId, after: 0, timeout: 8 });
+  const report = await call('subagent_inspect', { jobId: first.jobId, output: true, after: 0, timeout: 8 });
   assert.match(report.output, /CONTROL-PROGRESS/); assert.equal(report.status, 'running');
   await call('subagent_send', { recipient: first.jobId, interrupt: true, message: 'HOLD-IDLE-ENABLE-CHILD' });
   await call('todo', { action: 'update', id: 1, status: 'completed' }, false);
@@ -29,7 +29,7 @@ test('real Pi: redirected or redefined tasks reject old interim evidence, accept
   await call('todo', { action: 'update', id: 1, status: 'completed' }, false);
   const version = (await call('subagent_inspect', { jobId: first.jobId })).jobs[0].reportVersion;
   await call('subagent_send', { recipient: first.jobId, interrupt: true, message: 'CONTROL FRESH REPORT HOLD' });
-  const fresh = await call('subagent_wait', { jobId: first.jobId, after: version, timeout: 8 });
+  const fresh = await call('subagent_inspect', { jobId: first.jobId, output: true, after: version, timeout: 8 });
   assert.match(fresh.output.slice(fresh.outputStart), /FRESH-CURRENT-PROGRESS/);
   assert.doesNotMatch(fresh.output.slice(fresh.outputStart), /CONTROL-PROGRESS/);
   assert.match(fresh.output, /CONTROL-PROGRESS/, 'history is retained');
@@ -44,7 +44,7 @@ test('real Pi: redirected or redefined tasks reject old interim evidence, accept
   await call('subagent_cancel', { jobId: first.jobId });
 });
 
-for (const field of ['description', 'metadata'] as const) test(`real Pi: redefining ${field} of a queued assignment invalidates its old report without interrupt`, { timeout: 30000 }, async (t) => {
+for (const mode of ['single', 'batch'] as const) for (const field of ['description', 'metadata'] as const) test(`real Pi: ${mode} redefining ${field} of a queued assignment invalidates its old report without interrupt`, { timeout: 30000 }, async (t) => {
   const client = await IsolatedClient.start(undefined, 'redefined-report', [], ['--dag-workflow-test-child-provider', offline]); t.after(() => client.close());
   const call = async (name: string, params: object) => {
     const events = await client.prompt(`TEST CALL ${name} ${JSON.stringify(params)}`);
@@ -52,9 +52,10 @@ for (const field of ['description', 'metadata'] as const) test(`real Pi: redefin
   };
   await call('todo', { action: 'create', subject: 'first definition', metadata: { preset: 'check', run: 1, key: 'first', step: 1 } });
   const job = (await call('subagent_spawn', { task: 'CONTROL REPORT HOLD', todoId: 1 })).details.jobId;
-  assert.match((await call('subagent_wait', { jobId: job, after: 0, timeout: 8 })).details.output, /CONTROL-PROGRESS/);
+  assert.match((await call('subagent_inspect', { jobId: job, output: true, after: 0, timeout: 8 })).details.output, /CONTROL-PROGRESS/);
   await call('subagent_send', { recipient: job, message: 'HOLD-IDLE-ENABLE-CHILD' });
-  const edited = await call('todo', { action: 'update', id: 1, ...(field === 'description' ? { description: 'new inputs need another check' } : { metadata: { preset: 'check', run: 2, key: 'first', step: 1 } }) }); assert.ok(!edited.isError);
+  const update = { action: 'update', id: 1, ...(field === 'description' ? { description: 'new inputs need another check' } : { metadata: { preset: 'check', run: 2, key: 'first', step: 1 } }) };
+  const edited = await call('todo', mode === 'single' ? update : { action: 'batch', operations: [update, { action: 'update', id: 1, activeForm: 'checking the new scope' }] }); assert.ok(!edited.isError);
   const completed = await call('todo', { action: 'update', id: 1, status: 'completed' }); assert.equal(completed.isError, true);
   await call('subagent_cancel', { jobId: job });
 });

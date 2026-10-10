@@ -166,7 +166,7 @@ test('a memory filter may omit a persisted report; it is never forced back into 
     h.accept(draft, false);
     assert.equal(h.job().reportDelivery, 'pending');
     assert.equal(await boundary({ outcome: 'completed', entries: [] }, h.ctx), undefined);
-    const result = await h.tools.get('subagent_wait').execute('read-filtered-report', { jobId: h.job().id }, undefined, undefined, h.ctx);
+    const result = await h.tools.get('subagent_inspect').execute('read-filtered-report', { jobId: h.job().id, output: true }, undefined, undefined, h.ctx);
     assert.ok(!result.isError);
     assert.equal(h.job().reportDelivery, 'delivered', 'the durable result remains available for explicit inspection');
   } finally { await h.close(); }

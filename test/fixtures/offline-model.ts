@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { appendFileSync } from 'node:fs';
 import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall } from "@earendil-works/pi-ai";
 
 /** Deterministic test provider, not a real language model. No network or credentials. */
@@ -13,6 +14,10 @@ export default function offlineModel(pi: ExtensionAPI): void {
   pi.registerFlag('dag-test-compaction-pressure', { type: 'boolean', description: 'Offline test-only context pressure on the first Goal turn' });
   pi.registerFlag('dag-test-overflow', { type: 'boolean', description: 'Offline test-only one context overflow on a Goal request' });
   pi.registerFlag('dag-test-repeated-overflow', { type: 'boolean', description: 'Offline test-only context overflow on three separate Goal continuation rounds' });
+  pi.registerFlag('dag-test-context-metrics', { type: 'boolean', description: 'Offline test-only size measurements of the provider-facing context' });
+  pi.registerFlag('dag-test-context-export', { type: 'boolean', description: 'Offline test-only full normalized context and provider output in non-model custom entries' });
+  pi.registerFlag('dag-test-important-progress', { type: 'boolean', description: 'Offline controlled workload: write every Goal round, update only verified milestone rounds' });
+  let contextExportSequence = 0;
   const prefix = Date.now();
   pi.registerProvider("dag-test", {
     api: "dag-test-api", baseUrl: "http://offline.invalid", apiKey: "offline-test-only",
@@ -26,6 +31,33 @@ export default function offlineModel(pi: ExtensionAPI): void {
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
         };
         try {
+          const childLog = process.env.PI_DAG_CHILD === '1' ? process.env.PI_DAG_TEST_CHILD_CONTEXT_LOG : undefined;
+          if (childLog) {
+            const requestId = `${process.pid}-${prefix}-${++contextExportSequence}`;
+            const exportRecord = (value: unknown) => { try { appendFileSync(childLog, JSON.stringify(value) + '\n'); } catch { /* Test telemetry cannot change provider behavior. */ } };
+            exportRecord({ type: 'input', requestId, context });
+            void stream.result().then((result) => exportRecord({ type: 'output', requestId, message: result })).catch(() => {});
+          }
+          if (pi.getFlag('dag-test-context-export') === true) {
+            const requestId = `${prefix}-${++contextExportSequence}`;
+            // Snapshot before the stream runs: these custom entries never enter model context.
+            pi.appendEntry('dag-test.context-export', { requestId, provider: model.provider, model: model.id, context: JSON.parse(JSON.stringify(context)) });
+            // result() observes completion without consuming or changing the event iterator,
+            // and also captures native compaction calls that have no message_end event.
+            void stream.result().then((result) => {
+              pi.appendEntry('dag-test.output-export', { requestId, message: JSON.parse(JSON.stringify(result)) });
+            }).catch(() => { /* Export instrumentation must not change scripted model behavior. */ });
+          }
+          if (pi.getFlag('dag-test-context-metrics') === true) {
+            const markers = ['Execute concrete actions; preserve the requested end state', 'Preserve the full original objective'];
+            const executionRules = (text: string) => markers.reduce((sum, marker) => sum + text.split(marker).length - 1, 0);
+            const messages = context.messages.map((item) => {
+              const text = typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+              const sections = 'sections' in item ? Object.values(item.sections ?? {}).filter((value) => typeof value === 'string').join('\n') : '';
+              return { role: item.role, ...('toolName' in item ? { toolName: item.toolName } : {}), textChars: text.length, textBytes: Buffer.byteLength(text), executionRules: executionRules(text), sectionExecutionRules: executionRules(sections), sectionsBytes: Buffer.byteLength(sections), compactWakeRules: text.split('Progress/nextStep are notes, not authority to narrow it.').length - 1, ...('toolsAdded' in item ? { toolsAddedBytes: Buffer.byteLength(JSON.stringify(item.toolsAdded) ?? '') } : {}), ...('details' in item ? { detailsBytes: Buffer.byteLength(JSON.stringify(item.details) ?? '') } : {}) };
+            });
+            pi.appendEntry('dag-test.context-metrics', { systemBytes: messages.filter((item) => item.role === 'system').reduce((sum, item) => sum + item.textBytes + item.sectionsBytes, 0), toolsBytes: messages.reduce((sum, item) => sum + (item.toolsAddedBytes ?? 0), 0), contextBytes: Buffer.byteLength(JSON.stringify(context)), messages });
+          }
           await options?.onPayload?.({ testOnly: true }, model);
           if (options?.signal?.aborted) throw new Error("aborted");
           stream.push({ type: "start", partial: message });
@@ -34,11 +66,12 @@ export default function offlineModel(pi: ExtensionAPI): void {
           const relevant = context.messages.filter((item) => {
             if (item.role !== 'user') return true;
             const text = typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
-            return !text.startsWith('Workflow state checkpoint') && !text.startsWith('Goal state checkpoint');
+            return !['Workflow state checkpoint', 'Goal state checkpoint', 'Goal contract (', 'No active Goal. Do not continue automatically.', 'Plan: read/search/ask', 'Normal:', 'Available Todo presets (', 'No Todo presets are available.', 'Profile and fragment guidance for this child run.'].some((prefix) => text.startsWith(prefix)) && !/^Goal #\d+ paused/.test(text);
           });
           const last = relevant.at(-1);
           const latestUser = relevant.findLast((item) => item.role === "user");
-          const prompt = latestUser?.role === "user" ? typeof latestUser.content === "string" ? latestUser.content : latestUser.content.filter((item) => item.type === "text").map((item) => item.text).join("\n") : "";
+          const rawPrompt = latestUser?.role === "user" ? typeof latestUser.content === "string" ? latestUser.content : latestUser.content.filter((item) => item.type === "text").map((item) => item.text).join("\n") : "";
+          const prompt = rawPrompt.startsWith('Resume attempt from ') && rawPrompt.includes('\nCurrent continuation task:\n') ? rawPrompt.split('\nCurrent continuation task:\n').at(-1)! : rawPrompt;
           const calls: { name: string; arguments: ToolCall["arguments"] }[] = [];
           if (last?.role !== "toolResult") {
             if (prompt === 'HOLD-IDLE-ENABLE-CHILD') {
@@ -57,6 +90,11 @@ export default function offlineModel(pi: ExtensionAPI): void {
             // Goal error-recovery tests: one Goal fails the first two requests, another fails until
             // its retry budget is spent. Only Goal turns fail; the test's own tool calls stay intact.
             const goalWork = prompt.startsWith('Goal #') || prompt.includes('自动重试');
+            if (goalWork && prompt.includes('永久故障测试')) throw new Error('429 insufficient_quota: billing limit exhausted');
+            if (goalWork && prompt.includes('provider断流测试') && flaky++ === 0) {
+              message.stopReason = 'aborted'; message.errorMessage = 'provider stream disconnected';
+              stream.push({ type: 'error', reason: 'aborted', error: message }); stream.end(); return;
+            }
             const round = Number(/^Goal #\d+ (\d+)\//.exec(prompt)?.[1] ?? 0);
             if (goalWork && pi.getFlag('dag-test-repeated-overflow') === true && [1, 3, 5].includes(round) && !overflowRounds.has(round)) {
               overflowRounds.add(round); throw new Error('maximum context length exceeded');
@@ -80,21 +118,34 @@ export default function offlineModel(pi: ExtensionAPI): void {
             else if (prompt === 'CONTROL REPORT HOLD' || prompt === 'CONTROL FRESH REPORT HOLD') calls.push({ name: 'subagent_send', arguments: { message: prompt === 'CONTROL REPORT HOLD' ? 'CONTROL-PROGRESS' : 'FRESH-CURRENT-PROGRESS' } });
             else if (prompt.startsWith('子 Agent 报告') && prompt.includes('RECOVERY-CHILD-RESULT')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (goalWork && prompt.includes('出错重试测试') && flaky >= 2) calls.push({ name: 'goal', arguments: { action: 'complete' } });
+            else if (goalWork && prompt.includes('provider断流测试')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('空闲续跑测试')) {
               const dispatched = relevant.some((item) => item.role === 'toolResult' && item.toolName === 'subagent_spawn');
               calls.push(dispatched ? { name: 'goal', arguments: { action: 'complete' } } : { name: 'subagent_spawn', arguments: { task: 'HOLD-IDLE-ENABLE-CHILD' } });
             }
             else if (prompt.startsWith('Goal #') && prompt.includes('委派测试')) calls.push({ name: 'subagent_spawn', arguments: { task: 'TEST CALL subagent_send {"message":"M3预算提问","question":true}' } });
-            else if (prompt.startsWith('Goal #') && prompt.includes('预算测试')) calls.push({ name: 'goal', arguments: { action: 'update', progress: `离线预算进展-${sequence}`, nextStep: '预算测试下一步' } });
+            else if (prompt.startsWith('Goal #') && prompt.includes('预算测试')) {
+              if (pi.getFlag('dag-test-important-progress') === true) calls.push({ name: 'write', arguments: { path: `round-${round}.txt`, content: `verified-round-${round}` } });
+              else calls.push({ name: 'goal', arguments: { action: 'update', progress: `离线预算进展-${sequence}`, nextStep: '预算测试下一步' } });
+            }
             else if (prompt.startsWith('Goal #') && prompt.includes('研究测试')) calls.push({ name: 'goal', arguments: { action: 'update', progress: '同一份研究结论', nextStep: '研究测试下一步' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('完成测试')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (explicit) calls.push({ name: explicit[1]!, arguments: JSON.parse(explicit[2]!) });
+            else if (prompt.startsWith('TEST CALLS ')) {
+              const batch = JSON.parse(prompt.slice('TEST CALLS '.length));
+              if (!Array.isArray(batch) || batch.length > 50) throw new Error('Invalid offline test call batch');
+              for (const call of batch) calls.push({ name: call.name, arguments: call.arguments });
+            }
             else if (prompt.includes("创建两件待办")) {
               calls.push({ name: "todo", arguments: { action: "create", subject: "检查入口" } }, { name: "todo", arguments: { action: "create", subject: "汇总结果", blockedBy: [1] } });
             } else if (prompt.includes("第一项标为完成")) calls.push({ name: "todo", arguments: { action: "update", id: 1, status: "completed" } });
             else if (prompt.includes("写入测试文件")) calls.push({ name: "write", arguments: { path: "should-not-exist.txt", content: "forbidden" } });
             else if (prompt.includes("查看待办")) calls.push({ name: "todo", arguments: { action: "list" } });
+          }
+          if (pi.getFlag('dag-test-important-progress') === true && prompt.startsWith('Goal #') && last?.role === 'toolResult' && last.toolName === 'write' && !last.isError) {
+            const milestone = Number(/^Goal #\d+ (\d+)\//.exec(prompt)?.[1] ?? 0);
+            if (milestone === 1 || milestone % 8 === 0) calls.push({ name: 'goal', arguments: { action: 'update', progress: `Verified milestone ${milestone}: written artifact checked` } });
           }
           if (last?.role === 'toolResult' && (prompt === 'CONTROL REPORT HOLD' || prompt === 'CONTROL FRESH REPORT HOLD') && last.toolName === 'subagent_send') calls.push({ name: 'bash', arguments: { command: 'sleep 45', timeout: 60 } });
           if (last?.role === 'toolResult' && pi.getFlag('dag-test-plain-goal') === true) {

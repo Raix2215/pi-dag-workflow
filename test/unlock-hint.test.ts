@@ -14,7 +14,9 @@ for (const language of ['zh-CN', 'en']) {
     const result = call.result as { content: { type: string; text: string }[]; details: { tasks: { id: number; status: string }[] } };
     const text = result.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     assert.match(text, /#2 second task/);
-    assert.equal(result.details.tasks.find((task) => task.id === 2)?.status, 'pending', 'the hint never starts the successor');
     assert.ok(!events.some((event) => event.method === 'notify' && String(event.message).includes('#2 second task')), 'the UI must not repeat the tool result');
+    const read = await client.prompt('TEST CALL todo {"action":"get","id":2}');
+    const successor = read.find((event) => event.type === 'tool_execution_end' && event.toolName === 'todo')!.result as typeof result;
+    assert.equal(successor.details.tasks[0]!.status, 'pending', 'the hint never starts the successor');
   });
 }

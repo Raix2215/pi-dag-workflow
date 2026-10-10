@@ -1,28 +1,45 @@
 import { Type, type Static } from "typebox";
 import { dagStructure, reuseDagStructure } from "../dag/cache.ts";
 import { chinese, type Translator } from "../shared/i18n.ts";
-import { expand, nextRun, resetClosure, type PresetStore } from "./presets.ts";
+import { expand, nextRun, resetClosure, type Preset, type PresetStore } from "./presets.ts";
 import { planTaskCleanup } from './cleanup.ts';
 
-const Status = Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("failed"), Type.Literal("cancelled"), Type.Literal("deleted")]);
+const Status = Type.Enum(['pending', 'in_progress', 'completed', 'failed', 'cancelled', 'deleted'] as const, { type: 'string' });
+const Reference = Type.Union([Type.Integer({ minimum: 1 }), Type.String({ pattern: '^@[A-Za-z][A-Za-z0-9_-]{0,31}$' })]);
+const BatchOperationSchema = Type.Object({
+  action: Type.Enum(['create', 'update'] as const, { type: 'string' }),
+  ref: Type.Optional(Type.String({ pattern: '^[A-Za-z][A-Za-z0-9_-]{0,31}$' })),
+  id: Type.Optional(Reference),
+  subject: Type.Optional(Type.String()), description: Type.Optional(Type.String()),
+  activeForm: Type.Optional(Type.String()), owner: Type.Optional(Type.String()),
+  metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  status: Type.Optional(Type.Literal('pending')),
+  blockedBy: Type.Optional(Type.Array(Reference)),
+  addBlockedBy: Type.Optional(Type.Array(Reference)), removeBlockedBy: Type.Optional(Type.Array(Reference)),
+}, { additionalProperties: false });
+export type TodoBatchOperation = Static<typeof BatchOperationSchema>;
 export const TODO_FILTERS = ['full', 'pending', 'completed', 'failed', 'cancelled'] as const;
 export type TodoFilter = typeof TODO_FILTERS[number];
 export type ClearScope = 'all' | 'completed' | 'closed';
 export const TodoParamsSchema = Type.Object({
-  action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("list"), Type.Literal("get"), Type.Literal("delete"), Type.Literal("clear"), Type.Literal("apply"), Type.Literal("reset")]),
+  action: Type.Enum(['create', 'update', 'list', 'get', 'delete', 'clear', 'apply', 'reset', 'batch', 'presets'] as const, { type: 'string' }),
+  operations: Type.Optional(Type.Array(BatchOperationSchema, { minItems: 1, maxItems: 50, description: "batch only: 1–50 pending creates or definition updates. A create may name ref; @ref in ids/dependencies refers only to earlier creates in this batch. Any failure rolls back the entire call." })),
   id: Type.Optional(Type.Integer({ minimum: 1, description: "Required for update/get/delete" })),
   subject: Type.Optional(Type.String({ description: "Short title; required for create" })),
-  description: Type.Optional(Type.String({ description: "Task instructions or evidence" })),
+  description: Type.Optional(Type.String({ description: 'Task requirements and necessary context; not a status log. Usually omit on status-only updates.' })),
   activeForm: Type.Optional(Type.String({ description: "Current activity label" })),
-  status: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("failed"), Type.Literal("cancelled"), Type.Literal("deleted")], { description: "Create: pending (default) or in_progress; update records verified status, failed or cancelled; list filters status" })),
-  scope: Type.Optional(Type.Union([Type.Literal('all'), Type.Literal('completed'), Type.Literal('closed')], { description: 'clear: all (default), completed, or closed (completed/failed/cancelled/deleted); protected work and required dependencies remain' })),
+  status: Type.Optional(Type.Enum(['pending', 'in_progress', 'completed', 'failed', 'cancelled', 'deleted'] as const, { type: 'string', description: 'Create: pending or in_progress; update after verification; list filters status' })),
+  scope: Type.Optional(Type.Enum(['all', 'completed', 'closed'] as const, { type: 'string', description: 'clear only: all (default), completed, or closed (completed/failed/cancelled/deleted); protected records remain' })),
   blockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Initial prerequisite ids, create only" })),
   addBlockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Update: add prerequisites" })),
   removeBlockedBy: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Update: remove prerequisites" })),
   owner: Type.Optional(Type.String()),
   metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   includeDeleted: Type.Optional(Type.Boolean()),
-  preset: Type.Optional(Type.String({ description: "Task fragment to apply or reset" })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "list only: page size, default 50, maximum 200." })),
+  afterId: Type.Optional(Type.Integer({ minimum: 0, description: "list only: exclusive id cursor. Use returned continuation arguments to preserve filters." })),
+  ready: Type.Optional(Type.Boolean({ description: "list only: pending tasks whose prerequisites are all completed." })),
+  preset: Type.Optional(Type.String({ description: "Fragment name: apply/reset target, or the fragment to describe in full for action presets" })),
   vars: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "apply: values for {placeholders} in the fragment" })),
   run: Type.Optional(Type.Integer({ minimum: 1, description: "reset: instance run, default the newest" })),
   step: Type.Optional(Type.String({ description: "reset: reopen this step and every task that depends on it" })),
@@ -51,13 +68,17 @@ export interface WorkflowState {
   filter?: TodoFilter;
 }
 export const STATE_TYPE = "pi-dag-workflow.state";
+export interface TodoPage { total: number; count: number; limit: number; afterId: number; nextAfterId?: number; next?: TodoParams }
+export interface TodoRelations { blocks: number[]; unmetPrerequisites: number[] }
+export interface TodoResult { state: WorkflowState; text: string; tasks?: Todo[]; page?: TodoPage; relations?: TodoRelations; removedIds?: number[]; refs?: Record<string, number>; operations?: TodoParams[]; presets?: { name: string; description?: string; steps: number }[]; preset?: Preset }
 export const emptyState = (): WorkflowState => ({ version: 1, tasks: [], nextId: 1, plan: false, planTools: [], visible: true, view: "list", treeStyle: "paths" });
 
 const fields: Record<string, readonly string[]> = {
   create: ["subject", "description", "activeForm", "owner", "metadata", "blockedBy", "status"],
   update: ["id", "subject", "description", "activeForm", "owner", "metadata", "status", "addBlockedBy", "removeBlockedBy"],
-  list: ["status", "includeDeleted"], get: ["id"], delete: ["id"], clear: ['scope'],
-  apply: ["preset", "vars"], reset: ["preset", "run", "step"],
+  list: ["status", "includeDeleted", "limit", "afterId", "ready"], get: ["id"], delete: ["id"], clear: ['scope'],
+  apply: ["preset", "vars"], reset: ["preset", "run", "step"], presets: ["preset"],
+  batch: ['operations'],
 };
 const transitions: Record<TodoStatus, readonly TodoStatus[]> = {
   pending: ["pending", "in_progress", "completed", "failed", "cancelled", "deleted"],
@@ -113,8 +134,19 @@ export function validateTodoFields(params: TodoParams, msg: Translator = chinese
 }
 
 /** Atomic pure mutation: errors never modify the current state. */
-export function applyTodo(state: WorkflowState, params: TodoParams, msg: Translator = chinese, presets?: PresetStore): { state: WorkflowState; text: string } {
+export function applyTodo(state: WorkflowState, params: TodoParams, msg: Translator = chinese, presets?: PresetStore): TodoResult {
   validateTodoFields(params, msg);
+  if (params.action === 'batch') return applyBatch(state, params.operations, msg);
+  if (params.action === 'presets') {
+    // Read-only discovery: compact directory summaries, or one full definition.
+    if (params.preset !== undefined) {
+      const preset = presets?.get(params.preset);
+      if (!preset) throw new Error(msg`未找到片段 ${params.preset}`);
+      return { state, preset, text: JSON.stringify(preset, null, 2) };
+    }
+    const directory = presets?.list().map((item) => ({ name: item.name, ...(item.description ? { description: item.description } : {}), steps: item.steps.length })) ?? [];
+    return { state, presets: directory, text: directory.length ? JSON.stringify(directory, null, 2) : msg('未配置 Todo 片段：在 ~/.pi/agent/pi-dag-workflow/pi-dag-workflow-preset.json 里定义') };
+  }
   if (params.action === "apply" || params.action === "reset") {
     const name = params.preset ?? "";
     if (!presets || !name) throw new Error(msg("apply/reset 需要 preset，且需配置片段文件"));
@@ -127,7 +159,7 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
       if (!reuseDagStructure(state.tasks, tasks)) dagStructure(tasks);
       const map = [...ids].map(([key, id]) => `${key}=#${id}`).join(", ");
       const hint = preset.skill ? msg`；执行前建议加载 skill：${preset.skill}` : "";
-      return { state: { ...state, tasks, nextId: state.nextId + created.length }, text: msg`已创建片段 ${name} 第 ${nextRun(state.tasks, name)} 轮（${created.length} 项）：${map}${hint}` };
+      return { state: { ...state, tasks, nextId: state.nextId + created.length }, tasks: created, text: msg`已创建片段 ${name} 第 ${nextRun(state.tasks, name)} 轮（${created.length} 项）：${map}${hint}` };
     }
     const ids = resetClosure(state.tasks, name, params.step, params.run);
     if (!ids.length) throw new Error(params.step ? msg`片段 ${name} 中没有步骤 ${params.step}` : msg`没有可重置的片段 ${name}`);
@@ -138,15 +170,29 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
       return { ...rest, status: "pending" as const };
     });
     if (!reuseDagStructure(state.tasks, tasks)) dagStructure(tasks);
-    return { state: { ...state, tasks }, text: msg`已重置片段 ${name} 的 ${ids.length} 项为待执行：${ids.map((id) => `#${id}`).join(", ")}` };
+    return { state: { ...state, tasks }, tasks: tasks.filter((task) => reopened.has(task.id)), text: msg`已重置片段 ${name} 的 ${ids.length} 项为待执行：${ids.map((id) => `#${id}`).join(", ")}` };
   }
   if (params.action === "list") {
-    const tasks = state.tasks.filter((task) => (params.includeDeleted || task.status !== "deleted") && (!params.status || task.status === params.status));
-    return { state, text: tasks.length ? tasks.map((task) => `${todoRef(task)} [${msg(statusLabel[task.status])}] ${task.subject}`).join("\n") : msg("暂无任务") };
+    const limit = params.limit ?? 50; const afterId = params.afterId ?? 0;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(afterId) || afterId < 0) throw new Error(msg('分页参数无效：limit 为 1–200，afterId 为非负整数'));
+    if (params.ready && params.status !== undefined && params.status !== 'pending') throw new Error(msg('ready 只支持 pending 任务'));
+    const statuses = params.ready ? new Map(state.tasks.map((task) => [task.id, task.status])) : undefined;
+    const matched = state.tasks.filter((task) => (params.includeDeleted || task.status !== "deleted") && (!params.status || task.status === params.status) && (!statuses || task.status === 'pending' && task.blockedBy.every((id) => statuses.get(id) === 'completed'))).sort((a, b) => a.id - b.id);
+    const remaining = matched.filter((task) => task.id > afterId);
+    const tasks = remaining.slice(0, limit);
+    const page: TodoPage = { total: matched.length, count: tasks.length, limit, afterId, ...(remaining.length > limit ? { nextAfterId: tasks.at(-1)!.id } : {}) };
+    if (page.nextAfterId !== undefined) page.next = { action: 'list', afterId: page.nextAfterId, limit, ...(params.status ? { status: params.status } : {}), ...(params.includeDeleted ? { includeDeleted: true } : {}), ...(params.ready ? { ready: true } : {}) };
+    const header = msg`本页 ${tasks.length} / 共 ${matched.length} 项`;
+    const text = tasks.length ? `${header}\n${tasks.map((task) => `${todoRef(task)} [${msg(statusLabel[task.status])}] ${task.subject}`).join("\n")}` : `${header}\n${msg('暂无任务')}`;
+    return { state, tasks, page, text: page.next ? `${text}\n${msg`继续读取：${JSON.stringify(page.next)}`}` : text };
   }
   const current = params.id === undefined ? undefined : state.tasks.find((task) => task.id === params.id);
   if (["get", "update", "delete"].includes(params.action) && !current) throw new Error(msg`找不到任务 #${params.id ?? "?"}`);
-  if (params.action === "get") return { state, text: JSON.stringify(current, null, 2) };
+  if (params.action === "get") {
+    const status = new Map(state.tasks.map((task) => [task.id, task.status]));
+    const relations = { blocks: state.tasks.filter((task) => task.status !== 'deleted' && task.blockedBy.includes(current!.id)).map((task) => task.id).sort((a, b) => a - b), unmetPrerequisites: current!.blockedBy.filter((id) => status.get(id) !== 'completed') };
+    return { state, tasks: [current!], relations, text: JSON.stringify({ ...current, ...relations }, null, 2) };
+  }
   if (state.plan && params.status && ["in_progress", "completed"].includes(params.status)) throw new Error(msg("Plan 只允许整理任务，不允许开始或完成；先 /plan off"));
   if (params.action === "clear") return clearTodoRecords(state, params.scope ?? 'all', new Set(), undefined, msg);
   let task: Todo;
@@ -183,8 +229,45 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
     const unfinished = task.blockedBy.filter((id) => tasks.find((item) => item.id === id)?.status !== "completed");
     if (unfinished.length) throw new Error(msg`前置未完成：${unfinished.map((id) => `#${id}`).join(",")}；不能开始或完成 #${task.id}`);
   }
-  if (JSON.stringify(task) === JSON.stringify(current)) return { state, text: msg`#${task.id} 无变化` };
-  return { state: next, text: msg`${params.action === "create" ? msg("已创建") : msg("已更新")} #${task.id}：${task.subject} [${msg(statusLabel[task.status])}]` };
+  if (JSON.stringify(task) === JSON.stringify(current)) return { state, tasks: [current!], text: msg`#${task.id} 无变化` };
+  return { state: next, tasks: [task], text: msg`${params.action === "create" ? msg("已创建") : msg("已更新")} #${task.id}：${task.subject} [${msg(statusLabel[task.status])}]` };
+}
+
+/** Resolve a small sequential transaction in memory; the coordinator commits only its final state. */
+function applyBatch(state: WorkflowState, operations: TodoBatchOperation[] | undefined, msg: Translator): TodoResult {
+  if (!Array.isArray(operations) || !operations.length || operations.length > 50) throw new Error(msg('batch 需要 1–50 个定义操作'));
+  let draft = state;
+  const refs = new Map<string, number>(); const resolved: TodoParams[] = []; const touched = new Set<number>();
+  const resolve = (value: number | string): number => {
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
+    if (typeof value !== 'string' || !/^@[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(value) || !refs.has(value.slice(1))) throw new Error(msg`未知 batch 引用：${String(value)}`);
+    return refs.get(value.slice(1))!;
+  };
+  for (const [index, operation] of operations.entries()) {
+    try {
+      if (!operation || !['create', 'update'].includes(operation.action)) throw new Error(msg('batch 仅支持 create pending 和 update 定义'));
+      const allowed = operation.action === 'create' ? [...fields.create!, 'ref'] : fields.update!.filter((key) => key !== 'status' && key !== 'owner');
+      for (const key of Object.keys(operation)) if (key !== 'action' && !allowed.includes(key)) throw new Error(msg`batch ${operation.action} 不接受字段 ${key}`);
+      if (operation.status !== undefined && operation.status !== 'pending') throw new Error(msg('batch 仅支持 create pending 和 update 定义'));
+      if (operation.ref !== undefined && (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(operation.ref) || refs.has(operation.ref))) throw new Error(msg`无效或重复 batch ref：${operation.ref}`);
+      const { ref, ...input } = operation;
+      const concrete: TodoParams = { ...input, ...(input.id === undefined ? {} : { id: resolve(input.id) }), ...Object.fromEntries(['blockedBy', 'addBlockedBy', 'removeBlockedBy'].filter((key) => input[key as keyof typeof input] !== undefined).map((key) => {
+        const values = input[key as 'blockedBy' | 'addBlockedBy' | 'removeBlockedBy'];
+        if (!Array.isArray(values)) throw new Error(msg('依赖需为有效任务编号'));
+        return [key, values.map(resolve)];
+      })) } as TodoParams;
+      const result = applyTodo(draft, concrete, msg);
+      const id = concrete.action === 'create' ? result.tasks![0]!.id : concrete.id!;
+      if (ref !== undefined) refs.set(ref, id);
+      touched.add(id); resolved.push(concrete); draft = result.state;
+    } catch (cause) { throw new Error(msg`batch 第 ${index + 1} 项失败：${cause instanceof Error ? cause.message : String(cause)}`); }
+  }
+  // Reversible definition edits that return to the original values are a real no-op.
+  const before = new Map(state.tasks.map((task) => [task.id, task]));
+  const tasks = draft.tasks.map((task) => touched.has(task.id) && JSON.stringify(task) === JSON.stringify(before.get(task.id)) ? before.get(task.id)! : task);
+  if (draft.nextId === state.nextId && tasks.every((task, index) => task === state.tasks[index])) draft = state;
+  else if (tasks.some((task, index) => task !== draft.tasks[index])) draft = { ...draft, tasks };
+  return { state: draft, tasks: draft.tasks.filter((task) => touched.has(task.id)), refs: Object.fromEntries(refs), operations: resolved, text: msg`已原子处理 ${operations.length} 个定义操作：${[...touched].map((id) => `#${id}`).join(', ')}${refs.size ? `\n${JSON.stringify(Object.fromEntries(refs))}` : ''}` };
 }
 
 /**
@@ -213,8 +296,9 @@ export function restoreState(branch: readonly { type: string; customType?: strin
       return state;
     }
     if (rpiv === undefined && entry.type === "message" && entry.message && typeof entry.message === "object") {
-      const message = entry.message as { role?: string; toolName?: string; details?: { tasks?: unknown; nextId?: unknown } };
-      if (message.role === "toolResult" && message.toolName === "todo" && Array.isArray(message.details?.tasks) && Number.isSafeInteger(message.details?.nextId)) rpiv = message.details;
+      const message = entry.message as { role?: string; toolName?: string; details?: { version?: number; tasks?: unknown; nextId?: unknown } };
+      const details = message.details;
+      if (message.role === "toolResult" && message.toolName === "todo" && details && (details.version === undefined || details.version === 1) && Array.isArray(details.tasks) && Number.isSafeInteger(details.nextId)) rpiv = details;
     }
   }
   if (rpiv) {

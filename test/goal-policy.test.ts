@@ -167,8 +167,8 @@ test('nopause replans and keeps executing past the no-progress threshold until i
   for (let index = 0; index < 12; index++) {
     const next = await h.fire('agent_before_settle', { outcome: 'completed', entries: [], continue: false });
     assert.equal(next?.continue, true);
-    assert.match(next.entries.at(-1).content, /Do not ask the user questions/);
-    if (index >= 8) assert.match(next.entries.at(-1).content, /choose a different feasible approach/);
+    assert.match(next.entries.at(-1).content, /no user questions/);
+    if (index >= 8) assert.match(next.entries.at(-1).content, /execute a different feasible approach now/);
     await h.fire('turn_start'); await h.fire('context', { messages: next.entries });
     assert.equal(h.controller.snapshot().run.paused, false);
   }

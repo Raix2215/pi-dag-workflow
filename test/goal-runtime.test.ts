@@ -16,20 +16,33 @@ function host(retryDelayMs = 0, leafAware = false) {
   const ctx: any = { cwd: '/tmp', mode: 'rpc', hasUI: true, isIdle: () => idle, sessionManager: { getBranch: () => { branchReads++; return entries; }, ...(leafAware ? { getLeafId: () => String(entries.length) } : {}) }, ui: { notify: (text: string) => notifications.push(text), confirm: async () => true } };
   const pi: any = { on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); return () => {}; }, registerTool(tool: any) { tools.set(tool.name, tool); }, registerCommand(name: string, cmd: any) { commands.set(name, cmd); }, appendEntry(customType: string, data: any) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any, options: any) { (options?.triggerTurn === false ? passive : wakes).push({ message, options }); }, sendUserMessage(message: string) { wakes.push({ message, options: { source: 'extension' } }); } };
   const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, retryDelayMs, resumeDelayMs: 0 });
-  const fire = async (name: string, event: any = {}) => { let result: any; for (const handler of events.get(name) ?? []) result = await handler(event, ctx) ?? result; return result; };
+  const fire = async (name: string, event: any = {}) => {
+    if (name === 'turn_end' || name === 'agent_before_settle') event.entries ??= [];
+    let result: any;
+    for (const handler of events.get(name) ?? []) {
+      const next = await handler(event, ctx);
+      if (next) { result = { ...result, ...next }; if (next.entries) event.entries = next.entries; if (next.continue !== undefined) event.continue = next.continue; }
+    }
+    if (name === 'before_agent_start' && result?.message) entries.push({ type: 'custom_message', ...result.message });
+    return result;
+  };
   cleanups.add(() => fire('session_shutdown'));
   const call = async (params: GoalParams) => tools.get('goal').execute('test', params, undefined, undefined, ctx);
   const propose = (event: any = {}) => fire('agent_before_settle', { outcome: 'completed', continue: false, entries: [], ...event });
   const startTurn = async (messages: any[] = []) => { await fire('turn_start'); await fire('context', { messages }); };
   const settle = async (event: any = {}) => {
     const result = await propose(event);
-    if (result?.continue) await startTurn(result.entries.map((entry: any) => ({ role: 'custom', ...entry })));
-    return result;
+    if (result?.continue) {
+      entries.push(...result.entries.filter((entry: any) => entry.type === 'custom_message'));
+      await startTurn(result.entries.map((entry: any) => ({ role: 'custom', ...entry })));
+    }
+    // This helper models admission of another turn, not the presence of passive entries.
+    return result?.continue ? result : undefined;
   };
   const enable = async (maxTurns = 20) => { await call({ action: 'create', title: '研究', maxTurns }); await fire('input', { source: 'rpc', text: '启用目标' }); assert.ok(!(await call({ action: 'enable', id: 1 })).isError); };
-  const message = (stopReason: string) => { entries.push({ type: 'message', id: `m${++messageSeq}`, parentId: null, message: { role: 'assistant', stopReason, errorMessage: stopReason === 'error' ? 'stream error' : undefined } }); };
+  const message = (stopReason: string, errorMessage = stopReason === 'error' ? 'stream error' : undefined) => { entries.push({ type: 'message', id: `m${++messageSeq}`, parentId: null, message: { role: 'assistant', stopReason, errorMessage } }); };
   // A settled run schedules its retry on a timer; drain it before asserting.
-  const settled = async () => { await fire('agent_settled'); await new Promise((resolve) => setTimeout(resolve, 0)); };
+  const settled = async () => { await fire('agent_settled', { aborted: false }); await new Promise((resolve) => setTimeout(resolve, 0)); };
   const retries = () => wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-retry').length;
   return { ctx, controller, fire, call, settle, propose, startTurn, enable, settled, message, retries, entries, notifications, wakes, passive, branchReads: () => branchReads, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, setTasks(tasks: Todo[]) { workflow = { ...workflow, tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 }; }, commands };
 }
@@ -152,6 +165,41 @@ test('mock host: a user abort never retries', async () => {
   assert.equal(h.retries(), 0);
 });
 
+test('provider aborted without a user abort recovers once after settlement', async () => {
+  const h = host(); await h.enable(); h.setIdle(true);
+  h.ctx.signal = new AbortController().signal;
+  h.message('aborted', 'connection reset while reading stream');
+  await h.fire('turn_end', { outcome: 'aborted' });
+  await h.fire('agent_end', { messages: [h.entries.at(-1).message] });
+  await h.fire('agent_before_settle', { outcome: 'aborted', continue: false });
+  assert.equal(h.controller.snapshot().run.paused, false);
+  assert.equal(h.retries(), 0, 'native recovery gets the first opportunity');
+  await h.settled(); await h.settled();
+  assert.equal(h.retries(), 1, 'several boundary events still name one failed request');
+  assert.equal(h.controller.snapshot().run.paused, false);
+});
+
+test('a real user signal abort takes priority over recoverable provider text', async () => {
+  const h = host(); await h.enable(); h.setIdle(true);
+  const abort = new AbortController(); h.ctx.signal = abort.signal; abort.abort();
+  h.message('aborted', 'connection reset');
+  await h.fire('agent_end', { messages: [h.entries.at(-1).message] });
+  await h.settled();
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.match(h.controller.snapshot().run.reason!, /用户中断/);
+  assert.equal(h.retries(), 0);
+});
+
+test('explicit permanent failures pause without queuing a Goal retry', async () => {
+  for (const error of ['429 insufficient_quota: billing limit exhausted', '401 invalid_api_key', '403 permission_denied']) {
+    const h = host(); await h.enable(); h.setIdle(true);
+    h.message('error', error); await h.settled();
+    assert.equal(h.controller.snapshot().run.paused, true, error);
+    assert.equal(h.retries(), 0, error);
+    assert.equal(h.controller.snapshot().run.errorRetries ?? 0, 0, 'no retry is spent');
+  }
+});
+
 test('mock host: Plan, restore and abort pause persistently; only explicit enable can rearm', async () => {
   const h = host(); await h.enable();
   h.controller.pause('进入 Plan', h.ctx); h.setPlan(true);
@@ -175,8 +223,8 @@ test('regular Goal tolerates eight no-progress rounds, replans once, then safely
     const result = await h.settle();
     if (i <= 8) {
       assert.equal(result.continue, true);
-      if (i === 8) assert.match(result.entries.at(-1).content, /choose a different feasible approach/);
-    } else assert.equal(result, undefined);
+      if (i === 8) assert.match(result.entries.at(-1).content, /execute a different feasible approach now/);
+    } else assert.notEqual(result?.continue, true, 'passive status metadata is not a continuation');
   }
   assert.match(h.controller.snapshot().run.reason!, /无新进展/);
   assert.equal(h.controller.snapshot().run.used, 9);
@@ -319,10 +367,12 @@ test('continuation drafts preserve prior entries and consume nextStep only on a 
 test('a filtered continuation retains nextStep and does not restore filtered messages', async () => {
   const h = host(); await h.enable(3);
   await h.call({ action: 'update', nextStep: 'saved after filter' });
-  await h.propose(); await h.startTurn([]);
+  const draft = await h.propose(); await h.startTurn([]);
   assert.equal(h.controller.snapshot().run.nextStep, 'saved after filter');
   assert.equal(h.controller.snapshot().run.used, 1, 'a real turn still consumes the budget');
   assert.equal(h.wakes.length, 0, 'the workflow never bypasses a context filter');
+  await h.fire('context', { messages: draft.entries.map((entry: any) => ({ role: 'custom', ...entry })) });
+  assert.equal(h.controller.snapshot().run.nextStep, undefined, 'a later request that really sees the paid step acknowledges it once');
 });
 
 test('provisional report and Goal requests share one reservation and rejected drafts refund it', async () => {
@@ -330,7 +380,7 @@ test('provisional report and Goal requests share one reservation and rejected dr
   assert.equal(h.controller.reserveWake(h.ctx, true), true);
   assert.equal(h.controller.reserveWake(h.ctx, true), true);
   assert.equal(h.controller.snapshot().run.used, 1);
-  assert.equal(await h.propose({ continue: true }), undefined);
+  assert.notEqual((await h.propose({ continue: true }))?.continue, true, 'do not request another continuation');
   await h.fire('agent_settled');
   assert.equal(h.controller.snapshot().run.used, 0);
   assert.equal(h.controller.snapshot().run.pendingWake, undefined);
@@ -556,7 +606,7 @@ test('a child waiting for an answer gets a Goal decision instead of an indefinit
   h.setJobs([{ id: 'a1', status: 'waiting' }]);
   const next = await h.propose();
   assert.equal(next?.continue, true);
-  assert.match(next.entries.at(-1).content, /子 Agent a1.*subagent_wait/);
+  assert.match(next.entries.at(-1).content, /子 Agent a1.*subagent_inspect/);
   await h.startTurn(next.entries); await h.fire('session_shutdown');
 });
 
@@ -565,7 +615,7 @@ test('a substituted initial question consumes the placeholder and then verifies 
   h.setTasks([{ id: 1, subject: 'returned work', status: 'in_progress', blockedBy: [] }]);
   h.setJobs([{ id: 'a1', todoId: 1, status: 'waiting' }]);
   const question = await h.propose();
-  assert.match(question.entries.at(-1).content, /子 Agent a1.*subagent_wait/);
+  assert.match(question.entries.at(-1).content, /子 Agent a1.*subagent_inspect/);
   await h.startTurn(question.entries);
   assert.equal(h.controller.snapshot().run.nextStep, undefined, 'the initial generic placeholder is not replayed after a substituted step');
   h.setJobs([{ id: 'a1', todoId: 1, status: 'completed', reportDelivery: 'delivered' }]);
@@ -579,7 +629,7 @@ test('a pending question has priority but preserves the saved independent next s
   await h.call({ action: 'update', nextStep: 'saved independent action' });
   h.setJobs([{ id: 'a1', status: 'waiting' }]);
   const question = await h.propose();
-  assert.match(question.entries.at(-1).content, /子 Agent a1.*subagent_wait/);
+  assert.match(question.entries.at(-1).content, /子 Agent a1.*subagent_inspect/);
   await h.startTurn(question.entries);
   assert.equal(h.controller.snapshot().run.nextStep, 'saved independent action');
   h.setJobs([{ id: 'a1', status: 'running' }]);
@@ -591,9 +641,9 @@ test('a pending question has priority but preserves the saved independent next s
 test('the wait timeout exemption belongs only to the child that was actually waited on', async () => {
   const h = host(); await h.enable(6); await h.settle();
   h.setJobs([{ id: 'a1', status: 'running' }, { id: 'a2', status: 'running' }]);
-  await h.fire('tool_execution_end', { toolName: 'subagent_wait', isError: false, result: { details: { id: 'a1', status: 'running', timedOut: true } } });
+  await h.fire('tool_execution_end', { toolName: 'subagent_inspect', isError: false, result: { details: { id: 'a1', status: 'running', timedOut: true } } });
   h.setJobs([{ id: 'a1', status: 'completed' }, { id: 'a2', status: 'running' }]);
-  assert.equal(await h.propose(), undefined);
+  assert.notEqual((await h.propose())?.continue, true);
   assert.equal(h.controller.snapshot().run.stalled, 1, 'an unrelated running child cannot suppress a counted round');
   await h.fire('session_shutdown');
 });
@@ -603,8 +653,8 @@ test('real child wait timeouts are not stalled automatic work and results still 
   h.setJobs([{ id: 'a1', status: 'running' }]);
   for (let index = 0; index < 4; index++) {
     if (index) { h.controller.reserveWake(h.ctx); await h.startTurn([]); }
-    await h.fire('tool_execution_end', { toolName: 'subagent_wait', isError: false, result: { details: { id: 'a1', status: 'running', timedOut: true } } });
-    assert.equal(await h.propose(), undefined, 'waiting must not poll a model while the child runs');
+    await h.fire('tool_execution_end', { toolName: 'subagent_inspect', isError: false, result: { details: { id: 'a1', status: 'running', timedOut: true } } });
+    assert.notEqual((await h.propose())?.continue, true, 'passive metadata must not poll a model while the child runs');
     assert.equal(h.controller.snapshot().run.paused, false);
     assert.equal(h.controller.snapshot().run.stalled, 0, 'an acknowledged wait is not an unproductive execution attempt');
   }
@@ -620,7 +670,7 @@ test('completed non-stale child work is selected for verification instead of red
   h.setJobs([{ id: 'a2', todoId: 2, status: 'completed', reportDelivery: 'delivered' }]);
   await h.call({ action: 'update', nextStep: ' ' });
   const proposal = await h.propose();
-  assert.match(proposal.entries.at(-1).content, /核验 Todo #2.*subagent_wait/);
+  assert.match(proposal.entries.at(-1).content, /核验 Todo #2.*subagent_inspect/);
   await h.startTurn(proposal.entries);
   h.setJobs([{ id: 'a2', todoId: 2, status: 'completed', taskReportStale: true }]);
   const stale = await h.propose();

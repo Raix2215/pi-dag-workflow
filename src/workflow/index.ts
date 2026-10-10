@@ -3,8 +3,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { applyTodo, clearTodoRecords, emptyState, newlyReady, restoreState, validateTodoFields, STATE_TYPE, type TodoFilter, type TodoParams, type WorkflowState } from "../todos/state.ts";
 import { PresetStore, type Preset } from "../todos/presets.ts";
-import { NORMAL_GUIDANCE, PLAN_GUIDANCE } from "../plan/policy.ts";
-import { clean, notify, renderDag, renderTasks } from "../ui/render.ts";
+import { passiveMessage } from '../shared/passive-message.ts';
+import { clean, notify, renderDag, renderTasks, renderWidget, widgetHeightBudget } from "../ui/render.ts";
 import type { registerAgents } from "../agents/register.ts";
 import type { registerGoal } from "../goal/register.ts";
 import { detailView } from "../ui/detail.ts";
@@ -22,6 +22,7 @@ export function createWorkflow(pi: ExtensionAPI) {
   const started = new WeakSet<object>();
   const restored = new WeakSet<object>();
   const stopped = new WeakSet<object>();
+  const guidanceCompactions = new WeakSet<object>();
   let dispose = () => {};
   let state = emptyState();
   let restoreError: string | undefined;
@@ -47,12 +48,17 @@ export function createWorkflow(pi: ExtensionAPI) {
   const presetStore = new PresetStore({ path: configPaths().preset });
   let presetList: Preset[] = [];
   async function refreshPresets(): Promise<void> { await presetStore.load(); presetList = presetStore.list(); }
-  /** One line like Pi's skill list: names and short descriptions only, never the step bodies. */
-  function presetSummary(): string {
-    const shown = presetList.slice(0, 8).map((preset) => `${preset.name}${preset.description ? ` (${preset.description})` : ''}`);
-    const more = presetList.length > shown.length ? `, +${presetList.length - shown.length} more (/todos presets)` : '';
-    return `${shown.join(', ')}${more}`.slice(0, 400);
-  }
+  const GUIDANCE_TYPE = 'pi-dag-workflow.guidance';
+  let guidanceOwner: Feature | undefined;
+  let planNotice = false;
+  const guidance = passiveMessage(GUIDANCE_TYPE, () => {
+    const lines: string[] = [];
+    if (planNotice && modules.plan) lines.push(state.plan
+      ? `Plan: read/search/ask${modules.todos ? ' and edit Todo definitions' : ''} only. No implementation, shell, task start/complete or dispatch; only the user may /plan off.${modules.goal ? ' Goal is paused.' : ''}`
+      : `Normal:${modules.todos ? ' continue the existing Todo list.' : ' implementation is available.'}${modules.goal ? ' Goal stays paused until explicitly enabled.' : ''}`);
+    return lines.length ? lines.join('\n') : undefined;
+  }, readBranch, () => { planNotice = false; });
+  const hadPlan = (ctx: ExtensionContext) => readBranch(ctx).some((entry) => entry.type === 'custom' && entry.customType === STATE_TYPE && (entry.data as WorkflowState | undefined)?.plan);
   const jobs = () => agents?.summaries() ?? [];
   const noTasks: WorkflowState['tasks'] = [];
   const activeState = () => modules.todos ? state : { ...state, tasks: noTasks };
@@ -67,7 +73,7 @@ export function createWorkflow(pi: ExtensionAPI) {
     const goalTitle = goals?.title();
     const stateKey = JSON.stringify([state.plan, state.visible, state.view, state.treeStyle, state.filter, goalTitle, restoreError, detailOpen, ctx.mode, ctx.hasUI]);
     const now = Date.now();
-    const jobKey = JSON.stringify(snapshotJobs.map((job) => [job.id, job.todoId, job.profile, job.status, job.reportDelivery, job.taskReportStale, job.label, job.activity?.kind, job.activity?.tool, job.activity?.since, job.activity?.kind === 'tool' && job.activity.since !== undefined ? Math.floor((now - job.activity.since) / 1000) : undefined]));
+    const jobKey = JSON.stringify(snapshotJobs.map((job) => [job.id, job.todoId, job.profile, job.status, job.reportDelivery, job.taskReportStale, job.dismissed, job.label, job.activity?.kind, job.activity?.tool, job.activity?.since, job.activity?.kind === 'tool' && job.activity.since !== undefined ? Math.floor((now - job.activity.since) / 1000) : undefined]));
     if (lastPaint?.tasks === displayedState.tasks && lastPaint.state === stateKey && lastPaint.jobs === jobKey && lastPaint.ui === ctx.ui && lastPaint.theme === ctx.ui.theme) return;
     lastPaint = { tasks: displayedState.tasks, state: stateKey, jobs: jobKey, ui: ctx.ui, theme: ctx.ui.theme };
     if (detailOpen) { refreshDetail?.(); return; }
@@ -75,20 +81,23 @@ export function createWorkflow(pi: ExtensionAPI) {
       ctx.ui.setWidget(WIDGET, undefined);
       return;
     }
-    const lines = (width: number) => {
-      const rendered = !state.visible && state.plan ? renderTasks(displayedState, width, { maxRows: 0, theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle, msg }) : state.view === "dag" ? renderDag(displayedState, width, ctx.ui.theme, goalTitle, snapshotJobs, { maxLines: 11, msg }) : renderTasks(displayedState, width, { theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle, msg });
+    const lines = (width: number, rows = 36) => {
+      const budget = widgetHeightBudget(rows);
+      const rendered = renderWidget(displayedState, width, budget - (restoreError ? 1 : 0), { ...(!state.visible && state.plan ? { maxRows: 0 } : {}), theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle, msg });
       if (restoreError) rendered.push(truncateToWidth(clean(msg`恢复失败：${restoreError}；工作流修改已禁用`), width));
       return rendered;
     };
-    if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET, () => {
+    if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET, (tui) => {
       let cachedWidth = -1;
+      let cachedRows = -1;
       let cachedLines: string[] = [];
       return {
         render(width: number) {
-          if (width !== cachedWidth) { cachedLines = lines(width); cachedWidth = width; }
+          const rows = tui?.terminal?.rows ?? 36;
+          if (width !== cachedWidth || rows !== cachedRows) { cachedLines = lines(width, rows); cachedWidth = width; cachedRows = rows; }
           return cachedLines;
         },
-        invalidate() { cachedWidth = -1; },
+        invalidate() { cachedWidth = -1; cachedRows = -1; },
       };
     });
     else if (ctx.hasUI) ctx.ui.setWidget(WIDGET, lines(80));
@@ -108,6 +117,7 @@ export function createWorkflow(pi: ExtensionAPI) {
     pi.appendEntry(STATE_TYPE, next);
     state = next;
     if (source === 'command' && (changedTasks || changedMode)) checkpoints?.changed(ids);
+    if (changedMode) { planNotice = true; guidance.mark(); }
     paint(ctx);
     warnEphemeral(ctx);
   }
@@ -130,6 +140,9 @@ export function createWorkflow(pi: ExtensionAPI) {
       restoreError = error instanceof Error ? error.message : String(error);
       notify(ctx, msg`工作流状态恢复失败：${restoreError}。保留原记录，修改已禁用；/todos clear 可明确重置。`, 'error');
     }
+    guidance.reset();
+    planNotice = modules.plan && (state.plan || hadPlan(ctx));
+    if (planNotice) guidance.mark();
     paint(ctx);
   }
 
@@ -147,12 +160,20 @@ export function createWorkflow(pi: ExtensionAPI) {
       const removedJobs = agents?.cleanupRecords(scope, before.tasks, state.tasks) ?? 0;
       return { ...result, text: `${result.text}\n${msg`已清理 ${removedJobs} 个已结束子 Agent 记录；运行及待交付／核验记录保留`}` };
     }
-    agents?.assertTodoMutation(params);
+    if (params.action !== 'batch') agents?.assertTodoMutation(params);
     const before = state;
     const result = applyTodo(state, params, msg, presetStore);
+    if (result.operations) for (const operation of result.operations) agents?.assertTodoMutation(operation);
     const ready = newlyReady(state, result.state);
     commit(result.state, ctx, source);
-    agents?.afterTodoMutation(params, before);
+    if (result.operations) {
+      const updates = new Map<number, TodoParams>();
+      for (const operation of result.operations) if (operation.action === 'update' && operation.id !== undefined) {
+        const previous = updates.get(operation.id);
+        updates.set(operation.id, { ...previous, ...operation, addBlockedBy: [...previous?.addBlockedBy ?? [], ...operation.addBlockedBy ?? []], removeBlockedBy: [...previous?.removeBlockedBy ?? [], ...operation.removeBlockedBy ?? []] });
+      }
+      for (const operation of updates.values()) agents?.afterTodoMutation(operation, before);
+    } else agents?.afterTodoMutation(params, before);
     if (ready.length) {
       const hint = msg`前置已完成，可开始：${ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、')}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`;
       result.text += `\n${hint}`;
@@ -175,11 +196,14 @@ export function createWorkflow(pi: ExtensionAPI) {
       if (!started.has(event)) {
         started.add(event); Object.assign(modules, noFeatures()); restoreEpoch++;
         restoredState = undefined; restoreError = undefined; warnedEphemeral = false; branchCache = undefined; configPromise = undefined; lastPaint = undefined;
+        guidance.reset(); planNotice = false; guidanceOwner = undefined;
       }
       modules[feature] = true;
+      if ((feature === 'todos' || feature === 'plan') && guidanceOwner === undefined) guidanceOwner = feature;
       if (feature === 'todos' || feature === 'plan') {
         if (!restoredState && !restoreError) restore(ctx);
         else if (feature === 'plan' && restoredState && !restoreError) state = restoredState;
+        if (feature === 'plan') { planNotice = state.plan || hadPlan(ctx); if (planNotice) guidance.mark(); }
       }
       if (feature === 'todos') await restorePresets(ctx);
       paint(ctx);
@@ -192,15 +216,30 @@ export function createWorkflow(pi: ExtensionAPI) {
     owner.on('session_shutdown', (event, ctx) => {
       if (stopped.has(event)) return;
       stopped.add(event); dispose(); restoreEpoch++; branchCache = undefined; configPromise = undefined; restoredState = undefined; lastPaint = undefined;
-      state = emptyState(); restoreError = undefined;
+      state = emptyState(); restoreError = undefined; guidance.reset(); planNotice = false;
       if (modules.ui) ctx.ui.setWidget(WIDGET, undefined);
     });
-    owner.on('before_agent_start', (event) => {
-      if (modules.todos || modules.plan) {
-        const base = state.plan ? (modules.todos ? PLAN_GUIDANCE : 'Plan mode: only read, search and ask; no implementation or dispatch. Only the user can exit /plan off.') : (modules.todos ? NORMAL_GUIDANCE : 'Normal mode.');
-        event.systemPromptOptions.sections['dag_workflow_mode'] = modules.todos && presetList.length ? `${base} Presets (todo action=apply preset=NAME): ${presetSummary()}.` : base;
-      }
-    });
+    if (feature === 'todos' || feature === 'plan') {
+      owner.on('before_agent_start', (event, ctx) => { if (guidanceOwner !== feature) return; const message = guidance.take(ctx, event); if (message) return { message }; });
+      const boundary = (event: { entries: import('@earendil-works/pi-coding-agent').SessionBoundaryDraft[] }, ctx: ExtensionContext) => {
+        if (guidanceOwner !== feature) return;
+        const message = guidance.take(ctx, event);
+        if (message) return { entries: [...event.entries, { type: 'custom_message' as const, ...message }] };
+      };
+      owner.on('turn_end', (event, ctx) => { if (event.outcome === 'completed') return boundary(event, ctx); });
+      owner.on('agent_before_settle', boundary);
+      owner.on('session_compact', (event, ctx) => {
+        if (guidanceOwner !== feature || guidanceCompactions.has(event)) return;
+        guidanceCompactions.add(event);
+        planNotice = modules.plan && (state.plan || planNotice || hadPlan(ctx));
+        if (planNotice) guidance.mark(true);
+      });
+      owner.on('context', (event, ctx) => {
+        if (guidanceOwner !== feature) return;
+        const message = guidance.recover(event.messages, ctx, event);
+        if (message) return { messages: [...event.messages, message] };
+      });
+    }
   }
   async function show(ctx: ExtensionContext, view: "list" | "dag", selectedFilter?: TodoFilter): Promise<void> {
     const filter = selectedFilter ?? state.filter ?? 'full';
@@ -247,7 +286,10 @@ export function createWorkflow(pi: ExtensionAPI) {
         reserveWake: (ctx) => !modules.goal || (goals?.reserveWake(ctx, true) ?? false),
         pauseAuto: (ctx) => { if (modules.goal) goals?.pause(msg('用户暂停自动工作'), ctx); },
         resumeAuto: () => !modules.goal || (goals?.resumeAgentReports() ?? false),
-        beforeWake: (ctx) => goals ? goals.beforeWake(ctx) : checkpoints?.beforeWake(ctx),
+        beforeWake: (ctx) => {
+          if (goals) goals.beforeWake(ctx);
+          else { checkpoints?.beforeWake(ctx); guidance.beforeWake(ctx, (message) => pi.sendMessage(message, { triggerTurn: false })); }
+        },
         compacting: () => goals?.isCompacting() ?? false,
         });
       }
@@ -256,7 +298,7 @@ export function createWorkflow(pi: ExtensionAPI) {
         goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError, branch: readBranch, loadConfig: readConfig,
         pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: warnEphemeral,
         isUserPrompt: (title) => title !== undefined && userPromptTitles.has(title),
-        beforeWake: (ctx) => checkpoints?.beforeWake(ctx),
+        beforeWake: (ctx) => { checkpoints?.beforeWake(ctx); guidance.beforeWake(ctx, (message) => pi.sendMessage(message, { triggerTurn: false })); },
         });
       }
     },

@@ -141,7 +141,8 @@ test("unexpected exit, model errors and malformed protocol all fail and clean up
       assert.equal(result.status, "failed", task);
       assert.equal(ctx.runtime.activeCount(), 0, task);
       if (task === "ERROR") assert.match(result.output, /partial retained|fixture model error/);
-      assert.doesNotMatch(JSON.stringify(ctx.runtime.inspect(job.id)), /partial retained|fixture model error/);
+      assert.doesNotMatch(JSON.stringify(ctx.runtime.inspect(job.id)), /partial retained/);
+      if (task === 'ERROR') assert.match(ctx.runtime.inspect(job.id)[0]!.failure!.reason, /fixture model error/);
     }
   } finally { await ctx.close(); }
 });

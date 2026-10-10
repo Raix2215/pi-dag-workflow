@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { getPackageDir } from '@earendil-works/pi-coding-agent';
 import { CHILD_NOTICE_PREFIX, CHILD_QUESTION_PREFIX } from "./child.ts";
 import { ProfileStore, THINKING_LEVELS, type ModelRef, type ThinkingLevel } from "./profiles.ts";
+import { agentFailure, safeDiagnostic, type AgentFailure } from './diagnostics.ts';
 
 export type JobStatus = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface JobSummary {
@@ -19,15 +20,19 @@ export interface JobSummary {
   taskReportStale?: boolean;
   /** UTF-16 offset of current-assignment output; preceding text remains queryable history. */
   outputStart?: number;
+  /** Explicitly acknowledged stop; history remains, but no longer owns the current row. */
+  dismissed?: boolean;
+  resumeFrom?: string;
+  failure?: AgentFailure;
 }
 export interface AgentRequest { requestId: string; message: string }
 export interface AgentUsage { requests: number; input: number; output: number; estimatedCost: number }
 export interface JobObservation { phase: 'starting' | 'thinking' | 'tool' | 'output' | 'waiting' | 'settling' | 'running' | 'redirecting' | 'closed'; elapsedMs: number; lastEventAt: number; deadlineAt?: number; reportVersion: number; hasOutput: boolean; pendingMessages: number; activity?: JobActivity; activeTools: { tool: string; since: number }[]; questions: AgentRequest[] }
 export interface JobInspection extends JobSummary, JobObservation {}
-export interface JobResult extends JobSummary { output: string; requests: AgentRequest[]; usage?: AgentUsage; timedOut?: boolean; reportVersion?: number; reason?: 'snapshot' | 'update' | 'question' | 'finished' | 'timeout'; observation?: JobObservation }
+export interface JobResult extends JobSummary { assignment?: string; taskDefinition?: string; output: string; requests: AgentRequest[]; usage?: AgentUsage; timedOut?: boolean; reportVersion?: number; reason?: 'snapshot' | 'update' | 'question' | 'finished' | 'timeout'; observation?: JobObservation }
 export interface AgentNotice { jobId: string; kind: "message" | "question" | "completed" | "failed"; message: string; requestId?: string; version?: number }
 export interface AgentSendResult { delivered: true; delivery: 'accepted' | 'queued' | 'answered'; interrupted: boolean; status: JobStatus }
-export interface SpawnOptions { task: string; todoId?: number; profile?: string; tools?: string[]; timeout?: number; context?: string; signal?: AbortSignal }
+export interface SpawnOptions { task: string; todoId?: number; profile?: string; tools?: string[]; timeout?: number; context?: string; resumeFrom?: string; taskDefinition?: string; signal?: AbortSignal }
 export interface AgentRuntimeOptions {
   cwd: string; profiles: ProfileStore; getInheritedModel: () => ModelRef | undefined;
   getInheritedThinking?: () => ThinkingLevel; getInheritedTools?: () => readonly string[];
@@ -81,7 +86,7 @@ class RpcPipe {
       this.dead = true;
       for (const pending of this.pending.values()) { pending.cleanup(); pending.reject(error); }
       this.pending.clear();
-      if (!this.stopping) onFailure(error);
+      if (!this.stopping) onFailure(new Error(safeDiagnostic(`${error.message}${this.stderr ? `; stderr: ${this.stderr}` : ''}`)));
     };
     this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
@@ -158,7 +163,7 @@ class RpcPipe {
 }
 export interface JobActivity { kind: "thinking" | "tool" | "output"; tool?: string; since?: number }
 interface LiveJob {
-  summary: JobSummary; output: string; requests: Map<string, string>; usage: AgentUsage;
+  summary: JobSummary; assignment?: string; taskDefinition?: string; output: string; requests: Map<string, string>; usage: AgentUsage;
   activity?: JobActivity; activeTools: Map<string, { tool: string; since: number }>; pipe?: RpcPipe; timer?: NodeJS.Timeout; listeners: Set<() => void>; finishing?: Promise<void>; startupAbort?: AbortController;
   sawEnd: boolean; lastStop?: string; lastError?: string; settling: boolean; settleAgain: boolean; generation: number; sends: number;
   /** Reports the child sent while it kept working; a bound task may be closed once it reported. */
@@ -223,21 +228,23 @@ export class AgentRuntime {
     const plain = (job: LiveJob): JobInspection => { const { label: _label, ...rest } = job.summary; return { ...rest, ...this.observation(job) }; };
     return structuredClone(jobId ? [plain(this.job(jobId))] : [...this.jobs.values()].map(plain));
   }
-  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status' | 'reportDelivery' | 'label' | 'taskReportStale'> & { activity?: JobActivity })[] {
+  viewSummaries(): (Pick<JobSummary, 'id' | 'todoId' | 'profile' | 'status' | 'reportDelivery' | 'label' | 'taskReportStale' | 'dismissed'> & { activity?: JobActivity })[] {
     return [...this.jobs.values()].map((job) => ({ id: job.summary.id, profile: job.summary.profile, status: job.summary.status,
       ...(job.summary.todoId !== undefined ? { todoId: job.summary.todoId } : {}),
       ...(job.summary.reportDelivery !== undefined ? { reportDelivery: job.summary.reportDelivery } : {}),
       ...(job.summary.label !== undefined ? { label: job.summary.label } : {}),
       ...(job.summary.taskReportStale ? { taskReportStale: true } : {}),
+      ...(job.summary.dismissed ? { dismissed: true } : {}),
       ...(job.activity ? { activity: { ...job.activity } } : {}),
     }));
   }
   exportSummaries(): JobSummary[] { return structuredClone([...this.jobs.values()].map((job) => job.summary)); }
-  exportRecords(): JobResult[] { return [...this.jobs.values()].map((job) => this.result(job)); }
+  exportRecords(): JobResult[] { return [...this.jobs.values()].map((job) => ({ ...this.result(job), ...(job.assignment === undefined ? {} : { assignment: job.assignment }), ...(job.taskDefinition === undefined ? {} : { taskDefinition: job.taskDefinition }) })); }
   /** Forget finished history only; this never aborts or stops a live process. */
   prune(jobIds: readonly string[]): number {
     const selected = jobIds.map((id) => this.job(id));
     if (selected.some((job) => ACTIVE.has(job.summary.status) || job.pipe)) throw new Error('Cannot clear an active agent record');
+    if (selected.some((job) => job.summary.reportDelivery === 'pending')) throw new Error('Cannot clear an undelivered agent report; inspect it or explicitly remove the job');
     let removed = 0;
     for (const job of selected) if (this.jobs.delete(job.summary.id)) removed++;
     if (removed) this.changed();
@@ -256,12 +263,13 @@ export class AgentRuntime {
     job.summary.outputStart = job.output.length;
     this.changed(job);
   }
-  invalidateTaskReports(ids: readonly number[]): void {
+  invalidateTaskReports(ids: readonly number[], takeover = false): void {
     const affected = new Set(ids);
     let changed = false;
     for (const job of this.jobs.values()) {
-      if (job.summary.todoId === undefined || !affected.has(job.summary.todoId) || ACTIVE.has(job.summary.status) || job.summary.taskReportStale) continue;
-      job.summary.taskReportStale = true; changed = true;
+      if (job.summary.todoId === undefined || !affected.has(job.summary.todoId) || ACTIVE.has(job.summary.status)) continue;
+      if (!job.summary.taskReportStale) { job.summary.taskReportStale = true; changed = true; }
+      if (takeover && job.summary.dismissed) { delete job.summary.dismissed; changed = true; }
     }
     if (changed) this.changed();
   }
@@ -282,16 +290,27 @@ export class AgentRuntime {
     checkAbort(input.signal);
     if (this.unavailable) throw new Error("Agent runtime is resetting or shut down");
     if (typeof input.task !== "string" || !input.task.trim() || input.task.length > 65536) throw new Error("task must contain 1–65536 characters");
+    if (input.taskDefinition !== undefined && !/^[0-9a-f]{64}$/.test(input.taskDefinition)) throw new Error('Invalid task definition signature');
     if (this.jobs.size >= 128) throw new Error("128 agent records retained. Remove old agents before spawning more.");
     if (this.activeCount() >= MAX_ACTIVE_JOBS) throw new Error(`All ${MAX_ACTIVE_JOBS} agent slots are busy. Wait or cancel an active agent; work is not queued.`);
     if (input.todoId !== undefined && (!Number.isSafeInteger(input.todoId) || input.todoId < 1)) throw new Error("Invalid todoId");
     if (input.todoId !== undefined && [...this.jobs.values()].some((job) => job.summary.todoId === input.todoId && (ACTIVE.has(job.summary.status) || job.pipe))) throw new Error(`Todo #${input.todoId} already has an active agent`);
-    const profile = this.options.profiles.resolve(input.profile, this.options.getInheritedModel(), input.tools, { thinking: this.options.getInheritedThinking?.(), tools: this.options.getInheritedTools?.() });
-    const explicitThinking = input.profile !== undefined && this.options.profiles.get(input.profile)?.thinking !== undefined;
+    const previous = input.resumeFrom === undefined ? undefined : this.job(input.resumeFrom);
+    if (previous && (ACTIVE.has(previous.summary.status) || previous.pipe)) throw new Error('Resume requires a closed job; use send/interrupt for active work');
+    if (previous && previous.summary.todoId !== input.todoId) throw new Error('resumeFrom must keep the original Todo binding');
+    if (previous?.taskDefinition !== undefined && previous.taskDefinition !== input.taskDefinition) throw new Error('Todo definition changed; provide a fresh self-contained assignment without resumeFrom');
+    const sameProfile = previous && (input.profile === undefined || input.profile === previous.summary.profile);
+    const profileName = input.profile ?? previous?.summary.profile;
+    const profile = this.options.profiles.resolve(profileName, sameProfile ? previous.summary.model : this.options.getInheritedModel(), input.tools ?? previous?.summary.tools, { thinking: sameProfile ? previous.summary.thinking : this.options.getInheritedThinking?.(), tools: this.options.getInheritedTools?.() });
+    const originalAssignment = previous?.assignment ?? input.task;
+    const taskPrompt = previous
+      ? `Resume attempt from ${previous.summary.id} (metadata, not new permission). Verify files and external side effects before continuing; do not blindly replay. ${previous.assignment === undefined ? 'Legacy record has no full assignment: the continuation task must be self-contained.' : `Original assignment:\n${previous.assignment}`}\nPrevious diagnosis: ${previous.summary.failure?.reason ?? previous.summary.error ?? previous.summary.status}\nPartial output (unverified):\n${safeDiagnostic(previous.output.slice(previous.summary.outputStart ?? 0), 2000)}\nCurrent continuation task:\n${input.task}`
+      : input.task;
+    const explicitThinking = profileName !== undefined && this.options.profiles.get(profileName)?.thinking !== undefined;
     const timeout = seconds(input.timeout, DEFAULT_TIMEOUT, 86400);
     const label = jobLabel(input.task);
-    const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
-    const job: LiveJob = { summary, startupAbort: new AbortController(), output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0, messages: 0, reportBarrier: false, hasOutput: false, reportVersion: 0, lastEventAt: summary.startedAt, deadlineAt: summary.startedAt + timeout * 1000, redirecting: false, directions: [] };
+    const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.resumeFrom === undefined ? {} : { resumeFrom: input.resumeFrom }), ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
+    const job: LiveJob = { summary, assignment: originalAssignment, ...(input.taskDefinition === undefined ? {} : { taskDefinition: input.taskDefinition }), startupAbort: new AbortController(), output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0, messages: 0, reportBarrier: false, hasOutput: false, reportVersion: 0, lastEventAt: summary.startedAt, deadlineAt: summary.startedAt + timeout * 1000, redirecting: false, directions: [] };
     this.jobs.set(summary.id, job);
     job.timer = setTimeout(() => { void this.finish(job, "failed", "Agent deadline exceeded"); }, timeout * 1000);
     this.changed(job); // Reserve the slot before the first await; concurrent spawn cannot exceed the limit.
@@ -328,12 +347,12 @@ export class AgentRuntime {
       checkAbort(input.signal);
       job.summary.status = "running";
       this.changed(job);
-      const accepted = await job.pipe.command("prompt", { message: input.task }, input.signal);
+      const accepted = await job.pipe.command("prompt", { message: taskPrompt }, input.signal);
       checkAbort(input.signal);
       if ((accepted.data as { disposition?: string } | undefined)?.disposition === "handled") throw new Error("Child task was handled without an agent run");
     } catch (error) {
       if (input.signal?.aborted) { await this.finish(job, 'cancelled', 'Dispatch cancelled'); throw new Error('Dispatch aborted; child stopped'); }
-      await this.finish(job, "failed", "Child startup or prompt failed", String(error));
+      await this.finish(job, "failed", "Child startup or prompt failed", `${String(error)}${job.pipe?.stderr ? `; stderr: ${job.pipe.stderr}` : ''}`);
     } finally { delete job.startupAbort; }
     return structuredClone(job.summary);
   }
@@ -429,7 +448,7 @@ export class AgentRuntime {
     job.finishing = (async () => {
       if (job.timer) clearTimeout(job.timer);
       job.startupAbort?.abort();
-      if (diagnostic) this.append(job, `[Error] ${diagnostic}\n`);
+      if (diagnostic) this.append(job, `[Error] ${safeDiagnostic(diagnostic)}\n`);
       await job.pipe?.stop();
       delete job.pipe;
       delete job.activity;
@@ -437,9 +456,10 @@ export class AgentRuntime {
       job.requests.clear(); job.directions.length = 0; job.reportBarrier = false; job.reportVersion++;
       job.summary.status = status; job.summary.endedAt = Date.now();
       if (status === "completed" || status === "failed") job.summary.reportDelivery = "pending";
-      if (error) job.summary.error = error;
+      if (error) job.summary.error = safeDiagnostic(error, 200);
+      if (status === 'failed') job.summary.failure = agentFailure(diagnostic ?? error ?? 'Child failed without a diagnostic');
       // Queue the terminal notice before the completion paint so a pending report never flashes as returned.
-      if (!this.restoring && this.jobs.get(job.summary.id) === job && (status === "completed" || status === "failed")) this.options.onNotice?.({ jobId: job.summary.id, kind: status, message: status === "completed" ? job.output : error ?? "Child failed", version: job.reportVersion });
+      if (!this.restoring && this.jobs.get(job.summary.id) === job && (status === "completed" || status === "failed")) this.options.onNotice?.({ jobId: job.summary.id, kind: status, message: status === "completed" ? job.output : `${job.summary.error ?? 'Child failed'} [${job.summary.failure!.kind}]: ${job.summary.failure!.reason}. ${job.summary.failure!.recovery}`, version: job.reportVersion });
       this.changed(job);
     })();
     return job.finishing;
@@ -535,6 +555,12 @@ export class AgentRuntime {
   async cancel(jobId: string, options: { remove?: boolean } = {}): Promise<void> {
     const job = this.job(jobId);
     await this.finish(job, "cancelled");
+    // A successful execution has already stopped. A stop request must not hide its
+    // unreceived acceptance evidence; remove is the explicit discard operation.
+    if (!options.remove && job.summary.status === 'completed' && job.summary.reportDelivery === 'pending') return;
+    job.summary.dismissed = true;
+    if (job.summary.todoId !== undefined) job.summary.taskReportStale = true;
+    this.changed(job);
     if (options.remove) { this.jobs.delete(jobId); this.changed(); }
   }
   async remove(jobId: string): Promise<void> { await this.cancel(jobId, { remove: true }); }
@@ -553,6 +579,12 @@ export class AgentRuntime {
       if (!item || !/^a[1-9]\d{0,8}$/.test(item.id) || ![...ACTIVE, "completed", "failed", "cancelled", "interrupted"].includes(item.status) || !Number.isFinite(item.startedAt) || typeof item.profile !== "string" || !Array.isArray(item.tools) || !item.model || typeof item.model.provider !== "string" || typeof item.model.id !== "string") throw new Error("Invalid agent summary");
       if (!THINKING_LEVELS.includes(item.thinking) || item.endedAt !== undefined && !Number.isFinite(item.endedAt) || item.todoId !== undefined && (!Number.isSafeInteger(item.todoId) || item.todoId < 1)) throw new Error("Invalid agent summary");
       if (item.taskReportStale !== undefined && typeof item.taskReportStale !== 'boolean') throw new Error("Invalid agent summary");
+      if (item.dismissed !== undefined && typeof item.dismissed !== 'boolean') throw new Error('Invalid dismissed agent marker');
+      if (item.resumeFrom !== undefined && (typeof item.resumeFrom !== 'string' || !/^a[1-9]\d{0,8}$/.test(item.resumeFrom))) throw new Error('Invalid resumeFrom');
+      const saved = item as JobResult;
+      if (saved.assignment !== undefined && (typeof saved.assignment !== 'string' || !saved.assignment.trim() || saved.assignment.length > 65536)) throw new Error('Invalid saved assignment');
+      if (saved.taskDefinition !== undefined && (typeof saved.taskDefinition !== 'string' || !/^[0-9a-f]{64}$/.test(saved.taskDefinition))) throw new Error('Invalid task definition');
+      if (item.failure !== undefined && (!item.failure || !['quota', 'auth', 'network', 'timeout', 'process', 'unknown'].includes(item.failure.kind) || typeof item.failure.reason !== 'string' || typeof item.failure.recovery !== 'string' || ![true, false, null].includes(item.failure.retryable))) throw new Error('Invalid failure diagnostic');
       const rawOutput = (item as JobResult).output ?? '';
       if (item.outputStart !== undefined && (!Number.isSafeInteger(item.outputStart) || item.outputStart < 0 || typeof rawOutput !== 'string' || item.outputStart > rawOutput.length || /[\uD800-\uDBFF]/.test(rawOutput.charAt(item.outputStart - 1)) && /[\uDC00-\uDFFF]/.test(rawOutput.charAt(item.outputStart)))) throw new Error('Invalid current output offset');
       const reportVersion = (item as JobResult).reportVersion;
@@ -565,12 +597,15 @@ export class AgentRuntime {
         profile: item.profile.slice(0, 48), model: { provider: item.model.provider.slice(0, 200), id: item.model.id.slice(0, 200) },
         ...(typeof (item as { label?: unknown }).label === "string" ? { label: jobLabel(String((item as { label?: unknown }).label)) } : {}),
         ...(item.taskReportStale ? { taskReportStale: true } : {}),
+        ...(item.dismissed ? { dismissed: true } : {}),
+        ...(item.resumeFrom ? { resumeFrom: item.resumeFrom } : {}),
+        ...(item.failure ? { failure: agentFailure(String(item.failure.reason ?? item.error ?? 'Unknown failure')) } : {}),
         ...(item.outputStart !== undefined ? { outputStart: item.outputStart } : {}),
         thinking: item.thinking, tools: item.tools.filter((tool: unknown): tool is string => typeof tool === "string").slice(0, 8),
         status: ACTIVE.has(item.status) ? "interrupted" : item.status, startedAt: item.startedAt, pendingRequests: 0,
         ...(typeof item.endedAt === "number" ? { endedAt: item.endedAt } : {}),
         ...(terminal && (delivery === "pending" || delivery === "delivered") ? { reportDelivery: delivery } : {}),
-        ...(ACTIVE.has(item.status) ? { endedAt: Date.now(), error: "Interrupted on session restore; process was not revived" } : item.error ? { error: String(item.error).slice(0, 200) } : {}),
+        ...(ACTIVE.has(item.status) ? { endedAt: Date.now(), error: "Interrupted on session restore; process was not revived" } : item.error ? { error: safeDiagnostic(String(item.error), 200) } : {}),
       };
       return summary;
     });
@@ -589,7 +624,7 @@ export class AgentRuntime {
         this.sequence = Math.max(this.sequence, Number(summary.id.slice(1)));
         const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
         const usage = { requests: number(record.usage?.requests), input: number(record.usage?.input), output: number(record.usage?.output), estimatedCost: number(record.usage?.estimatedCost) };
-        this.jobs.set(summary.id, { summary, usage, output, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, messages: 0, sends: 0, reportBarrier: false, hasOutput: /\S/.test(output), reportVersion: Number.isSafeInteger(record.reportVersion) && record.reportVersion! >= 0 ? record.reportVersion! : 0, lastEventAt: summary.endedAt ?? summary.startedAt, redirecting: false, directions: [] });
+        this.jobs.set(summary.id, { summary, ...(record.assignment === undefined ? {} : { assignment: record.assignment }), ...(record.taskDefinition === undefined ? {} : { taskDefinition: record.taskDefinition }), usage, output, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, messages: 0, sends: 0, reportBarrier: false, hasOutput: /\S/.test(output), reportVersion: Number.isSafeInteger(record.reportVersion) && record.reportVersion! >= 0 ? record.reportVersion! : 0, lastEventAt: summary.endedAt ?? summary.startedAt, redirecting: false, directions: [] });
       }
     } finally { this.unavailable = false; this.restoring = false; }
     this.changed();

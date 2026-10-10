@@ -1,95 +1,113 @@
 # Agent communication
 
-This reference distinguishes execution, report delivery, and model consumption. A child finishing does not mean its report has reached the next main-model request, and receiving a report does not complete its Todo.
+Reference for child jobs, report delivery, task acceptance, and continuation. For installation and examples, see the [README](../README.md#subagents).
 
-## Dispatch configuration and child context
+## Assignment and configuration
 
-Omitting `profile` or selecting `inherit` captures the parent's current model, thinking level, and active supported built-in tools. A saved profile overrides only declared fields; a call's `tools` overrides the list. Unsupported inherited thinking adapts down; an explicit unsupported profile level fails. Existing jobs keep their captured configuration. Extensions, skills, the parent's full history and dynamic prompt sections are not copied; workspace rules are discovered independently in the same working directory. Children receive their assignment, child rules, optional profile instructions and optional fragment brief, and do not run the parent's Goal or automatic model retries.
+`subagent_spawn` starts one child Pi process. The assignment should include the objective, input paths, scope, and expected verification evidence. A linked `todoId` must be ready.
 
-Give a child a self-contained assignment: goal, inputs/paths, constraints and verification evidence. `context: true` is not full context inheritance. It provides a bounded brief for a bound fragment task, preserving real failed/cancelled states, the current step's instructions, and prioritized prerequisite report heads, including forward references. Only the latest valid report in that fragment instance contributes; stale or failed/interrupted evidence is not substituted with an older attempt.
+Omitting `profile`, or selecting `inherit`, captures the parent's model, thinking level, and active supported built-in tools at dispatch time. A named profile overrides its declared fields; call-level `tools` replaces the list. Implicit thinking can adapt down to a supported level. An explicitly unsupported profile level fails.
 
-## When the main model sees information
+A child works in the same directory, discovers workspace rules, and has independent conversation history. Selected profile instructions and `context: true` fragment guidance arrive as task context. The fragment brief prioritizes current instructions and valid prerequisite report heads from the same fragment instance. It is bounded, and a full report remains available through inspection.
 
-| Route | What reaches the main model | Timing |
+The child has `subagent_send` for parent communication. It cannot delegate children, and it does not run the parent's Goal. Its model auto-retry is disabled.
+
+## Information routes
+
+| Route | Model-facing content | Timing |
 |---|---|---|
-| Child `subagent_send` | Report or question, with the originating job and optional `requestId` | Buffered for the next safe main-session boundary; an idle session can be woken |
-| Child completion | Completion report and retained child output | Same automatic report channel |
-| Parent `subagent_spawn` | Job ID and startup state, with linked Todo ID/current status when bound | Ordinary result of the current tool call |
-| Todo completion | Newly ready task hints appended to the same Todo tool result | Following request; no duplicate UI notification |
-| Workflow checkpoint | Key task/Job state after compaction, restore, or command changes | Passive append before a normal request or safe boundary; no independent wake |
-| Goal checkpoint | Full original requirements, running/paused state, and execution policy after compaction or a Goal-policy change | Passive append; automatic wakes also carry the execution rules, without rewriting prior messages |
-| Parent `subagent_inspect` | Lifecycle/activity/tools, timings, queued directions, question IDs, reportVersion and todoStatus; brief profiles or opt-in full instructions | Ordinary non-waiting tool result; no full output |
-| Parent `subagent_wait` | Full retained output, observation, reportVersion, todoStatus, usage and questions, with snapshot/update/question/finished/timeout reason | timeout:0 immediately; default update waits at most 5s; finish defaults to 30s; questions return early |
-| Parent `subagent_send` | Delivery confirmation; the instruction or answer goes to the child | Confirmation is the current tool result; later child replies use the report channel |
-| Parent `subagent_cancel` | Cancellation/removal confirmation | Ordinary result of the current tool call |
-| `/agents wait` | Nothing is added to model context; the result is shown to the user | UI notification only |
+| Child `subagent_send` | Report or question with job ID and optional request ID | Next safe parent boundary; an idle parent can be woken |
+| Child success | Finalized retained output and completion report | Automatic report channel |
+| Child failure | Bounded diagnostic and recovery guidance | Automatic report channel; full output is retained |
+| Parent `subagent_spawn` | New job ID, startup status, linked Todo status, and optional continuation origin | Current tool result |
+| Parent `subagent_inspect` | Short job status/activity/questions or explicit profile query | Immediate tool result |
+| Parent `subagent_inspect`, `output: true` | Retained output, questions, usage, observation, and linked Todo status | Snapshot or bounded wait result |
+| Parent `subagent_send` | Delivery confirmation | Current tool result; subsequent child replies use the report channel |
+| Parent `subagent_cancel` | Stop/removal confirmation | Current tool result |
+| `/agents wait` | User-visible output | UI notification |
 
-A tool result is recorded for its current tool call and is available to the **following model request**. It is not inserted into a model request already streaming.
+A tool result is available to the following model request. Reports enter at `turn_end` or `agent_before_settle`, after the current tool batch; an idle report wake uses a follow-up message. Reports do not interrupt a tool batch already in progress.
 
-## Automatic report boundaries
+## Queries and delivery
 
-While the main session is running, reports are proposed at `turn_end`, after the current tool batch finishes. `agent_before_settle` provides the final fallback boundary. The returned session entries request continuation, and the following model request receives them in context. Reports do not interrupt sibling tools in a parallel batch.
+`subagent_inspect` without `output` returns short status. With `output: true`, it requires one `jobId` and accepts:
 
-When the main session is idle, the runtime briefly coalesces arrivals and sends a `followUp` custom message with `triggerTurn: true`. The report enters context for that newly started model request.
-
-This distinction answers two different timing questions: a report is **written at a safe boundary**, then **read by the next model request**. It is not delivered into an in-flight request.
-
-## Execution versus delivery state
-
-Jobs retain their execution status, such as `running`, `waiting`, `completed`, or `failed`. A separate `reportDelivery` field records terminal report handoff:
-
-- `pending`: execution has finished, but the terminal report has not been handed to the main session. The Todo panel shows **Pending delivery / 待交付** for a completed child.
-- `delivered`: the automatic report reached the model-context hook of an actual request, or a real `subagent_wait` tool result carried it back. A proposed boundary draft alone does not acknowledge it. A linked unfinished Todo shows **Pending verification / 待核验**.
-
-The linked task row follows acceptance, independently of Job execution:
-
-| Job / Todo state | Task-row label |
+| Parameter | Behavior |
 |---|---|
-| Job completed, report pending, Todo unfinished | `󰥔 Pending delivery / 待交付` |
-| Job completed, report delivered, Todo unfinished | `󰥔 Pending verification / 待核验` |
-| Todo completed after acceptance | `󰄬 Completed / 已完成` |
-| Reopened task with historical output | Canonical pending/in-progress Todo state |
+| `timeout: 0` | Immediate output snapshot |
+| `until: "update"` | New report, question, or end; default timeout 5 seconds |
+| `until: "finish"` | Terminal execution or a question; default timeout 30 seconds |
+| `after` | Wait beyond a known `reportVersion` |
+| `timeout` | Explicit wait duration, up to 300 seconds |
 
-A completed Todo owns its row even if the child continues a serial chain after an interim report; `/agents` still shows that child's real execution status. Standalone jobs retain execution/delivery semantics and delivered successful jobs leave the standalone panel. No separate acceptance state is written to Job records. Inspect/wait derive `todoStatus` from the current canonical task list.
+A wait timeout or abort only stops that wait. The background child remains active until it ends, reaches its job deadline, or is explicitly cancelled. Queries for profiles cannot collect output.
 
-Delivered means handed to the conversation, not read, accepted, or verified by the model. The Todo still requires explicit acceptance. A report intentionally suppressed by a paused workflow or a missing/deleted linked Todo remains pending until retrieved with the real `subagent_wait` tool.
+Successful and failed terminal jobs use `reportDelivery`:
 
-A discarded report draft is retained for a bounded delivery attempt. Persisted reports omitted by a memory-owned context filter are not forced back into the request; full output remains queryable. Terminal reports include the linked Todo's current status and verification reminder. Fragment resets mark old output historical, including every reopened successor, without deleting it.
+- `pending`: the terminal report has not been handed to a parent model request.
+- `delivered`: a real request's context hook received the automatic report, or an output query returned it to the model.
 
-A successful `subagent_wait` consumes notices for the same job so its returned content is not immediately repeated as an automatic completion report. `/agents wait` and `subagent_inspect` do not acknowledge report delivery, because neither returns the full report to the model.
+A proposed boundary entry is not delivery confirmation. If another extension discards it, the report can be proposed again within bounded attempts. A persisted report filtered from model context is not replayed automatically; query its output explicitly.
 
-## Directions and questions
+Output collection acknowledges the returned terminal report and removes matching buffered notices. Version-aware acknowledgement preserves newer reports. Ordinary status queries and `/agents wait` leave delivery status unchanged.
 
-A child uses `subagent_send({ message, question: true })` to ask a question and wait. The main model receives a `requestId`, then answers using parent `subagent_send({ requestId, message })`. That answer is sent through the child's pending input response; it does not start another child.
+## Task acceptance and display
 
-Parent `subagent_send({ recipient, message })` submits direction with `streamingBehavior: "steer"`. Pi consumes it at its next safe steering boundary; ordinary direction does not interrupt a running tool. `interrupt: true` marks a composite redirect, clears queued work before aborting the local turn, clears obsolete queue/questions again at the idle boundary, then submits direction in the same child context. Old settled events do not count as failure. Already-triggered external actions may continue, so inspect their real state before overlapping work. Delivery is accepted/queued/answered, not proof the child followed it.
+| Current state | Linked task row |
+|---|---|
+| Successful job, report pending, Todo unfinished | Pending delivery |
+| Successful job, report delivered, Todo unfinished | Pending verification |
+| Accepted Todo | Completed |
+| Latest failed/interrupted attempt still current | Failure/interruption state |
+| Explicitly dismissed attempt, Todo unfinished | Main session / Ready to resume |
+| Main-session takeover | Canonical Todo owner and state |
+| New active attempt | New job/profile and live activity |
 
-`subagent_wait` defaults to `until: "update"`, returning on a new report, question or end within five seconds. `after` uses reportVersion to wait beyond already observed reports. `until: "finish"` waits for terminal execution (default 30s, cap 300s), but questions still return early. Timeout/abort affects the wait only. Version-aware notice acknowledgement cannot drop a newer report that was not in the returned snapshot.
+Delivery is not acceptance. The main session verifies files, tests, and other evidence before marking a Todo completed. A job may report on an accepted step while continuing a serial assignment; the Todo owns its accepted state, while `/agents` still shows the actual job status.
 
-Changing a task's subject, description, dependencies or fragment identity invalidates prior acceptance evidence. Interrupting a child also starts a new report scope. Old output stays queryable, but old tool-batch reports arriving before the new direction is consumed are labeled historical and cannot unlock Todo completion. New reports can unlock the existing status-only acceptance guard; the parent must still verify their work. `outputStart` is a UTF-16 offset into retained `output`, separating current-assignment text from earlier history; restoration validates it, and fragment briefs use only its current tail.
+All task filters use the latest attempt. A stale latest attempt retires its outcome rather than reviving an older verdict. Native Todo terminal states take precedence. Default Standalone display hides dismissed attempts and delivered successful jobs; explicit outcome filters can show their history.
 
-A parent abort during authentication/startup cancels dispatch, stops any child process and leaves the Todo unclaimed. Cancellation after successful dispatch does not retroactively stop the background job. Sending direction honors cancellation: a canceled observation leaves the job alone, while a canceled mutating RPC whose outcome is unknown stops the child. A failed composite interruption closes as failed rather than leaving a half-redirected job. Explicit cancel always completes process cleanup, even if its caller is interrupted. These controls do not roll back files or prove that already-triggered external actions have stopped.
+## Direction and questions
 
-## Goal, pause, and restore
+Child `subagent_send({ message, question: true })` waits for an answer. The parent uses `subagent_send({ requestId, message })` to answer that input request.
 
-Automatic report wakes and Goal continuations share the active Goal's allowance. User nolimit removes its turn cap without resetting used counts; other safety stops remain. Plan mode, a paused Goal, paused Agent delivery, or an exhausted finite allowance prevent automatic wakes.
+Parent direction uses `subagent_send({ recipient, message })`. Normal direction enters at a safe steering boundary. `interrupt: true` clears obsolete queued work, aborts the current local turn, cleans the idle queue, and sends a new direction in the same child context. Confirmation is `accepted`, `queued`, or `answered`; inspect evidence to determine whether work followed the direction.
 
-A model error temporarily holds queued reports without discarding them or starting a competing idle wake. Once native Pi or Goal recovery produces a successful turn, the report channel reopens and delivers the retained batch. If retries are exhausted, or the user explicitly pauses/aborts, normal pause suppression applies.
+Changing the task definition or fragment identity invalidates earlier acceptance evidence. Interrupting the child starts a new report scope. Old output remains queryable, with `outputStart` separating historical text from the current assignment. Late reports from an old tool batch remain historical until the new direction is consumed.
 
-Reports suppressed while paused are not replayed on resume. Their full output remains in Job records and can be retrieved with `subagent_wait`; pending delivery stays visible until a real handoff. `/agents resume` permits future arrivals rather than replaying old messages. Restoring a session never revives child processes or starts an automatic report loop.
+## Failure, cancellation, and continuation
 
-Notices are coalesced by job and notice kind or question ID. Completed output replaces a same-batch interim notice because it already contains that report; failure diagnostics retain interim reports. Already-answered questions are filtered at delivery. At most 32 notices are retained, with questions preferred. These are count limits, not character limits.
+A model error, unexpected process exit, invalid RPC record, startup failure, or job deadline closes the attempt and releases its process slot. Failure results include a bounded, sanitized root-cause summary, classification, and recovery guidance. Finalized partial text and diagnostic output remain available. A streaming fragment that never finalized before a crash may not be retained.
 
-## Retained-record cleanup
+The default execution deadline is 600 seconds; spawn `timeout` can set up to 86,400 seconds. Model retry stays under parent control: resolve the cause, verify partial artifacts and external side effects, then continue explicitly.
 
-Todo clear scope completed/closed/all also prunes eligible child history. Active bindings, pending delivery and successful reports awaiting Todo acceptance remain. Dependency anchors remain, and retryable failed tasks still keep their prerequisites. IDs keep their high-water marks across cleanup/reload. This only changes current records; it never stops a process, edits project files, or rewrites earlier conversation entries.
+`resumeFrom` creates a new attempt:
 
-## Size and context
+- Keep the original Todo binding and saved assignment.
+- Supply the current continuation task; select another known profile when needed.
+- Keep the previous tool scope unless call-level `tools` explicitly overrides it.
+- Reject changed Todo definitions; use a fresh self-contained assignment for the current scope.
+- Supply full instructions when the retained record has no saved original assignment.
+- Retain the old execution record and report history.
 
-Reports, retained output, questions, and answers have no plugin-imposed character cap. RPC record parsing, completion reports, and output restoration preserve the full text. Terminal controls and bidi controls are still sanitized before automatic display/delivery.
+Cancellation dismisses unsuccessful or interrupted attempts from the current panel. It does not change Todo acceptance or reverse project edits. An already successful job with an undelivered report keeps that report; `remove: true` explicitly discards the record.
 
-Children are prompted to give task-appropriate conclusions, changes, verification, and risks, avoiding routine play-by-play and duplicate final reports. Removing caps does not create unlimited model context: long results still grow memory, session storage, and the next request's context. Model context windows and Pi's own result handling still apply.
+A parent abort during authentication/startup cancels dispatch and leaves its Todo unclaimed. After dispatch succeeds, parent waiting or ordinary-turn cancellation does not stop stable background work. A cancelled mutating direction with an unknown outcome stops the child; a failed composite redirect closes the attempt. Already-triggered external actions may still finish, so check their authoritative state before repeating work.
 
-Agent-state `appendEntry` snapshots are session data, not model messages. Live thinking/tool/output activity is UI-only and never enters model context. Tool duration keeps refreshing beyond 99 seconds; finishing a tool or shutting down the session stops its clock timer.
+## Goal and recovery context
 
-Workflow and Goal checkpoints append at safe boundaries without changing memory-owned summaries or earlier messages. A per-Goal `nopause` policy rejects model stopping and disables configured question tools; child questions are answered autonomously by the parent. No-progress rounds trigger replanning in this mode. Real user stops, finite budgets, Plan, and runtime/compaction failures retain their safety controls and report suppression.
+Automatic child-report wakes and Goal continuations share the active Goal's allowance. Plan, Goal pause, Agent-delivery pause, or an exhausted finite allowance suppresses automatic wakes. Model failures hold buffered reports while native Pi or bounded Goal recovery runs. Successful recovery reopens delivery.
+
+`/agents resume` permits future report arrivals. Retrieve previously suppressed reports explicitly. Restoring or switching a session stops managed child processes and restores their records as interrupted; it does not revive execution or automatically resume the Goal.
+
+Workflow checkpoints carry bounded Todo/Job summaries. Goal checkpoints retain original requirements and execution policy. Normal changes append at safe boundaries; a current active Goal contract missing after ordinary context transforms is appended through Pi's public final-context event. System messages, prior messages, reports, and memory-owned summaries remain intact. A later owner of that final event can still transform its result.
+
+Short continuation messages refer to the current Goal contract. They do not authorize a smaller objective or additional permissions. Only important new evidence or a changed execution decision calls for `goal update`.
+
+## Retained data and cleanup
+
+Todo cleanup and job pruning preserve active processes, undelivered reports, successful work awaiting acceptance, and required dependencies. Explicit record removal is available separately. IDs retain their high-water marks across cleanup and restore.
+
+Job state is saved as branch-local metadata and output deltas. Original assignments are retained for continuation. State records are not model-context messages. Live thinking/tool/output activity updates only the UI.
+
+Reports and full output can be long; they consume context and session storage when queried or delivered. Display removes terminal control characters. Diagnostic summaries redact common credential forms, but arbitrary child report text still needs review before sharing. Child credentials and process environment are not an operating-system isolation boundary.

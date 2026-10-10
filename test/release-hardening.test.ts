@@ -45,7 +45,7 @@ test('actual Pi: whole-run and step resets guard every active child in the downs
   await call(client, 'todo', { action: 'create', subject: 'External successor', blockedBy: [2] });
   const job = await call(client, 'subagent_spawn', { todoId: 3, task: 'TEST CALL subagent_send {"message":"Keep waiting","question":true}' });
   assert.equal(job.isError, false);
-  assert.equal((await call(client, 'subagent_wait', { jobId: job.details.jobId, timeout: 10 })).details.status, 'waiting');
+  assert.equal((await call(client, 'subagent_inspect', { jobId: job.details.jobId, output: true, timeout: 10 })).details.status, 'waiting');
   for (const step of [undefined, 'first']) {
     const result = await call(client, 'todo', { action: 'reset', preset: 'flow', ...(step ? { step } : {}) });
     assert.equal(result.isError, true);
@@ -58,7 +58,7 @@ test('actual Pi: whole-run and step resets guard every active child in the downs
   // The same guard protects a child bound directly to the selected fragment.
   await call(client, 'todo', { action: 'update', id: 1, status: 'completed' });
   const bound = await call(client, 'subagent_spawn', { todoId: 2, task: 'TEST CALL subagent_send {"message":"Keep waiting","question":true}' });
-  await call(client, 'subagent_wait', { jobId: bound.details.jobId, timeout: 10 });
+  await call(client, 'subagent_inspect', { jobId: bound.details.jobId, output: true, timeout: 10 });
   assert.equal((await call(client, 'todo', { action: 'reset', preset: 'flow', step: 'last' })).isError, true);
   await call(client, 'subagent_cancel', { jobId: bound.details.jobId });
 });

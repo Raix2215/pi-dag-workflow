@@ -123,7 +123,7 @@ test("returns undefined for a brand-new empty session unless forceEmpty is set",
   const text = render(emptyState(), [], { forceEmpty: true });
   assert.equal(text.split("\n")[0], "Workflow state checkpoint");
   assert.match(text, /No unfinished Todos\./);
-  assert.match(text, /call subagent_wait only when a report is missing/);
+  assert.match(text, /use subagent_inspect output:true only when a report is missing/);
 });
 
 test("reports Plan mode and still returns a summary for an otherwise empty session", () => {

@@ -12,13 +12,17 @@ export const PLAN_GUIDANCE = "Plan mode: explore, read, search and ask questions
  */
 export function planViolation(state: WorkflowState, tool: string, input: unknown, msg: Translator = chinese, configTools: readonly string[] = []): string | undefined {
   if (!state.plan) return;
-  if (["subagent_inspect", "subagent_wait", "subagent_cancel"].includes(tool)) return;
+  if (["subagent_inspect", "subagent_cancel"].includes(tool)) return;
   if (tool === "goal" && ["list", "get", "disable", "complete", "delete"].includes((input as { action?: string } | null)?.action ?? "")) return;
   if (["write", "edit", "bash", "powershell", "goal"].includes(tool) || tool.startsWith("subagent_")) return msg`Plan 中不允许执行 ${tool}；先 /plan off`;
   if (tool === "todo") {
-    const params = input as { action?: string; status?: string } | null;
+    const params = input as { action?: string; status?: string; operations?: { action?: string; status?: string }[] } | null;
+    if (params?.action === 'batch' && Array.isArray(params.operations)) {
+      if (params.operations.every((operation) => operation && (operation.action === 'create' && (operation.status === undefined || operation.status === 'pending') || operation.action === 'update' && operation.status === undefined))) return;
+      return msg('Plan 只允许整理 Todos，不允许开始或完成；先 /plan off');
+    }
     if (["create", "update"].includes(params?.action ?? "") && (params?.status === "completed" || params?.status === "in_progress")) return msg("Plan 只允许整理 Todos，不允许开始或完成；先 /plan off");
-    if (["create", "update", "list", "get", "delete", "clear", "apply", "reset"].includes(params?.action ?? "")) return;
+    if (["create", "update", "list", "get", "delete", "clear", "apply", "reset", "presets"].includes(params?.action ?? "")) return;
   }
   if (READ_TOOLS.has(tool) || state.planTools.includes(tool) || configTools.includes(tool)) return;
   return msg`Plan 中不能执行 ${tool}。请用读取／搜索工具，或退出 Plan 后实施。额外只读工具需由用户通过 /plan tools 或配置文件的 planTools 明确配置。`;

@@ -1,10 +1,10 @@
 import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { dagStructure, type DagStructure } from "../dag/cache.ts";
 import { dagLayout } from "../dag/layout.ts";
 import { statusLabel, type Todo, type TodoFilter, type WorkflowState } from "../todos/state.ts";
 import { chinese, type Translator } from "../shared/i18n.ts";
-import { filteredView, type TaskView } from "./filter.ts";
+import { filteredView, latestBoundJobs, type TaskView } from "./filter.ts";
 import { objectId, snapshotCache, weakMemo } from "./render-cache.ts";
 
 // Failed and cancelled are native Todo outcomes: a cross and a slash keep the row honest without
@@ -183,6 +183,8 @@ export interface AgentView {
   /** Execution completion and report handoff are separate stages. */
   reportDelivery?: 'pending' | 'delivered';
   taskReportStale?: boolean;
+  /** Set by an explicit cancel: the attempt is retired, so the main session owns the Todo again. */
+  dismissed?: boolean;
   /** One-line spawn task excerpt, shown for jobs that no Todo row can carry. */
   label?: string;
   /** Live activity from the child's real event stream; display-only, never persisted. */
@@ -226,18 +228,21 @@ const ACTIVE_LIVE = new Set(["starting", "running"]);
  * fresh handoff. Unfinished non-stale jobs keep live/failure labels; only terminal completion maps
  * to the handoff (待交付) or the waiting-to-verify (待核验) stage. Unbound jobs keep agentLabel.
  */
-const boundLabel = (task: Todo, job: AgentView, msg: Translator): string => {
+const boundLabel = (task: Todo, job: AgentView, msg: Translator, resumable = false): string => {
   if (task.status === "completed") return msg("󰄬 已完成");
   // A native terminal status is already verified; a job cannot relabel it as a fresh handoff.
   if (task.status === "failed" || task.status === "cancelled") return msg(statusLabel[task.status]);
+  // An explicit dismissal retires the attempt without changing the canonical task state.
+  if (resumable) return msg("可接续");
   if (ACTIVE_LIVE.has(job.status) || job.status === "waiting") return msg(agentLabels[job.status]);
   if (job.taskReportStale) return msg(statusLabel[task.status]);
   if (job.status === "completed") return msg(job.reportDelivery === "pending" ? "󰥔 待交付" : "󰥔 待核验");
   return msg(agentLabels[job.status]);
 };
-const boundColor = (task: Todo, job: AgentView): ThemeColor => {
+const boundColor = (task: Todo, job: AgentView, resumable = false): ThemeColor => {
   if (task.status === "completed") return agentColors.completed;
   if (task.status === "failed" || task.status === "cancelled") return colors[task.status];
+  if (resumable) return "accent";
   if (ACTIVE_LIVE.has(job.status) || job.status === "waiting") return agentColors[job.status];
   if (job.taskReportStale) return colors[task.status];
   if (job.status === "completed") return "warning";
@@ -311,8 +316,9 @@ function planRow(row: TreeRow, job: AgentView | undefined, frame: RowGeometry, w
   // A job failure or cancellation overrides an unfinished Todo; otherwise the Todo owns the row.
   const effective = view.effective.get(task.id);
   const display = effective === "failed" || effective === "cancelled" ? effective : task.status;
+  const resumable = view.resumableIds.has(task.id);
   const icon = icons[display];
-  const iconColor = job ? boundColor(task, job) : colors[display];
+  const iconColor = job ? boundColor(task, job, resumable) : colors[display];
   // Three blocks: (1) tree+id+refs rendered exactly as-is, byte-identical to the compact form;
   // (2) status icon+title merged as one unit starting at a unified column (fill sits after
   // the reference, never inside block 1); (3) right-aligned [owner][status] suffix.
@@ -328,7 +334,7 @@ function planRow(row: TreeRow, job: AgentView | undefined, frame: RowGeometry, w
   const fragmentText = statics.fragment ? `[${statics.fragment}]` : "";
   // A completed Todo owns the label: late live or terminal job states must not contradict the task.
   const live = job && task.status !== "completed" && job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
-  const label = job ? live ? activityLabel(live, now, msg) : boundLabel(task, job, msg) : msg(statusLabel[task.status]);
+  const label = job ? live ? activityLabel(live, now, msg) : boundLabel(task, job, msg, resumable) : msg(statusLabel[task.status]);
   const minTitle = Math.min(6, visibleWidth(title));
   const statusBudget = available - minTitle - 1;
   const variants = live?.kind === "tool" ? [label, label.replace(/ (?:\d+[hms])+$/, ""), "󰆍"] : [label];
@@ -360,7 +366,7 @@ function planRow(row: TreeRow, job: AgentView | undefined, frame: RowGeometry, w
     { color: "accent", text: body },
     ...(gap ? [{ text: gap }] : []),
     { color: "muted", text: suffixHead },
-    { color: job ? boundColor(task, job) : "muted", text: status },
+    { color: job ? boundColor(task, job, resumable) : "muted", text: status },
   ], width);
 }
 const paintPlan = (plan: RowPlan, width: number, theme: Theme | undefined): string => {
@@ -385,7 +391,7 @@ function buildFrame(rows: readonly TreeRow[], width: number, jobs: readonly Agen
 }
 const frameCache = snapshotCache<RowFrame>(4);
 /** Only bound jobs draw on a row; their display-affecting fields (never elapsed time) key the frame. */
-const boundJobSignature = (jobs: readonly AgentView[]): string => JSON.stringify(jobs.filter((job) => job.todoId !== undefined).map((job) => [job.id, job.todoId, job.status, job.reportDelivery ?? null, job.taskReportStale ? 1 : 0, job.profile, job.label ?? null, job.activity?.kind ?? null, job.activity?.tool ?? null, job.activity?.since ?? null]));
+const boundJobSignature = (jobs: readonly AgentView[]): string => JSON.stringify(jobs.filter((job) => job.todoId !== undefined).map((job) => [job.id, job.todoId, job.status, job.reportDelivery ?? null, job.taskReportStale ? 1 : 0, job.dismissed ? 1 : 0, job.profile, job.label ?? null, job.activity?.kind ?? null, job.activity?.tool ?? null, job.activity?.since ?? null]));
 function frameFor(rows: readonly TreeRow[], width: number, jobs: readonly AgentView[], msg: Translator, view: TaskView): RowFrame {
   return frameCache(rows, `${width}\u0000${objectId(msg)}\u0000${objectId(view)}\u0000${boundJobSignature(jobs)}`, () => buildFrame(rows, width, jobs, msg, view));
 }
@@ -399,15 +405,18 @@ function paintRows(rows: readonly TreeRow[], frame: RowFrame, width: number, the
   });
 }
 
-export interface TaskViewOptions { maxRows?: number; theme?: Theme; goalTitle?: string | undefined; jobs?: readonly AgentView[]; msg?: Translator; filter?: TodoFilter }
+export interface TaskViewOptions { maxRows?: number; agentRows?: number; priorityIds?: ReadonlySet<number>; dagHeader?: boolean; theme?: Theme; goalTitle?: string | undefined; jobs?: readonly AgentView[]; msg?: Translator; filter?: TodoFilter }
 /**
  * Bounded preview projection. Recent unfinished work wins the row budget, then the
  * most recent completed history fills the rest. Linear scans only, so a per-second redraw
  * never sorts thousands of Todos. The full view keeps the canonical list order.
  */
-function previewTasks(tasks: readonly Todo[], limit: number): Todo[] {
+function previewTasks(tasks: readonly Todo[], limit: number, priorityIds?: ReadonlySet<number>): Todo[] {
   if (limit >= tasks.length) return [...tasks];
   const chosen = new Set<Todo>();
+  if (priorityIds) for (let index = tasks.length - 1; index >= 0 && chosen.size < limit; index--) {
+    const task = tasks[index]!; if (priorityIds.has(task.id)) chosen.add(task);
+  }
   for (let index = tasks.length - 1; index >= 0 && chosen.size < limit; index--) {
     const task = tasks[index]!;
     if (task.status === 'pending' || task.status === 'in_progress') chosen.add(task);
@@ -423,9 +432,9 @@ function previewTasks(tasks: readonly Todo[], limit: number): Todo[] {
 interface RowSelection { readonly selected: readonly Todo[]; readonly more: boolean; readonly rows: TreeRow[] }
 const selectionCache = snapshotCache<RowSelection>(4);
 /** Bounded preview window and its structural rows, reused while the snapshot and width stay put. */
-function selectionFor(tasks: readonly Todo[], style: string, width: number, limit: number): RowSelection {
-  return selectionCache(tasks, `${style}\u0000${width}\u0000${limit}`, () => {
-    const selected = previewTasks(tasks, limit);
+function selectionFor(tasks: readonly Todo[], style: string, width: number, limit: number, priorityIds?: ReadonlySet<number>): RowSelection {
+  return selectionCache(tasks, `${style}\u0000${width}\u0000${limit}\u0000${priorityIds ? [...priorityIds].join(',') : ''}`, () => {
+    const selected = previewTasks(tasks, limit, priorityIds);
     const more = tasks.length > selected.length;
     return { selected, more, rows: style === "flat" ? flatRows(selected, more) : pathRows(selected, width, more) };
   });
@@ -448,19 +457,19 @@ export function renderTasks(state: WorkflowState, width: number, options?: TaskV
   const filter = options?.filter ?? state.filter ?? "full";
   const view = filteredView(state.tasks, filter, jobs);
   const tasks = view.tasks;
-  const lines = header(state, tasks, width, options?.theme, options?.goalTitle, false, msg, filter);
+  const lines = header(state, tasks, width, options?.theme, options?.goalTitle, options?.dagHeader ?? false, msg, filter);
   const requested = options?.maxRows ?? 8;
   const limit = requested === Infinity ? tasks.length : Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 8;
-  const selection = selectionFor(tasks, state.treeStyle === "flat" ? "flat" : "chain", width, limit);
+  const selection = selectionFor(tasks, state.treeStyle === "flat" ? "flat" : "chain", width, limit, options?.priorityIds);
   lines.push(...paintRows(selection.rows, frameFor(selection.rows, width, jobs, msg, view), width, options?.theme, msg, view));
   if (selection.more) lines.push(tint(clip(msg`└─ … 隐藏 ${tasks.length - selection.selected.length} 项`, width), "dim", options?.theme));
   // The bounded widget keeps four standalone rows; the complete view carries every job it shows.
-  lines.push(...agentSection(jobs, width, options?.theme, msg, view, requested === Infinity ? Infinity : AGENT_ROWS));
+  lines.push(...agentSection(jobs, width, options?.theme, msg, view, requested === Infinity ? Infinity : options?.agentRows ?? AGENT_ROWS));
   return lines;
 }
 
 /** Complete solid-line graph, not a spanning tree. Only fallback lists repeat predecessor ids. */
-export function renderDag(state: WorkflowState, width: number, theme?: Theme, goalTitle?: string, jobs: readonly AgentView[] = [], options?: { maxLines?: number; msg?: Translator; filter?: TodoFilter }): string[] {
+export function renderDag(state: WorkflowState, width: number, theme?: Theme, goalTitle?: string, jobs: readonly AgentView[] = [], options?: { maxLines?: number; agentRows?: number; msg?: Translator; filter?: TodoFilter }): string[] {
   width = columns(width);
   if (!width) return [];
   const msg = options?.msg ?? chinese;
@@ -469,7 +478,7 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
   const tasks = view.tasks;
   const lines = header(state, tasks, width, theme, goalTitle, true, msg, filter);
   // The graph keeps its own preview budget; Standalone is appended after it on every path exactly once.
-  const tail = agentSection(jobs, width, theme, msg, view, options?.maxLines === undefined ? Infinity : AGENT_ROWS);
+  const tail = agentSection(jobs, width, theme, msg, view, options?.maxLines === undefined ? Infinity : options?.agentRows ?? AGENT_ROWS);
   if (!tasks.length) return [...lines, ...tail];
   const limit = options?.maxLines !== undefined && Number.isFinite(options.maxLines) ? Math.max(3, Math.floor(options.maxLines)) : Infinity;
   const result = dagLayout(projection(view.dagTasks), width, msg);
@@ -503,6 +512,7 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
     // Same override rule as a list row: a job failure or cancellation replaces an unfinished Todo.
     const effective = view.effective.get(task.id);
     const display = effective === "failed" || effective === "cancelled" ? effective : task.status;
+    const resumable = view.resumableIds.has(task.id);
     const budget = box.width - 4;
     // A filtered graph cannot draw an edge to a hidden prerequisite, so the box names it as a
     // left-hand reference instead of implying the dependency is met.
@@ -515,8 +525,8 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
     if (hidden.length && visibleWidth(prefix) > budget) overflowRefs.push(reference(task, hidden));
     const owner = job && !job.taskReportStale ? `${clean(job.id)} · ${clean(job.profile)}` : staticsFor(task).owner || msg("主会话");
     const live = job && display !== "completed" && job.activity && ACTIVE_LIVE.has(job.status) ? job.activity : undefined;
-    const label = job ? live ? activityLabel(live, Date.now(), msg) : boundLabel(task, job, msg) : msg(statusLabel[display]);
-    const content = [first, tint(clip(`[${owner}]`, budget), "muted", theme), tint(clip(`[${label}]`, budget), job ? boundColor(task, job) : colors[display], theme)];
+    const label = job ? live ? activityLabel(live, Date.now(), msg) : boundLabel(task, job, msg, resumable) : msg(statusLabel[display]);
+    const content = [first, tint(clip(`[${owner}]`, budget), "muted", theme), tint(clip(`[${label}]`, budget), job ? boundColor(task, job, resumable) : colors[display], theme)];
     content.forEach((text, index) => {
       const y = box.top + index + 1;
       const group = bodies.get(y) ?? [];
@@ -541,4 +551,93 @@ export function renderDag(state: WorkflowState, width: number, theme?: Theme, go
     else lines.push(tint(clip(msg('前置引用已截断；/dag 查看完整结构'), width), 'dim', theme));
   }
   return [...lines, ...tail];
+}
+
+/** One bounded budget for the whole widget; complete detail screens have no such limit. */
+export function widgetHeightBudget(rows: number): number {
+  return Math.max(1, Math.min(12, Math.floor((Number.isFinite(rows) ? rows : 36) / 3)));
+}
+const urgentIds = weakMemo((tasks: readonly Todo[]) => [
+  ...tasks.filter((task) => task.status === 'in_progress').slice(-8),
+  ...tasks.filter((task) => task.status === 'failed' || task.status === 'cancelled').slice(-4),
+].map((task) => task.id));
+
+/** A degraded widget must not claim clipped predecessor ids are complete. */
+function widgetReferences(lines: string[], rows: readonly TreeRow[], start: number, budget: number, width: number, theme: Theme | undefined, msg: Translator, noticeAt?: number): string[] {
+  const missing = rows.flatMap((row, index) => {
+    const ref = reference(row.task, row.dependencies);
+    return row.dependencies.length && !stripTerminalSequences(lines[start + index] ?? '').includes(ref) ? [{ ref, index }] : [];
+  });
+  if (!missing.length) return lines;
+  const extra = missing.flatMap(({ ref }) => wrapTextWithAnsi(ref, width).map((part) => tint(part, 'dim', theme)));
+  if (lines.length + extra.length <= budget) lines.splice(start + rows.length, 0, ...extra);
+  else {
+    const warning = msg('前置引用已截断；/dag 查看完整结构');
+    const clause = warning.split(/[;；]/)[0]!;
+    // On a narrow terminal keep the verdict ("shortened"), not just the start of its subject.
+    const compact = visibleWidth(clause) <= width ? clause : '…' + sliceByColumn(clause, visibleWidth(clause) - width + 1, width - 1);
+    lines[noticeAt ?? start + missing[0]!.index] = tint(visibleWidth(warning) <= width ? warning : compact, 'dim', theme);
+  }
+  return lines;
+}
+
+export function renderWidget(state: WorkflowState, width: number, maxLines: number, options: TaskViewOptions = {}): string[] {
+  width = columns(width);
+  const budget = Math.max(0, Math.floor(maxLines));
+  if (!width || !budget) return [];
+  const msg = options.msg ?? chinese; const jobs = options.jobs ?? [];
+  const filter = options.filter ?? state.filter ?? 'full';
+  const view = filteredView(state.tasks, filter, jobs);
+  const tasks = view.tasks;
+  const unbound = jobs.filter((job) => view.standaloneIds.has(job.id)).sort((a, b) => agentRank(a) - agentRank(b));
+  const heading = header(state, tasks, width, options.theme, options.goalTitle, state.view === 'dag', msg, filter);
+  const agentCost = (rows: number) => unbound.length ? 1 + rows + (rows < unbound.length ? 1 : 0) : 0;
+  const priorityIds = new Set(urgentIds(tasks));
+  for (const [id, job] of latestBoundJobs(jobs)) {
+    const effective = view.effective.get(id);
+    if (effective !== undefined && effective !== 'completed' && (effective === 'failed' || effective === 'cancelled' || ACTIVE_LIVE.has(job.status) || job.status === 'waiting' || job.status === 'completed')) priorityIds.add(id);
+  }
+  const taskAttention = [...priorityIds].filter((id) => view.effective.has(id)).length;
+  const agentAttention = unbound.filter((job) => agentRank(job) < 2).length;
+  let notice: string | undefined;
+  if (state.view === 'dag' && tasks.length && options.maxRows !== 0) {
+    const graph = dagLayout(projection(view.dagTasks), width, msg);
+    // Keep the graph only when the normal Standalone preview fits too; a larger budget must
+    // not trade visible questions, activity or handoffs for boxes plus a hidden-count row.
+    const rows = Math.min(AGENT_ROWS, unbound.length);
+    if (graph.layout && graph.layout.lines.length + heading.length + (graph.layout.crossings ? 1 : 0) + agentCost(rows) <= budget) {
+      const lines = renderDag(state, width, options.theme, options.goalTitle, jobs, { maxLines: budget - agentCost(rows), agentRows: rows, msg, filter });
+      if (lines.length <= budget) return lines;
+    }
+    notice = msg`图已降级为列表：${graph.reason ?? msg('终端高度不足')}；左编号保留完整前驱`;
+  }
+  let choice: { todos: number; agents: number; score: number } | undefined;
+  for (let todos = 0; todos <= Math.min(options.maxRows ?? 8, tasks.length); todos++) for (let agents = 0; agents <= Math.min(4, unbound.length); agents++) {
+    const cost = heading.length + (notice ? 1 : 0) + todos + (todos < tasks.length ? 1 : 0) + agentCost(agents);
+    if (cost > budget) continue;
+    const score = 1000 * (Math.min(todos, taskAttention) + Math.min(agents, agentAttention)) + (todos ? 20 : 0) + (agents ? 20 : 0) + todos * 2 + agents;
+    if (!choice || score > choice.score) choice = { todos, agents, score };
+  }
+  if (choice && (choice.todos || choice.agents || !taskAttention && !agentAttention)) {
+    const lines = renderTasks(state, width, { ...options, msg, filter, maxRows: choice.todos, agentRows: choice.agents, priorityIds, dagHeader: state.view === 'dag' });
+    if (notice) {
+      lines.splice(heading.length, 0, tint(clip(notice, width), 'dim', options.theme));
+      const selection = selectionFor(tasks, state.treeStyle === 'flat' ? 'flat' : 'chain', width, choice.todos, priorityIds);
+      return widgetReferences(lines, selection.rows, heading.length + 1, budget, width, options.theme, msg, heading.length);
+    }
+    return lines;
+  }
+  // In a tiny terminal, retain the title and one urgent row before a compact count summary.
+  const lines = [...heading];
+  if (notice && budget >= heading.length + 2) lines.push(tint(clip(notice, width), 'dim', options.theme));
+  const selection = selectionFor(tasks, state.treeStyle === 'flat' ? 'flat' : 'chain', width, 1, priorityIds);
+  const taskRow = paintRows(selection.rows, frameFor(selection.rows, width, jobs, msg, view), width, options.theme, msg, view)[0];
+  const standalone = agentSection(jobs, width, options.theme, msg, view, 1);
+  if (!lines.length && standalone.length) lines.push(standalone[0]!);
+  const row = unbound[0]?.status === 'waiting' || options.maxRows === 0 ? standalone[1] : taskAttention ? taskRow : standalone[1] ?? taskRow;
+  const rowAt = lines.length;
+  if (row && lines.length < budget) lines.push(row);
+  if (lines.length < budget) lines.push(tint(clip(msg`预览 · Todo ${tasks.length} · Standalone ${unbound.length} · /todos /agents`, width), 'dim', options.theme));
+  if (notice && row === taskRow && rowAt < budget) widgetReferences(lines, selection.rows, rowAt, budget, width, options.theme, msg, rowAt > heading.length ? heading.length : undefined);
+  return lines.slice(0, budget);
 }

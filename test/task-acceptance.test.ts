@@ -165,7 +165,7 @@ test('actual Pi: completing the Todo flips the bound label while the execution s
   const jobId = spawned.details.jobId as string;
   assert.equal(spawned.details.todoStatus, 'in_progress');
 
-  const waited = await call(client, 'subagent_wait', { jobId, timeout: 10 });
+  const waited = await call(client, 'subagent_inspect', { jobId, output: true, timeout: 10 });
   assert.equal(waited.details.status, 'completed');
   assert.equal(waited.details.todoStatus, 'in_progress');
   // The report reached this context, so the bound row waits for verification.
@@ -182,7 +182,7 @@ test('actual Pi: completing the Todo flips the bound label while the execution s
   inspected = await call(client, 'subagent_inspect', { jobId });
   assert.equal(inspected.details.jobs[0].status, 'completed', 'the execution state machine is unchanged');
   assert.equal(inspected.details.jobs[0].todoStatus, 'completed');
-  const reread = await call(client, 'subagent_wait', { jobId, timeout: 0 });
+  const reread = await call(client, 'subagent_inspect', { jobId, output: true, timeout: 0 });
   assert.equal(reread.details.status, 'completed');
   assert.equal(reread.details.todoStatus, 'completed');
   assert.equal(todoState(await client.entries()).tasks[0]!.status, 'completed');
@@ -199,7 +199,7 @@ test('actual Pi: an unbound job keeps returned/delivery semantics without a todo
   const spawned = await call(client, 'subagent_spawn', { task: '完成无绑定只读验收' });
   assert.ok(!spawned.isError, JSON.stringify(spawned));
   const jobId = spawned.details.jobId as string;
-  const waited = await call(client, 'subagent_wait', { jobId, timeout: 10 });
+  const waited = await call(client, 'subagent_inspect', { jobId, output: true, timeout: 10 });
   assert.equal(waited.details.status, 'completed');
   assert.equal(waited.details.todoStatus, undefined, 'an unbound job never invents a Todo status');
   const inspected = await call(client, 'subagent_inspect', { jobId });

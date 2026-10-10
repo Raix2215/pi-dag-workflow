@@ -44,7 +44,7 @@ test('real Pi: deadline failure, report verification, explicit main takeover and
   };
   await call('todo', { action: 'create', subject: 'take over the expired assignment' });
   const spawn = await call('subagent_spawn', { task: 'HOLD-IDLE-ENABLE-CHILD', todoId: 1, timeout: 2 });
-  const ended = await call('subagent_wait', { jobId: spawn.jobId, until: 'finish', timeout: 8 });
+  const ended = await call('subagent_inspect', { jobId: spawn.jobId, output: true, until: 'finish', timeout: 8 });
   assert.equal(ended.status, 'failed'); assert.equal(ended.error, 'Agent deadline exceeded');
   await call('todo', { action: 'update', id: 1, status: 'in_progress' });
   const text = await client.prompt('/todos list pending');

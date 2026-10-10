@@ -48,8 +48,8 @@ export class ProfileStore {
   }
   /**
    * Free-form guidance for the children this profile dispatches. It travels to the child process
-   * through the environment and becomes a system prompt section there, so it is bounded and
-   * normalized before it ever leaves this store.
+   * through the environment and arrives there as one passive custom message (never a system prompt
+   * section), so it is bounded and normalized before it ever leaves this store.
    */
   instructions(value: unknown): string {
     if (typeof value !== "string") throw new Error("instructions must be text");

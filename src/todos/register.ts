@@ -1,14 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { Text } from '@earendil-works/pi-tui';
+import { Text, truncateToWidth } from '@earendil-works/pi-tui';
 import { CHECKPOINT_RULE } from './checkpoints.ts';
-import { TODO_FILTERS, statusLabel, TodoParamsSchema, type ClearScope, type TodoFilter, type TodoParams, type WorkflowState } from './state.ts';
+import { TODO_FILTERS, statusLabel, TodoParamsSchema, type ClearScope, type TodoFilter, type TodoParams, type TodoResult, type WorkflowState } from './state.ts';
 import type { Preset } from './presets.ts';
 import { clean, notify } from '../ui/render.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
 
-interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext, source?: 'tool' | 'command'): { state: WorkflowState; text: string }; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag', filter?: TodoFilter): Promise<void>; userPrompt?<T>(title: string, run: () => Promise<T>): Promise<T>; presets?(): Preset[]; refreshPresets?(): Promise<void> }
+interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext, source?: 'tool' | 'command'): TodoResult; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag', filter?: TodoFilter): Promise<void>; userPrompt?<T>(title: string, run: () => Promise<T>): Promise<T>; presets?(): Preset[]; refreshPresets?(): Promise<void> }
 const asId = (text?: string, msg: Translator = chinese): number => {
   if (!text || !/^#?[1-9]\d*$/.test(text)) throw new Error(msg('请给出任务编号，例如 #2'));
   return Number(text.replace(/^#/, ''));
@@ -74,12 +74,14 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
   };
   pi.registerTool({
     name: "todo", label: "Todos", namespace: workflowNamespace, annotations: sessionMutation,
-    description: "Manage one task list: create/update/list/get/delete/clear, apply/reset task fragments. Use blockedBy for prerequisites. Create accepts pending or in_progress; update records completed after verification, failed or cancelled for closed attempts. Failed/cancelled never satisfy dependencies. clear scope completed or closed removes eligible Todo/child history; all clears eligible records. Active work, pending delivery/verification and required dependency anchors remain; files, Goal and session history are unchanged. Check work before completing it; Plan only edits the list.",
-    promptSnippet: "Use todo to plan and track multi-step work in one dependency-aware list",
+    description: "Manage one Todo DAG: create/update/list/get/delete/clear, apply/reset fragments, presets discovery, or atomic batch definition edits. blockedBy defines prerequisites; failed/cancelled never unblock work. Create pending/in_progress; complete after verification. list is paged (use continuation); ready selects executable pending tasks; get includes blocks/unmetPrerequisites. clear preserves active, undelivered, unverified and required dependency records; files, Goal and history are unchanged. Plan edits definitions only.",
+    promptSnippet: "Use todo to plan and track multi-step work in one dependency-aware list, discovering fragments on demand",
     promptGuidelines: [
+      "Discover task fragments on demand: action presets lists configured names, and passing preset with it returns one full definition. Never guess a fragment name or list the catalog unprompted.",
       "Use todo for work with three or more steps, when the user lists tasks, or right after new instructions; skip it for single trivial requests.",
       "Keep one list: create a task instead of keeping a second plan. Mark a task in_progress before starting it and completed as soon as its work is verified; at most one task is in_progress per work stream.",
       "Never complete a task whose work is unfinished, failing, or blocked; create a task for the blocker instead.",
+      "For verified completion or a closed attempt, normally update only id/status. Keep description for task requirements, not progress logs; report evidence in the conversation or reference artifacts instead of copying long reports into the Todo.",
       "Express dependencies with blockedBy (#4 blocked by #2 and #3). A task cannot start or complete before its predecessors are completed.",
       CHECKPOINT_RULE,
     ],
@@ -87,18 +89,25 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
     executionMode: "sequential",
     async execute(_id, params, _signal, _update, ctx) {
       try {
-        if (params.action === 'apply' || params.action === 'reset') await hooks.refreshPresets?.();
+        if (params.action === 'apply' || params.action === 'reset' || params.action === 'presets') await hooks.refreshPresets?.();
         const result = mutate(params, ctx);
-        return { content: [{ type: "text", text: result.text }], details: { action: params.action, params, tasks: structuredClone(hooks.state().tasks), nextId: hooks.state().nextId } };
+        // Catalog discovery is a read-only query: its details carry the answer, never a task snapshot.
+        const details = params.action === 'presets'
+          ? { version: 2, action: params.action, ...(result.presets ? { presets: result.presets } : {}), ...(result.preset ? { preset: result.preset } : {}) }
+          : { version: 2, action: params.action, tasks: structuredClone(params.action === 'clear' ? [] : result.tasks ?? []), nextId: hooks.state().nextId, ...(result.page ? { page: result.page } : {}), ...(result.relations ? { relations: result.relations } : {}), ...(result.removedIds ? { removedIds: result.removedIds } : {}), ...(result.refs ? { refs: result.refs } : {}) };
+        return { content: [{ type: "text", text: result.text }], details };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return { isError: true, content: [{ type: "text", text: msg`错误：${message}` }], details: { action: params.action, error: message } };
       }
     },
     renderCall(args, theme) { return new Text(theme.fg("toolTitle", `󰄬 todo ${args.action}${args.id ? ` #${args.id}` : ""}${args.subject ? ` ${clean(args.subject)}` : ""}`), 0, 0); },
-    renderResult(result, _options, theme) {
+    renderResult(result, options, theme) {
       const text = result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
-      return new Text(theme.fg(result.isError ? "error" : "text", text.split("\n").map(clean).join("\n")), 0, 0);
+      const lines = text.split("\n").map(clean);
+      const preview = !options.expanded && lines.length > 6 ? [...lines.slice(0, 4), msg`… 另 ${lines.length - 5} 行，展开查看`, lines.at(-1)!] : lines;
+      if (!options.expanded) return { render: (width: number) => preview.map((line) => truncateToWidth(theme.fg(result.isError ? 'error' : 'text', line), width)), invalidate() {} };
+      return new Text(theme.fg(result.isError ? "error" : "text", preview.join("\n")), 0, 0);
     },
   });
 

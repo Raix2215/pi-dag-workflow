@@ -17,7 +17,7 @@ test('Pi actual resource loader loads all five public entries without user setti
     assert.deepEqual(loaded.errors, []);
     assert.equal(loaded.extensions.length, 5);
     assert.deepEqual(loaded.extensions.map((item) => item.resolvedPath).sort(), FEATURE_NAMES.map((name) => join(root, `src/${name}/index.ts`)).sort());
-    assert.deepEqual(loaded.extensions.flatMap((item) => [...item.tools.keys()]).sort(), ['todo', 'goal', 'subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_wait', 'subagent_cancel'].sort());
+    assert.deepEqual(loaded.extensions.flatMap((item) => [...item.tools.keys()]).sort(), ['todo', 'goal', 'subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_cancel'].sort());
     assert.deepEqual(loaded.extensions.flatMap((item) => [...item.commands.keys()]).sort(), ['todos', 'dag', 'plan', 'agents', 'goal'].sort());
     for (const resource of loaded.extensions) for (const tool of resource.tools.values()) {
       assert.equal(tool.definition.namespace?.name, 'pi_dag_workflow');
@@ -31,12 +31,16 @@ test('Pi actual resource loader loads all five public entries without user setti
     }
     const definitions = new Map(loaded.extensions.flatMap((item) => [...item.tools.entries()].map(([name, tool]) => [name, tool.definition] as const)));
     assert.doesNotMatch(definitions.get('todo')!.promptSnippet!, /optional/i);
-    assert.equal(definitions.get('todo')!.promptGuidelines?.length, 5);
+    assert.equal(definitions.get('todo')!.promptGuidelines?.length, 7);
+    assert.ok(definitions.get('todo')!.promptGuidelines!.some((rule) => rule.includes('normally update only id/status')));
+    assert.ok(definitions.get('todo')!.promptGuidelines!.some((rule) => rule.includes('presets')));
     assert.ok(definitions.get('todo')!.promptGuidelines!.some((rule) => rule.includes('workflow checkpoint')));
-    assert.equal(definitions.get('subagent_spawn')!.promptGuidelines?.length, 4);
+    assert.equal(definitions.get('subagent_spawn')!.promptGuidelines?.length, 5);
+    assert.ok(definitions.get('subagent_spawn')!.promptGuidelines!.some((rule) => rule.includes('resumeFrom')));
     assert.ok(definitions.get('subagent_spawn')!.promptGuidelines!.some((rule) => rule.includes('serial chain')));
     assert.ok(definitions.get('subagent_spawn')!.promptGuidelines!.some((rule) => rule.includes('context:true')));
-    assert.equal(definitions.get('goal')!.promptGuidelines?.length, 2);
+    assert.equal(definitions.get('goal')!.promptGuidelines?.length, 3);
+    assert.ok(definitions.get('goal')!.promptGuidelines!.some((rule) => rule.includes('not every turn, tool call, wait or Todo update')));
     assert.ok(definitions.get('goal')!.promptGuidelines!.some((rule) => rule.includes('a final answer, failed attempt, uncertainty, or completed Todo list does not stop it')));
     assert.ok(definitions.get('todo')!.promptGuidelines!.some((rule) => rule.includes('blockedBy')));
     loaded.runtime.invalidate();

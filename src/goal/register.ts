@@ -3,13 +3,15 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { Text } from '@earendil-works/pi-tui';
 import { activates, applyGoal, emptyGoalState, focusedGoal, GOAL_TYPE, GoalParamsSchema, goalBudgetSpent, goalLimitLabel, goalNolimit, pauseGoal, releaseGoalWake, reserveGoalWake, restoreGoalState, setGoalNolimit, setModelPausePolicy, stops, type Goal, type GoalParams, type GoalState } from './state.ts';
 import { configPaths, defaultConfig, loadConfig, type WorkflowConfig } from '../shared/config.ts';
-import { GOAL_CHECKPOINT_TYPE, goalCheckpoint, goalRules, goalWakeRules } from './prompt.ts';
+import { GOAL_CHECKPOINT_TYPE, goalCheckpoint, goalWakeRules, hasCurrentGoalContract } from './prompt.ts';
+import { passiveMessage } from '../shared/passive-message.ts';
 import { clean, notify, type AgentView } from '../ui/render.ts';
 import { deriveDag } from '../dag/graph.ts';
 import type { WorkflowState } from '../todos/state.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, localizeSavedMessage, type Translator } from '../shared/i18n.ts';
+import { classifyModelError, goalRetryDelay, type ModelFailure } from './failure.ts';
 
 interface Hooks { msg?: Translator; state(): WorkflowState; jobs(): readonly AgentView[]; paint(ctx: ExtensionContext): void; protected(): boolean; pauseAgents(): void; resumeAgents(): void; onSaved?(ctx: ExtensionContext): void; retryDelayMs?: number; beforeWake?(ctx: ExtensionContext): void; resumeDelayMs?: number; isUserPrompt?(title: string | undefined): boolean; branch?(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']>; loadConfig?(): Promise<WorkflowConfig> }
 /** One shared budget for plugin continuations and child-report wakes. No goal dispatcher. */
@@ -17,8 +19,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   const msg = hooks.msg ?? chinese;
   let state = emptyGoalState();
   let config: WorkflowConfig = defaultConfig();
-  let checkpointPending = false;
-  let lastCheckpoint: string | undefined;
+  const checkpoint = passiveMessage(GOAL_CHECKPOINT_TYPE, () => goalCheckpoint(state), hooks.branch);
   const removedTools = new Map<string, number>();
   const noPauseRunning = () => !state.run.paused && !hooks.state().plan && focusedGoal(state)?.modelPause === 'deny';
   const sameGoal = (left: Goal | undefined, right: Goal | undefined) => left === right || Boolean(left && right && left.id === right.id && left.title === right.title && left.description === right.description && left.status === right.status && left.maxTurns === right.maxTurns && left.createdAt === right.createdAt && left.completedAt === right.completedAt && left.modelPause === right.modelPause && left.nolimit === right.nolimit);
@@ -35,18 +36,9 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     for (const [name, index] of restored) if (!next.includes(name)) next.splice(Math.min(index, next.length), 0, name);
     if (next.length !== active.length || next.some((name, index) => name !== active[index])) pi.setActiveTools(next);
   }
-  function makeCheckpoint() {
-    if (!checkpointPending) return;
-    checkpointPending = false;
-    const content = goalCheckpoint(state);
-    if (content === lastCheckpoint) return;
-    lastCheckpoint = content;
-    return { customType: GOAL_CHECKPOINT_TYPE, content, display: false };
-  }
   function beforeWake(ctx: ExtensionContext) {
     hooks.beforeWake?.(ctx);
-    const message = makeCheckpoint();
-    if (message) pi.sendMessage(message, { triggerTurn: false });
+    checkpoint.beforeWake(ctx, (message) => pi.sendMessage(message, { triggerTurn: false }));
   }
   let error: string | undefined;
   let userAuthority = false;
@@ -79,7 +71,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     }
     return `${revision}:${taskStamp}`;
   };
-  let failureCache: { manager: ExtensionContext['sessionManager']; leaf: string | null; failure: string | undefined } | undefined;
+  let failureCache: { manager: ExtensionContext['sessionManager']; leaf: string | null; failure: ModelFailure | undefined } | undefined;
   const paint = (ctx: ExtensionContext) => hooks.paint(ctx);
   const goalStatusLabel: Record<GoalState['goals'][number]['status'], string> = { active: '活动', paused: '暂停', completed: '已完成', deleted: '已删除' };
   const activatable = new Set(['enable', 'nopause', 'nolimit']);
@@ -110,7 +102,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const previousGoal = focusedGoal(state);
     const previousRun = state.run;
     state = next;
-    if (!sameGoal(previousGoal, focusedGoal(state)) || state.run.paused !== previousRun.paused || state.run.reason !== previousRun.reason) checkpointPending = true;
+    if (!sameGoal(previousGoal, focusedGoal(state)) || state.run.paused !== previousRun.paused || state.run.reason !== previousRun.reason) checkpoint.mark();
     syncNoPauseTools();
     hooks.onSaved?.(ctx);
     paint(ctx);
@@ -118,7 +110,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   function cancelRetry(ctx: ExtensionContext) {
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = undefined;
-    retriedFailure = focusedGoal(state) ? lastFailure(ctx) : undefined; // Ordinary input without a Goal needs no history scan.
+    retriedFailure = focusedGoal(state) ? lastFailure(ctx)?.id : undefined; // Ordinary input without a Goal needs no history scan.
   }
   function pause(reason: string, ctx: ExtensionContext) {
     cancelRetry(ctx); resumeWanted = false; interruptedGoalId = undefined; rejectedWakes = 0;
@@ -168,12 +160,12 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
    * The newest assistant message, when the run that ended failed. Pi persists one entry per request,
    * so the entry id names exactly one failure and stays stable while the run reports it.
    */
-  function lastFailure(ctx: ExtensionContext): string | undefined {
+  function lastFailure(ctx: ExtensionContext): ModelFailure | undefined {
     const manager = ctx.sessionManager;
     const leaf = typeof manager.getLeafId === 'function' ? manager.getLeafId() : undefined;
     if (leaf !== undefined && failureCache?.manager === manager && failureCache.leaf === leaf) return failureCache.failure;
     const branch = hooks.branch?.(ctx) ?? manager.getBranch();
-    let failure: string | undefined;
+    let failure: ModelFailure | undefined;
     for (let index = branch.length - 1; index >= 0; index--) {
       const entry = branch[index];
       // Compaction is a new recovery boundary. Raw branch history still contains the old
@@ -181,7 +173,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       // that retired id as the current failure can suppress every later fallback wake.
       if (entry?.type === 'compaction') break;
       if (!entry || entry.type !== 'message' || entry.message.role !== 'assistant') continue;
-      failure = entry.message.stopReason === 'error' ? entry.id : undefined;
+      const reason = entry.message.stopReason;
+      failure = reason === 'error' || reason === 'aborted' ? { id: entry.id, stopReason: reason, kind: classifyModelError(entry.message.errorMessage ?? '') } : undefined;
       break;
     }
     if (leaf !== undefined) failureCache = { manager, leaf, failure };
@@ -191,9 +184,26 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   function recoverFailure(ctx: ExtensionContext, failure: string, goalId: number) {
     retryTimer = undefined;
     if (!ctx.isIdle() || compacting || hooks.protected() || hooks.state().plan || state.run.paused || focusedGoal(state)?.id !== goalId) return;
-    if (lastFailure(ctx) !== failure || failure === retriedFailure) return;
+    if (lastFailure(ctx)?.id !== failure || failure === retriedFailure) return;
     retriedFailure = failure;
     if (!recoverFromModelError(ctx)) pause(modelErrorPause(), ctx);
+  }
+  function scheduleFailure(ctx: ExtensionContext, failure: ModelFailure, goalId: number) {
+    if (failure.id === retriedFailure) return;
+    if (failure.kind === 'permanent') { pause(msg('模型出错（不可重试）'), ctx); return; }
+    if (config.goalErrorRetries <= 0 || (state.run.errorRetries ?? 0) >= config.goalErrorRetries) { pause(modelErrorPause(), ctx); return; }
+    if (retryTimer) clearTimeout(retryTimer);
+    const epoch = sessionEpoch;
+    const timer = setTimeout(() => {
+      if (epoch !== sessionEpoch || retryTimer !== timer) return;
+      recoverFailure(ctx, failure.id, goalId);
+    }, hooks.retryDelayMs ?? goalRetryDelay(state.run.errorRetries ?? 0));
+    retryTimer = timer;
+  }
+  function observeAbort(ctx: ExtensionContext) {
+    // Run-owned signals distinguish a user's stop from provider stopReason:aborted.
+    // A signal-less host can still report cancellation before an assistant attempt exists.
+    if (ctx.signal?.aborted || ctx.signal === undefined && lastFailure(ctx)?.stopReason !== 'aborted') interrupted(ctx);
   }
   const waitingInstruction = (goal = focusedGoal(state)) => goal?.modelPause === 'deny'
     ? 'Resolve the decision autonomously within scope; do not ask the user.' : 'Try safe alternatives and independent work before asking about a verified external blocker.';
@@ -250,7 +260,8 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   }
   function todoStep(task: WorkflowState['tasks'][number]): string {
     const job = hooks.jobs().findLast((item) => item.todoId === task.id);
-    if (job?.status === 'completed' && !job.taskReportStale) return msg`核验 Todo #${task.id}：${task.subject}；子 Agent ${job.id} 已结束，若报告不在上下文中，用 subagent_wait 查看；核验后再更新任务。`;
+    if (job?.status === 'completed' && !job.taskReportStale) return msg`核验 Todo #${task.id}：${task.subject}；子 Agent ${job.id} 已结束，若报告不在上下文中，用 subagent_inspect output:true 查看；核验后再更新任务。`;
+    if (job && ['failed', 'cancelled', 'interrupted'].includes(job.status) && (!job.taskReportStale || job.dismissed)) return msg`接续 Todo #${task.id}：先用 subagent_inspect output:true 查看 ${job.id} 的诊断并核验产物；范围未变时可 subagent_spawn resumeFrom=${job.id}，必要时查询并换 Profile；不要新建替代 Todo 或盲目重放。`;
     return msg`推进并核验 Todo #${task.id}：${task.subject}`;
   }
   function assessProgress(ctx: ExtensionContext): boolean {
@@ -278,7 +289,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     const initial = state.run.used === 0 && state.run.nextStep === msg`推进目标：${goal.title}`;
     const taskStep = task && todoStep(task);
     const question = active.find((job) => job.status === 'waiting');
-    const questionStep = question && msg`检查子 Agent ${question.id} 的待答复问题（subagent_wait）；在当前 Goal 范围内答复，${waitingInstruction(goal)}`;
+    const questionStep = question && msg`检查子 Agent ${question.id} 的待答复问题（subagent_inspect output:true）；在当前 Goal 范围内答复，${waitingInstruction(goal)}`;
     const attention = !active.length && msg`核对 Goal #${goal.id} 的目标、要求与进展（goal get）；继续未达成的当前范围，达成时 complete，${waitingInstruction(goal)}`;
     return { active: active.length, initial, step: questionStep || (initial && active.length ? taskStep : state.run.nextStep?.trim() || taskStep || attention || undefined), taskStep, questionStep };
   }
@@ -295,7 +306,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       const failure = lastFailure(ctx);
       if (failure) {
         // Error retries have their own limit and must also recover the last paid wake.
-        if (failure !== retriedFailure && !retryTimer) retryTimer = setTimeout(() => recoverFailure(ctx, failure, goal.id), hooks.retryDelayMs ?? 1000);
+        if (failure.id !== retriedFailure && !retryTimer) scheduleFailure(ctx, failure, goal.id);
         return;
       }
       if (goalBudgetSpent(state, goal)) { pause(msg`自动续跑达到 ${goalLimitLabel(goal)} 轮上限`, ctx); return; }
@@ -322,19 +333,28 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     commit(releaseGoalWake(state, false), ctx); rejectedWakes = 0; resumeWanted = false; automaticRound = true;
   });
   pi.on('context', (event, ctx) => {
+    const recovery = checkpoint.recover(event.messages, ctx, event);
+    const result = recovery ? { messages: [...event.messages, recovery] } : undefined;
     const ack = stepAck; stepAck = undefined;
-    if (!ack?.nextStep || ack.goalId !== state.focusId || state.run.paused) return;
+    if (!ack?.nextStep || ack.goalId !== state.focusId || state.run.paused) return result;
     const visible = event.messages.some((message) => {
       if ((message as { details?: { wakeId?: string } }).details?.wakeId === ack.id) return true;
       const content = (message as { content?: unknown }).content;
       const text = typeof content === 'string' ? content : Array.isArray(content) ? content.filter((part) => part?.type === 'text').map((part) => part.text).join('\n') : '';
       return ack.message !== undefined && text === ack.message;
     });
-    if (!visible) return; // A memory transform removed the step: retain it for a later request.
+    if (!visible) { stepAck = ack; return result; } // Keep the paid-step receipt, not the filtered message, for a later visible request.
     activeStep = { goalId: ack.goalId, text: ack.nextStep };
     if (state.run.nextStep === ack.nextStep) {
       const next = { ...state, run: { ...state.run } }; delete next.run.nextStep; commit(next, ctx);
     }
+    return result;
+  });
+  // This phase follows every ordinary context/memory transform in both supported hosts.
+  // Never edit the system, old messages, summaries or reports; only append current Goal data.
+  pi.on('context_with_system', (event) => {
+    if (error || hooks.protected() || hooks.state().plan || state.run.paused || !focusedGoal(state) || hasCurrentGoalContract(event.messages, state)) return;
+    return { messages: [...event.messages, { role: 'custom' as const, customType: GOAL_CHECKPOINT_TYPE, content: goalCheckpoint(state), display: false, details: { requestLocal: true }, timestamp: Date.now() }] };
   });
   pi.on('session_before_compact', (event, ctx) => {
     // willRetry is Pi's explicit recovery signal. It never arms a prior user-disable or budget pause.
@@ -351,10 +371,9 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   });
   pi.on('session_compact', (_event, ctx) => {
     compacting = false;
-    if (focusedGoal(state)) { checkpointPending = true; lastCheckpoint = undefined; }
-    // Native recovery can issue its next request before another start/boundary hook.
-    const checkpoint = makeCheckpoint();
-    if (checkpoint) pi.sendMessage(checkpoint, { triggerTurn: false });
+    if (focusedGoal(state)) checkpoint.mark(true);
+    // Native recovery may skip beforeWake/boundaries. The first context appends only a new
+    // request-local checkpoint; the next normal boundary persists the then-current state.
     if (compactionGoalId === state.focusId && !state.run.paused) {
       const step = activeStep;
       if (compactionInterrupted && step && step.goalId === state.focusId && state.run.nextStep === undefined) commit({ ...state, run: { ...state.run, nextStep: step.text } }, ctx);
@@ -377,7 +396,7 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       config = await (hooks.loadConfig?.() ?? loadConfig(msg));
     } catch (cause) { error = String(cause); state = emptyGoalState(); notify(ctx, msg`Goal／配置恢复失败：${error}；保留历史，/goal reset 明确清除 Goal，配置错误请修复后重载`, 'error'); }
     standaloneReports = !state.run.reason;
-    checkpointPending = Boolean(focusedGoal(state)); lastCheckpoint = undefined;
+    checkpoint.reset(Boolean(focusedGoal(state)));
     syncNoPauseTools();
     baseline = workStamp(); lastProgress = state.run.progress ?? '';
     paint(ctx);
@@ -392,20 +411,21 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('session_before_switch', stopPendingRetry);
   pi.on('session_before_fork', stopPendingRetry);
   pi.on('session_before_tree', stopPendingRetry);
-  pi.on('session_shutdown', () => { sessionEpoch++; menuPrompt = undefined; failureCache = undefined; stampedTasks = undefined; state = emptyGoalState(); syncNoPauseTools(); checkpointPending = false; lastCheckpoint = undefined; userAuthority = false; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; resumeWanted = false; compacting = false; stepAck = undefined; });
-  pi.on('before_agent_start', (event) => {
-    delete event.systemPromptOptions.sections['dag_workflow_goal'];
-    const goal = focusedGoal(state);
+  pi.on('session_shutdown', () => { sessionEpoch++; menuPrompt = undefined; failureCache = undefined; stampedTasks = undefined; state = emptyGoalState(); syncNoPauseTools(); checkpoint.reset(); userAuthority = false; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; resumeWanted = false; compacting = false; stepAck = undefined; });
+  pi.on('before_agent_start', (event, ctx) => {
     syncNoPauseTools();
     if (noPauseRunning()) event.systemPromptOptions.selectedTools = event.systemPromptOptions.selectedTools.filter((name) => !config.goalNoPauseTools.includes(name));
-    if (goal && !hooks.state().plan) event.systemPromptOptions.sections['dag_workflow_goal'] = `Current Goal #${goal.id}: ${clean(goal.title)}. ${goalRules(state)}`;
-    const message = makeCheckpoint();
+    const message = checkpoint.take(ctx, event);
     if (message) return { message };
+  });
+  pi.on('agent_before_settle', (event, ctx) => {
+    const message = checkpoint.take(ctx, event);
+    if (message) return { entries: [...event.entries, { type: 'custom_message' as const, ...message }] };
   });
   pi.on('input', (event, ctx) => { if (event.source !== 'extension') { cancelRetry(ctx); commit(releaseGoalWake(state), ctx); stepAck = undefined; resumeWanted = false; interruptedGoalId = undefined; rejectedWakes = 0; userAuthority = true; automaticRound = false; if (!focusedGoal(state) && !event.text.startsWith('/')) standaloneReports = true; } });
   pi.on('tool_execution_end', (event) => {
     if (event.isError) return;
-    if (event.toolName === 'subagent_wait') {
+    if (event.toolName === 'subagent_inspect') {
       const details = (event.result as { details?: { id?: string; status?: string; timedOut?: boolean } } | undefined)?.details;
       if (details?.id && details.timedOut && ['starting', 'running'].includes(details.status ?? '') && hooks.jobs().some((job) => job.id === details.id && ['starting', 'running'].includes(job.status))) waitedForChildren.add(details.id);
     }
@@ -420,19 +440,30 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('turn_end', (event, ctx) => {
     if (event.outcome === 'completed') {
       if (state.run.errorRetries) commit({ ...state, run: { ...state.run, errorRetries: 0 } }, ctx);
-      const checkpoint = makeCheckpoint();
-      if (checkpoint) return { entries: [...(event.entries ?? []), { type: 'custom_message' as const, ...checkpoint }] };
+      const message = checkpoint.take(ctx, event);
+      if (message) return { entries: [...(event.entries ?? []), { type: 'custom_message' as const, ...message }] };
       return;
     }
-    if (event.outcome === 'aborted') interrupted(ctx);
+    if (event.outcome === 'aborted') observeAbort(ctx);
   });
   pi.on('agent_end', (event, ctx) => {
     const last = event.messages.findLast((message) => message.role === 'assistant');
-    if (ctx.signal?.aborted || last?.role === 'assistant' && last.stopReason === 'aborted') interrupted(ctx);
+    if (ctx.signal?.aborted) interrupted(ctx);
+    else if (last?.role === 'assistant' && last.stopReason === 'aborted') observeAbort(ctx);
   });
   // One failure reports at several boundaries, and Pi drains queued messages inside the same run,
   // so retries are decided once the run settled and Pi's own recovery had its chance.
-  pi.on('agent_settled', (_event, ctx) => {
+  pi.on('agent_settled', (event, ctx) => {
+    // The low-level signal is already gone during async before-settle handlers. Pi 1.1+
+    // reports late user cancellation here; stop before arming either recovery timer.
+    // Do not use interrupted(): native recovery must never rearm this final user stop.
+    const aborted = (event as { aborted?: boolean }).aborted;
+    if (aborted === true) { pause(msg('用户中断'), ctx); return; }
+    // Older public APIs cannot distinguish a provider abort from a stop after agent_end.
+    // Fail closed only after native recovery has settled, without claiming user intent.
+    if (aborted === undefined && focusedGoal(state) && !state.run.paused && lastFailure(ctx)?.stopReason === 'aborted') {
+      pause(msg('模型中止（旧宿主无法确认取消）'), ctx); return;
+    }
     if (state.run.pendingWake) {
       commit(releaseGoalWake(state), ctx); resumeWanted = true;
       if (++rejectedWakes >= 3) { pause(msg('续跑请求未被执行，请检查压缩或扩展后明确恢复'), ctx); return; }
@@ -443,13 +474,12 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
     scheduleResume(ctx);
     if (compacting || hooks.protected() || hooks.state().plan || !focusedGoal(state) || state.run.paused) return;
     const failure = lastFailure(ctx);
-    if (!failure || failure === retriedFailure) return;
+    if (!failure || failure.id === retriedFailure) return;
     const goalId = focusedGoal(state)!.id;
-    if (retryTimer) clearTimeout(retryTimer); // A new settled failure replaces the stale delayed work.
-    retryTimer = setTimeout(() => recoverFailure(ctx, failure, goalId), hooks.retryDelayMs ?? 1000);
+    scheduleFailure(ctx, failure, goalId);
   });
   pi.on('agent_before_settle', (event, ctx) => {
-    if (event.outcome !== 'completed') { if (event.outcome === 'aborted') interrupted(ctx); return; }
+    if (event.outcome !== 'completed') { if (event.outcome === 'aborted') observeAbort(ctx); return; }
     if (compacting || state.run.pendingWake || !focusedGoal(state) || state.run.paused || error || hooks.protected() || hooks.state().plan) return;
     if (event.continue) return; // An Agent report already requested and paid for this next request.
     const goal = focusedGoal(state)!;
@@ -508,10 +538,11 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('tool_call', (event) => {
     if (noPauseRunning() && config.goalNoPauseTools.includes(event.toolName)) return { block: true, reason: `Goal nopause forbids ${event.toolName}. Act autonomously: inspect available evidence, make reasonable assumptions within scope, and execute an alternative. Do not ask the user or stop.` };
   });
-  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/delete; enable one target, complete only after verifying every original requirement. Update progress with new evidence and nextStep with a concrete action; notes cannot narrow the objective. Difficulty, failed attempts or uncertainty do not justify stopping. Try safe alternatives before disable for a verified external blocker. User nopause forbids model disable/delete, empty nextStep, user questions and waiting for clarification; act autonomously within existing permissions. Shared auto budget defaults to 32; the user nolimit menu removes its continuation-turn cap without resetting usage.',
+  pi.registerTool({ name: 'goal', label: 'Goal', namespace: workflowNamespace, annotations: sessionMutation, description: 'Manage goals create/update/list/get/enable/disable/complete/delete. Use only fields for that action; complete takes id, not progress. Enable one; complete only after verifying every original requirement. Update only a verified milestone, reproducible finding, key decision, changed blocker or changed next action; skip routine activity, repeated notes and Todo status. Notes cannot narrow scope. nopause forbids questions, model disable/delete and empty nextStep. Default continuation cap32; user nolimit removes that cap, not error limits or used count.',
     promptSnippet: 'Use goal to track an objective and continue it across turns',
     promptGuidelines: [
       'Create a goal only when the user asks for autonomous multi-turn work or progress tracking; ordinary tasks belong in the todo list. Enable one at a time, and complete it only after verifying the objective.',
+      'Update important new evidence/decisions, not every turn, tool call, wait or Todo update; combine it with independent work in the same tool batch, not a reporting-only model turn.',
       'While a Goal is enabled, pursue its full original objective across turns; a final answer, failed attempt, uncertainty, or completed Todo list does not stop it. Inspect evidence, try alternatives, and verify all requirements before complete. Under nopause, never ask the user, request routine confirmation, or hand work back; resolve gaps autonomously within scope. Wait for real running children, answer their questions yourself, and continue independent work.',
     ], parameters: GoalParamsSchema, executionMode: 'sequential',
     async execute(_id, params, _signal, _update, ctx) {

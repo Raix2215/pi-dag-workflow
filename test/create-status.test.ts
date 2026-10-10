@@ -44,7 +44,7 @@ test('actual Pi create status uses the same atomic rules through normal and Plan
   assert.equal(blocked.isError, true);
   await call(client, { action: 'update', id: 1, status: 'completed' });
   const started = await call(client, { action: 'create', subject: 'ready', status: 'in_progress', blockedBy: [1] });
-  assert.equal(started.isError, false); assert.equal(started.details.nextId, 3); assert.equal(started.details.tasks[1].id, 2);
+  assert.equal(started.isError, false); assert.equal(started.details.nextId, 3); assert.deepEqual(started.details.tasks.map((task: any) => task.id), [2]);
   await call(client, { action: 'update', id: 2, status: 'completed' });
   await client.prompt('/plan start');
   assert.equal((await call(client, { action: 'create', subject: 'plan pending', status: 'pending' })).isError, false);

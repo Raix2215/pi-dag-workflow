@@ -11,7 +11,7 @@ npm ci --ignore-scripts
 npm run check
 ```
 
-`npm run check` runs the type checker, the test suite, and a package dry run. The default checks do not call paid models. Real-model acceptance scripts are opt-in and separate; do not add them to the default check command. They require a registered model through `PI_DAG_TEST_MODEL=provider/model`; `PI_DAG_TEST_THINKING` optionally selects a supported thinking level.
+`npm run check` runs the type checker, offline test suite, package dry run, and release hygiene check. The default checks do not call paid models. Real-model acceptance scripts are opt-in and separate; do not add them to the default check command. They require a registered model through `PI_DAG_TEST_MODEL=provider/model`; `PI_DAG_TEST_THINKING` optionally selects a supported thinking level.
 
 ## Guidelines
 
@@ -21,6 +21,8 @@ npm run check
 - Do not log secrets, API keys, tokens, full child conversations, or personal file paths. Test with fixtures and temporary directories instead.
 - Do not commit personal configuration or machine-specific files. Keep `pi-dag-workflow-config.json` and `pi-dag-workflow-profile.json` out of the repository.
 - Keep dependency and tool-permission changes minimal, and explain any new permission a change requires.
+- Keep README examples aligned with the current tools and commands. Write installation, usage, and boundaries for users; use the changelog for release notes.
+- Keep model-context measurements separate from stored result details and provider billing. Name the tokenizer and test scope for performance claims.
 
 ## Pull requests
 

@@ -107,7 +107,7 @@ test("English catalog values never contain Han characters and mirror key placeho
 test("applyTodo speaks English while user-authored subjects stay untouched", () => {
   const created = applyTodo(emptyState(), { action: "create", subject: "中文任务" }, en);
   assert.equal(created.text, "Created #1: 中文任务 [Pending]");
-  assert.equal(applyTodo(created.state, { action: "list" }, en).text, "#1 [Pending] 中文任务");
+  assert.equal(applyTodo(created.state, { action: "list" }, en).text, "This page: 1 / 1 tasks\n#1 [Pending] 中文任务");
   assert.equal(applyTodo(created.state, { action: "clear" }, en).text, "Cleared 1 item(s) (all); kept 0; IDs are not reused");
   // Validation errors are localized.
   assert.throws(() => applyTodo(emptyState(), { action: "create", subject: " " }, en), /subject/);

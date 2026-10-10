@@ -21,17 +21,26 @@ export interface TaskView {
   readonly dagTasks: readonly Todo[];
   /** Ids of the unbound jobs this filter shows; live fields are re-read from each frame's jobs. */
   readonly standaloneIds: ReadonlySet<string>;
+  /**
+   * Unfinished Todos whose newest bound attempt was explicitly dismissed. The row stays owned
+   * by the main session and offers a resume hint; native terminal Todo states never use it.
+   */
+  readonly resumableIds: ReadonlySet<number>;
 }
 
 const ACTIVE = new Set<AgentView['status']>(['starting', 'running']);
 
 /**
- * Newest non-stale job bound to each Todo id, in runtime order: a later entry is a newer attempt.
- * Shared with cleanup so nobody has to re-derive "the latest report that still counts".
+ * Newest bound job per Todo id, in runtime order: a later entry is a newer attempt. The newest
+ * attempt owns the row even when its report went stale, and a stale newest attempt then removes
+ * the entry instead of falling back to an older one, so a retired/historical report can never
+ * resurrect the verdict of a superseded attempt. Shared with cleanup so nobody re-derives
+ * "the latest report that still counts".
  */
 export function latestBoundJobs(jobs: readonly AgentView[]): Map<number, AgentView> {
   const latest = new Map<number, AgentView>();
-  for (const job of jobs) if (job.todoId !== undefined && !job.taskReportStale) latest.set(job.todoId, job);
+  for (const job of jobs) if (job.todoId !== undefined) latest.set(job.todoId, job);
+  for (const [todoId, job] of latest) if (job.taskReportStale) latest.delete(todoId);
   return latest;
 }
 
@@ -55,7 +64,8 @@ function matches(filter: TodoFilter, status: TaskFilterStatus): boolean {
 /** Membership for the Standalone section; `full` keeps the original auto-hide of delivered reports. */
 function standalone(filter: TodoFilter, job: AgentView): boolean {
   if (job.todoId !== undefined) return false;
-  if (filter === 'full') return job.status !== 'completed' || job.reportDelivery === 'pending';
+  // An explicit dismissal silences the row only in the default view; result filters still find it.
+  if (filter === 'full') return !job.dismissed && (job.status !== 'completed' || job.reportDelivery === 'pending');
   if (filter === 'pending') return ACTIVE.has(job.status) || job.status === 'waiting' || (job.status === 'completed' && job.reportDelivery === 'pending');
   if (filter === 'completed') return job.status === 'completed';
   if (filter === 'failed') return job.status === 'failed';
@@ -69,13 +79,22 @@ function standalone(filter: TodoFilter, job: AgentView): boolean {
 function jobSignature(jobs: readonly AgentView[]): string {
   let signature = '';
   for (const job of jobs) {
-    signature += `${job.id}\u0001${job.todoId ?? ''}\u0001${job.status}\u0001${job.reportDelivery ?? ''}\u0001${job.taskReportStale ? 1 : 0}\u0002`;
+    signature += `${job.id}\u0001${job.todoId ?? ''}\u0001${job.status}\u0001${job.reportDelivery ?? ''}\u0001${job.taskReportStale ? 1 : 0}\u0001${job.dismissed ? 1 : 0}\u0002`;
   }
   return signature;
 }
 
 function buildView(tasks: readonly Todo[], filter: TodoFilter, jobs: readonly AgentView[]): TaskView {
   const latest = latestBoundJobs(jobs);
+  // The newest attempt regardless of staleness: a stale/dismissed record still owns the row
+  // until a later attempt replaces it, so an older dismissal can never mask a fresh job.
+  const attempts = new Map<number, AgentView>();
+  for (const job of jobs) if (job.todoId !== undefined) attempts.set(job.todoId, job);
+  const resumableIds = new Set<number>();
+  for (const task of tasks) {
+    if (task.status !== 'pending' && task.status !== 'in_progress') continue;
+    if (attempts.get(task.id)?.dismissed) resumableIds.add(task.id);
+  }
   const effective = new Map<number, TaskFilterStatus>();
   const visible: Todo[] = [];
   for (const task of tasks) {
@@ -101,7 +120,7 @@ function buildView(tasks: readonly Todo[], filter: TodoFilter, jobs: readonly Ag
   }
 
   const standaloneIds = new Set(jobs.filter((job) => standalone(filter, job)).map((job) => job.id));
-  return { filter, tasks: visible, effective, external, dagTasks, standaloneIds };
+  return { filter, tasks: visible, effective, external, dagTasks, standaloneIds, resumableIds };
 }
 
 const views = new WeakMap<readonly Todo[], Map<string, TaskView>>();

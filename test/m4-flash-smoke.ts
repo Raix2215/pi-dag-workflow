@@ -7,7 +7,7 @@ import { GOAL_TYPE } from '../src/goal/state.ts';
 import { foldAgentEntries } from '../src/agents/persistence.ts';
 
 // Explicit low-cost integration: parent + two short children, bounded wall time/parent turns.
-const client = await IsolatedClient.startFlash(['goal', 'subagent_spawn', 'subagent_wait', 'subagent_inspect', 'subagent_send', 'subagent_cancel']);
+const client = await IsolatedClient.startFlash(['goal', 'subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_cancel']);
 let stopped = false;
 const abort = () => { stopped = true; void client.send('abort').catch(() => {}); };
 const deadline = setTimeout(abort, 120000);

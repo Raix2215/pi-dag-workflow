@@ -11,11 +11,13 @@ test('actual Pi: idle Goal enable after Plan uses fresh Normal/Goal guidance and
   await client.send('prompt', { message: '/goal enable 1' });
   await client.until(() => client.records.slice(offset).some((record) => record.type === 'agent_settled'));
   const entries = await client.entries() as any[];
-  const mode = entries.findLast((entry) => entry.message?.role === 'system' && entry.message.sections?.dag_workflow_mode);
-  assert.match(mode.message.sections.dag_workflow_mode, /Normal mode/);
-  const goal = entries.findLast((entry) => entry.message?.role === 'system' && entry.message.sections?.dag_workflow_goal);
-  assert.match(goal.message.sections.dag_workflow_goal, /verify every requirement/);
+  const system = entries.findLast((entry) => entry.message?.role === 'system');
+  assert.ok(!Object.keys(system.message.sections ?? {}).some((key) => key.startsWith('dag_workflow')));
+  const mode = entries.findLast((entry) => entry.customType === 'pi-dag-workflow.guidance');
+  assert.match(mode.content, /Normal: continue the existing Todo list/);
+  assert.match(mode.content, /Goal stays paused until explicitly enabled/);
   const checkpoint = entries.find((entry) => entry.customType === 'pi-dag-workflow.goal-checkpoint' && entry.content.includes('"paused":false'));
   assert.match(checkpoint.content, /附加验收要求/);
+  assert.match(checkpoint.content, /verify every requirement/);
   assert.equal(entries.findLast((entry) => entry.customType === 'pi-dag-workflow.goal').data.goals[0].status, 'completed');
 });
