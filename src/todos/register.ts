@@ -8,7 +8,7 @@ import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
 
-interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext, source?: 'tool' | 'command'): TodoResult; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag', filter?: TodoFilter): Promise<void>; userPrompt?<T>(title: string, run: () => Promise<T>): Promise<T>; presets?(): Preset[]; refreshPresets?(): Promise<void> }
+interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext, source?: 'tool' | 'command'): TodoResult; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag', filter?: TodoFilter): Promise<void>; userPrompt?<T>(title: string, run: () => Promise<T>): Promise<T>; presets?(): Preset[]; refreshPresets?(): Promise<void>; retryStatus?(): unknown }
 const asId = (text?: string, msg: Translator = chinese): number => {
   if (!text || !/^#?[1-9]\d*$/.test(text)) throw new Error(msg('请给出任务编号，例如 #2'));
   return Number(text.replace(/^#/, ''));
@@ -74,7 +74,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
   };
   pi.registerTool({
     name: "todo", label: "Todos", namespace: workflowNamespace, annotations: sessionMutation,
-    description: "Manage one Todo DAG: create/update/list/get/delete/clear, apply/reset fragments, presets discovery, or atomic batch definition edits. blockedBy defines prerequisites; failed/cancelled never unblock work. Create pending/in_progress; complete after verification. list is paged (use continuation); ready selects executable pending tasks; get includes blocks/unmetPrerequisites. clear preserves active, undelivered, unverified and required dependency records; files, Goal and history are unchanged. Plan edits definitions only.",
+    description: "Manage one Todo DAG: create/update/list/get/delete/clear, apply/reset fragments, presets discovery, read-only status summary, or atomic batch definition edits. blockedBy defines prerequisites; failed/cancelled never unblock work. Create pending/in_progress; complete after verification. list is paged (use continuation); ready selects executable pending tasks; get includes blocks/unmetPrerequisites. status returns one small JSON summary (mode, per-status counts, deleted, protected). clear preserves active, undelivered, unverified and required dependency records; files, Goal and history are unchanged. Plan edits definitions only.",
     promptSnippet: "Use todo to plan and track multi-step work in one dependency-aware list, discovering fragments on demand",
     promptGuidelines: [
       "Discover task fragments on demand: action presets lists configured names, and passing preset with it returns one full definition. Never guess a fragment name or list the catalog unprompted.",
@@ -91,6 +91,11 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
       try {
         if (params.action === 'apply' || params.action === 'reset' || params.action === 'presets') await hooks.refreshPresets?.();
         const result = mutate(params, ctx);
+        // Status is a short read-only query: readable JSON in content, no tasks snapshot in details.
+        if (params.action === 'status') {
+          const status = { ...result.status!, protected: hooks.protected(), ...(hooks.retryStatus ? { retry: hooks.retryStatus() } : {}) };
+          return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }], details: { version: 2, action: params.action, status } };
+        }
         // Catalog discovery is a read-only query: its details carry the answer, never a task snapshot.
         const details = params.action === 'presets'
           ? { version: 2, action: params.action, ...(result.presets ? { presets: result.presets } : {}), ...(result.preset ? { preset: result.preset } : {}) }

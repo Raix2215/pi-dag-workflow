@@ -45,7 +45,7 @@ test('native Pi package filters cover all 32 resource combinations with no dupli
 test('actual Pi: Todo-only and no UI exclude Goal/Agent/Plan schemas and background widgets', { timeout: 30000 }, async (t) => {
   const client = await start(['todos']); t.after(() => client.close());
   const commands = (await client.send('get_commands')).data as any;
-  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['dag', 'todos']);
+  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['dag', 'retry', 'todos']);
   assert.equal((await call(client, 'todo', { action: 'create', subject: '只管理任务' })).isError, false);
   assert.ok(!client.records.some((item) => item.method === 'setWidget'));
   const messages = (await client.send('get_messages')).data as any;
@@ -55,7 +55,7 @@ test('actual Pi: Todo-only and no UI exclude Goal/Agent/Plan schemas and backgro
 test('actual Pi: Goal works without Todo/Agent and retains bounded independent research', { timeout: 30000 }, async (t) => {
   const client = await start(['goal', 'ui']); t.after(() => client.close());
   const commands = (await client.send('get_commands')).data as any;
-  assert.deepEqual(commands.commands.map((item: any) => item.name), ['goal']);
+  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['goal', 'retry']);
   await call(client, 'goal', { action: 'create', title: '完成测试', maxTurns: 2 }); await call(client, 'goal', { action: 'enable', id: 1 });
   const entries = await client.entries() as any[];
   const goal = entries.findLast((entry) => entry.customType === 'pi-dag-workflow.goal').data;
@@ -84,7 +84,7 @@ test('actual Pi: disabling Plan on reload does not strand old read-only state; T
 test('actual Pi: Plan-only guards implementation without task tools', { timeout: 30000 }, async (t) => {
   const client = await start(['plan']); t.after(() => client.close());
   const commands = (await client.send('get_commands')).data as any;
-  assert.deepEqual(commands.commands.map((item: any) => item.name), ['plan']);
+  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['plan', 'retry']);
   await client.prompt('/plan start');
   assert.equal((await call(client, 'write', { path: 'blocked.txt', content: 'no' })).isError, true);
   await client.prompt('/plan off');

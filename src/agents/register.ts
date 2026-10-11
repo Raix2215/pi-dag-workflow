@@ -6,7 +6,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { AgentRuntime, type JobSummary } from "./runtime.ts";
 import { safeDiagnostic } from './diagnostics.ts';
 import { CORE_TOOLS, ProfileStore, type Profile } from "./profiles.ts";
-import { fragmentContext } from "./context.ts";
+import { contextArtifacts, taskContext } from "./context.ts";
 import { resetClosure } from "../todos/presets.ts";
 import { AgentNotices, type Notice } from "./notices.ts";
 import { clean, displayText, notify } from "../ui/render.ts";
@@ -17,11 +17,15 @@ import { chinese, type Translator } from '../shared/i18n.ts';
 import { AgentJournal, AGENTS_ENTRY_TYPE, foldAgentEntries } from './persistence.ts';
 
 export const AGENTS_TYPE = AGENTS_ENTRY_TYPE;
-interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean; beforeWake?(ctx: ExtensionContext): void; compacting?(): boolean; branch?(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']> }
+interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean; beforeWake?(ctx: ExtensionContext): void; compacting?(): boolean; holdingRecovery?(): boolean; branch?(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']> }
 const active = (job: JobSummary) => ["starting", "running", "waiting"].includes(job.status);
 const fingerprint = (state: WorkflowState, id?: number) => {
   const task = state.tasks.find((item) => item.id === id);
-  return task ? JSON.stringify([task.id, task.subject, task.description, task.blockedBy, task.metadata?.preset, task.metadata?.run, task.metadata?.step, task.metadata?.key]) : "";
+  if (!task) return '';
+  const definition: unknown[] = [task.id, task.subject, task.description, task.blockedBy, task.metadata?.preset, task.metadata?.run, task.metadata?.step, task.metadata?.key];
+  const artifacts = contextArtifacts(task);
+  if (artifacts.length) definition.push({ artifacts }); // Preserve old signatures when no references were declared.
+  return JSON.stringify(definition);
 };
 const idSchema = Type.String({ minLength: 1, maxLength: 80 });
 const seconds = Type.Number({ exclusiveMinimum: 0, maximum: 86400 });
@@ -144,7 +148,10 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     }
   };
   const onNotice = (notice: Notice) => {
-    if (restoring || paused || hooks.state().plan || hooks.canWake?.() === false) return;
+    if (restoring) return;
+    // A parent error wait holds reports; it must not discard them or wake before /retry.
+    if (hooks.holdingRecovery?.()) { notices.add(notice); return; }
+    if (paused || hooks.state().plan || hooks.canWake?.() === false) return;
     notices.add(notice);
     if (!failedRound && context?.isIdle() && !timer) timer = setTimeout(deliverIdle, 25);
   };
@@ -178,16 +185,19 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   };
   async function restore(ctx: ExtensionContext) {
     restoring = true;
-    generation++;
+    const ownGeneration = ++generation;
     clearDelivery(); clearActivity();
     original.clear(); adjusted.clear();
     await runtime?.shutdown();
+    if (ownGeneration !== generation) return;
     context = ctx; runtime = undefined; profiles = undefined; error = undefined;
     // Restores never wake the model or resume processes. New explicit work re-enables delivery.
     paused = true;
     try {
-      profiles = new ProfileStore({ path: configPaths().profile, registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write", "powershell"] });
-      await profiles.load();
+      const loadedProfiles = new ProfileStore({ path: configPaths().profile, registry: ctx.modelRegistry, trustedTools: ["bash", "edit", "write", "powershell"] });
+      await loadedProfiles.load();
+      if (ownGeneration !== generation) return;
+      profiles = loadedProfiles;
       const provider = pi.getFlag("dag-workflow-test-child-provider");
       runtime = new AgentRuntime({ cwd: ctx.cwd, profiles, getInheritedModel: () => context?.model ? { provider: context.model.provider, id: context.model.id } : undefined,
         getInheritedThinking: () => pi.getThinkingLevel?.() ?? 'off', getInheritedTools: () => pi.getActiveTools?.() ?? CORE_TOOLS, onChanged, onNotice, onActivity,
@@ -204,11 +214,12 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       // Fold the active branch once: version-1 snapshots replace, version-2 deltas continue.
       const folded = foldAgentEntries(hooks.branch?.(ctx) ?? ctx.sessionManager.getBranch());
       await runtime.importSummaries(folded.records, folded.nextId);
+      if (ownGeneration !== generation) return;
       // The confirmed base is what was actually saved, before import normalizes metadata
       // and interrupts old live jobs. Persist those changes on the next real update.
       journal.hydrate(folded.records, runtime.nextId());
-    } catch (cause) { error = String(cause); notify(ctx, msg`Agent 恢复／配置失败：${error}；/agents reset 可明确清除运行记录`, "error"); }
-    finally { restoring = false; hooks.paint(ctx); }
+    } catch (cause) { if (ownGeneration === generation) { error = String(cause); notify(ctx, msg`Agent 恢复／配置失败：${error}；/agents reset 可明确清除运行记录`, "error"); } }
+    finally { if (ownGeneration === generation) { restoring = false; hooks.paint(ctx); } }
   }
   pi.on("session_start", (_event, ctx) => restore(ctx));
   pi.on("session_tree", (_event, ctx) => restore(ctx));
@@ -265,16 +276,16 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   const reply = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data });
   const fail = (cause: unknown) => { const error = safeDiagnostic(String(cause)); return { isError: true, content: [{ type: 'text' as const, text: error }], details: { error } }; };
 
-  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child, max8 active, no grandchildren. Give task inputs, scope and expected evidence. Omitted/inherit profile captures parent model, thinking and active supported built-ins; named profile overrides specified fields; tools overrides the list. No extensions/skills/full parent history. todoId must be unblocked; context:true adds a fragment brief. resumeFrom creates a new attempt on the same Todo, keeping old tools unless tools is explicit; it never revives the process. Inspect artifacts/side effects first. Returns jobId.",
+  pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child, max8 active, no grandchildren. Give task inputs, scope and expected evidence. Omitted/inherit profile captures parent model, thinking and active supported built-ins; named profile overrides specified fields; tools overrides the list. No extensions/full parent history or automatic skills discovery. Profiles may select local skill files. todoId must be unblocked; context:true adds a task/prerequisite brief. resumeFrom creates a new attempt on the same Todo, keeping old tools unless tools is explicit; it never revives the process. Inspect artifacts/side effects first. Returns jobId.",
     promptSnippet: "Use subagent_spawn to start one isolated child agent for independent work",
     promptGuidelines: [
       "Delegate work that is independent and verifiable, such as research or isolated edits; keep the critical path and final verification in the main session.",
       "Pass todoId to bind a job to its task. Omit profile or use inherit for parent model/thinking/supported built-in tools; choose a named profile for overrides. Give the child a self-contained task with inputs, constraints and expected evidence. Returned work must be verified before completing a Todo.",
       "Give one child a serial chain (A then B then C) when its steps share context, bind its last task only if it is already unblocked; otherwise bind the first ready task, and ask it to send a short interim message as each step finishes. Start parallel children for independent branches, and dispatch a task only when its prerequisites are completed: never ask a child to wait on work another child is doing.",
-      "Set context:true when the task belongs to a task fragment, so the child receives its step position, the whole fragment with statuses, and the report heads of earlier steps instead of rediscovering them.",
+      "Use context:true for a bounded task/prerequisite brief. Fragments include their position and step statuses; ordinary tasks include direct prerequisites and current report excerpts, not the parent's history.",
       "After child failure/interruption, inspect diagnostics and side effects; prefer resumeFrom on the same Todo, optionally with a discovered profile. Do not create a replacement Todo or blindly replay work. A user-stopped objective needs explicit allowance; cancelling one attempt does not cancel its Todo.",
     ],
-    parameters: Type.Object({ task: text, resumeFrom: Type.Optional(idSchema), todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: 'Omit or use inherit for parent configuration; otherwise a saved profile name' })), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach the task's fragment state and earlier step report heads" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
+    parameters: Type.Object({ task: text, resumeFrom: Type.Optional(idSchema), todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: 'Omit or use inherit for parent configuration; otherwise a saved profile name' })), tools: Type.Optional(Type.Array(idSchema)), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach a bounded task/prerequisite brief; Todo metadata.artifacts can declare file references" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, signal, _update, ctx) {
       try {
         if (signal?.aborted) throw new Error('Dispatch aborted');
@@ -290,7 +301,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
           applyTodo(before, { action: "update", id: task.id, status: "in_progress" }, msg); // Validate without claiming work on startup failure.
         }
         // Opt-in: the parent decides per dispatch, and only a bound task can carry a fragment brief.
-        const context = params.context === true && task ? fragmentContext(task.id, before.tasks, agent.exportRecords()) : undefined;
+        const context = params.context === true && task ? taskContext(task.id, before.tasks, agent.exportRecords()) : undefined;
         const ownGeneration = generation;
         paused = false; failedRound = false;
         const job = await agent.spawn({
@@ -370,8 +381,11 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       const [action, ...parts] = args.trim().split(/\s+/);
       if (action === 'help') { ctx.ui.notify(msg('/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset · Profile 的 instructions 写在配置文件里，作为该子任务的被动指导消息'), 'info'); return; }
       if (action === "reset") {
+        const ownGeneration = generation;
         if (!ctx.hasUI || !await ctx.ui.confirm(msg("清除 Agent 运行记录？"), msg("先停止所有子 Agent，不撤销文件修改；历史记录保留。"))) return;
+        if (ownGeneration !== generation) return;
         restoring = true; clearDelivery(); clearActivity(); await runtime?.shutdown();
+        if (ownGeneration !== generation) return;
         pi.appendEntry(AGENTS_TYPE, { version: 1, jobs: [], nextId: runtime?.nextId() ?? 1 });
         journal.reset();
         await restore(ctx); return;
@@ -390,7 +404,8 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         if (!name || !model || parts.length > 4 || !model.includes("/")) throw new Error(msg("/agents profile 名称 provider/model [thinking] [工具逗号列表]"));
         const split = model.indexOf("/");
         await profiles!.load();
-        profiles!.set({ name, model: { provider: model.slice(0, split), id: model.slice(split + 1) }, ...(thinking ? { thinking: thinking as NonNullable<Profile["thinking"]> } : {}), ...(tools ? { tools: tools.split(",") } : {}), ...(profiles!.get(name)?.instructions ? { instructions: profiles!.get(name)!.instructions } : {}) });
+        const previous = profiles!.get(name);
+        profiles!.set({ name, model: { provider: model.slice(0, split), id: model.slice(split + 1) }, ...(thinking ? { thinking: thinking as NonNullable<Profile["thinking"]> } : {}), ...(tools ? { tools: tools.split(",") } : {}), ...(previous?.instructions ? { instructions: previous.instructions } : {}), ...(previous?.skills !== undefined ? { skills: previous.skills } : {}) });
         await profiles!.save(); ctx.ui.notify(msg`已保存 Profile ${name}`, "info"); return;
       }
       if (action === "unprofile") { ready(ctx); if (parts.length !== 1) throw new Error(msg("/agents unprofile 名称")); await profiles!.load(); profiles!.delete(parts[0]!); await profiles!.save(); return; }

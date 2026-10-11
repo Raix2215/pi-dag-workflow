@@ -1,14 +1,15 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { readConfigText } from '../shared/config-file.ts';
 
 export const CORE_TOOLS = ["read", "grep", "find", "ls"] as const;
 const OPTIONAL_TOOLS = new Set(["bash", "edit", "write", "powershell"]);
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = typeof THINKING_LEVELS[number];
 export interface ModelRef { provider: string; id: string }
-export interface Profile { name: string; model?: ModelRef; thinking?: ThinkingLevel; tools?: string[]; instructions?: string }
-export interface ResolvedProfile { name: string; model: ModelRef; thinking: ThinkingLevel; tools: string[]; instructions?: string }
+export interface Profile { name: string; model?: ModelRef; thinking?: ThinkingLevel; tools?: string[]; skills?: string[]; instructions?: string }
+export interface ResolvedProfile { name: string; model: ModelRef; thinking: ThinkingLevel; tools: string[]; skills?: string[]; instructions?: string }
 export interface ProfileRegistry { find(provider: string, id: string): unknown }
 export interface ProfileStoreOptions { path?: string; registry: ProfileRegistry; trustedTools?: readonly string[] }
 
@@ -25,6 +26,12 @@ function nonempty(value: unknown, field: string): string {
   return value;
 }
 
+const MAX_SKILLS = 8;
+const MAX_SKILL_PATH = 2048;
+/** Any `scheme:` prefix; a single Windows drive letter is filtered out before this is applied. */
+const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+const WINDOWS_DRIVE = /^[a-zA-Z]:[\\/]/;
+
 /** Configuration only. Job/task state belongs to the parent Pi branch. */
 export class ProfileStore {
   private profiles = new Map<string, Profile>();
@@ -39,6 +46,25 @@ export class ProfileStore {
     const model = { provider: nonempty(record.provider, "model provider"), id: nonempty(record.id, "model id") };
     if (!this.options.registry.find(model.provider, model.id)) throw new Error(`Unknown model: ${model.provider}/${model.id} (exact registry name required)`);
     return model;
+  }
+  /** One explicitly listed local Markdown skill file. Syntax only: paths are not resolved or read here. */
+  private skill(value: unknown): string {
+    if (typeof value !== "string") throw new Error("Skill paths must be text");
+    const path = value.trim();
+    if (!path) throw new Error("Skill path must contain text");
+    if (path.length > MAX_SKILL_PATH) throw new Error(`Skill path must be at most ${MAX_SKILL_PATH} characters`);
+    if (/[\p{Cc}\p{Bidi_Control}\u2028\u2029]/u.test(value)) throw new Error("Skill path must not contain control characters");
+    if (URL_SCHEME.test(path) && !WINDOWS_DRIVE.test(path)) throw new Error('Skill must be a local Markdown file path, not a URL');
+    return path;
+  }
+  /**
+   * Bounded list of local skill files, in the order the user listed them. Absolute, `~/` and
+   * working-directory-relative paths are all kept verbatim; existence is deliberately not checked
+   * here so a profile written in one working directory still resolves correctly in another.
+   */
+  validateSkills(value: unknown): string[] {
+    if (!Array.isArray(value) || value.length > MAX_SKILLS || value.some((skill) => typeof skill !== "string")) throw new Error(`skills must be a list of at most ${MAX_SKILLS} local skill file paths`);
+    return [...new Set(value.map((skill) => this.skill(skill)))];
   }
   validateTools(value: unknown): string[] {
     if (!Array.isArray(value) || value.length > 8 || value.some((tool) => typeof tool !== "string")) throw new Error("tools must be a list of supported tool names");
@@ -60,7 +86,7 @@ export class ProfileStore {
   }
   private validate(value: unknown): Profile {
     const record = object(value);
-    exactKeys(record, ["name", "model", "thinking", "tools", "instructions"]);
+    exactKeys(record, ["name", "model", "thinking", "tools", "skills", "instructions"]);
     const name = nonempty(record.name, "profile name");
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$/.test(name) || name === "inherit") throw new Error("Profile name must be 1–48 letters, digits, '_' or '-' (inherit is reserved)");
     if (record.thinking !== undefined && !THINKING_LEVELS.includes(record.thinking as ThinkingLevel)) throw new Error("Invalid thinking level");
@@ -71,12 +97,17 @@ export class ProfileStore {
       ...(model === undefined ? {} : { model }),
       ...(record.thinking === undefined ? {} : { thinking: record.thinking as ThinkingLevel }),
       ...(record.tools === undefined ? {} : { tools: this.validateTools(record.tools) }),
+      ...(record.skills === undefined ? {} : { skills: this.validateSkills(record.skills) }),
       ...(record.instructions === undefined ? {} : { instructions: this.instructions(record.instructions) }),
     };
   }
   list(): Profile[] { return structuredClone([...this.profiles.values()]); }
   get(name: string): Profile | undefined { const value = this.profiles.get(name); return value ? structuredClone(value) : undefined; }
-  set(profile: Profile): Profile { const value = this.validate(profile); this.profiles.set(value.name, value); return structuredClone(value); }
+  set(profile: Profile): Profile {
+    const value = this.validate(profile);
+    if (!this.profiles.has(value.name) && this.profiles.size >= 64) throw new Error('profiles must contain at most 64 profiles');
+    this.profiles.set(value.name, value); return structuredClone(value);
+  }
   delete(name: string): boolean { return this.profiles.delete(name); }
   resolve(name?: string, inheritedModel?: ModelRef, toolsOverride?: string[], inherited?: { thinking?: ThinkingLevel | undefined; tools?: readonly string[] | undefined }): ResolvedProfile {
     const profile = name && name !== 'inherit' ? this.get(name) : undefined;
@@ -90,14 +121,13 @@ export class ProfileStore {
     if (thinking !== 'off' && reasoning === false) throw new Error('Selected model does not support thinking; use off');
     const allowed = new Set<string>([...CORE_TOOLS, ...(this.options.trustedTools ?? [])]);
     const inheritedTools = inherited?.tools === undefined ? [...CORE_TOOLS] : inherited.tools.filter((tool) => allowed.has(tool));
-    return { name: profile?.name ?? "inherit", model, thinking, tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...new Set(inheritedTools)]), ...(profile?.instructions ? { instructions: profile.instructions } : {}) };
+    return { name: profile?.name ?? "inherit", model, thinking, tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...new Set(inheritedTools)]), ...(profile?.skills === undefined ? {} : { skills: [...profile.skills] }), ...(profile?.instructions ? { instructions: profile.instructions } : {}) };
   }
   async load(): Promise<void> {
     if (!this.options.path) return;
     let text: string;
-    try { text = await readFile(this.options.path, "utf8"); }
+    try { text = await readConfigText(this.options.path, 65536, 'Profile configuration exceeds 64 KiB'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { this.profiles.clear(); return; } throw error; }
-    if (Buffer.byteLength(text) > 65536) throw new Error("Profile configuration exceeds 64 KiB");
     const config = object(JSON.parse(text));
     exactKeys(config, ["profiles"]);
     if (!Array.isArray(config.profiles) || config.profiles.length > 64) throw new Error("profiles must contain at most 64 profiles");
@@ -109,10 +139,12 @@ export class ProfileStore {
     const path = this.options.path;
     if (!path) throw new Error("No profile configuration path configured");
     const profiles = this.list().map((item) => this.validate(item));
+    const source = `${JSON.stringify({ profiles }, null, 2)}\n`;
+    if (Buffer.byteLength(source) > 65536) throw new Error('Profile configuration exceeds 64 KiB');
     await mkdir(dirname(path), { recursive: true });
     const temporary = `${path}.${randomUUID()}.tmp`;
     try {
-      await writeFile(temporary, `${JSON.stringify({ profiles }, null, 2)}\n`, { mode: 0o600 });
+      await writeFile(temporary, source, { mode: 0o600 });
       await rename(temporary, path);
     } catch (error) {
       const { rm } = await import("node:fs/promises");

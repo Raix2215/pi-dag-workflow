@@ -33,7 +33,7 @@ function goalHost() {
   };
   const controller = registerGoal(pi, {
     state: () => workflow, jobs: () => [], paint() {}, protected: () => false,
-    pauseAgents() {}, resumeAgents() {}, retryDelayMs: 70, resumeDelayMs: 0,
+    pauseAgents() {}, resumeAgents() {}, resumeDelayMs: 0,
   });
   const fire = async (name: string, event: any = {}) => {
     if (name === 'turn_end' || name === 'agent_before_settle') event.entries ??= [];
@@ -58,13 +58,13 @@ function goalHost() {
   return { ctx, controller, fire, call, enable, message, retries, wakes, entries };
 }
 
-test('public event simulation: authoritative late cancellation cancels retry and resume timers', async (t) => {
+test('public event simulation: an error pause stays final across a later stop and native willRetry', async (t) => {
   const h = goalHost(); t.after(() => h.fire('session_shutdown'));
   await h.enable(); h.message('error');
-  await h.fire('agent_settled', { aborted: false }); // A previous failed request has pending recovery.
+  await h.fire('agent_settled', { aborted: false }); // /retry is off, so the failure pauses the Goal.
   await h.fire('agent_settled', { aborted: true }); // Stop is authoritative, independent of stopReason.
   assert.equal(h.controller.snapshot().run.paused, true);
-  assert.equal(h.controller.snapshot().run.reason, '用户中断');
+  assert.equal(h.controller.snapshot().run.reason, '模型请求出错；请查看 /retry 设置');
   await sleep(150);
   assert.equal(h.retries().length, 0);
   assert.equal(h.wakes.length, 0, 'neither old retry nor idle continuation may revive the Goal');
@@ -89,17 +89,17 @@ test('public event simulation: authoritative stop refunds rejected wake before a
   assert.equal(h.wakes.length, 0);
 });
 
-for (const modern of [true, false]) test(`public event simulation: provider abort settles with ${modern ? 'explicit no-cancel recovery' : 'legacy fail-closed pause'}`, async (t) => {
+for (const modern of [true, false]) test(`public event simulation: provider abort with /retry off becomes a ${modern ? 'clear error' : 'legacy fail-closed'} pause`, async (t) => {
   const h = goalHost(); t.after(() => h.fire('session_shutdown'));
   await h.enable(); h.message('aborted');
   await h.fire('agent_before_settle', { outcome: 'aborted' });
   assert.equal(h.controller.snapshot().run.paused, false, 'native recovery gets the first opportunity');
   await h.fire('agent_settled', modern ? { aborted: false } : {});
   await sleep(150);
-  assert.equal(h.retries().length, modern ? 1 : 0);
-  assert.equal(h.controller.snapshot().run.paused, !modern);
-  assert.equal(h.controller.snapshot().run.reason, modern ? undefined : legacyReason);
-  assert.equal(h.controller.snapshot().run.errorRetries ?? 0, modern ? 1 : 0);
+  assert.equal(h.retries().length, 0, 'the Goal no longer answers failures itself');
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.equal(h.controller.snapshot().run.reason, modern ? '模型请求出错；请查看 /retry 设置' : legacyReason);
+  assert.equal(h.controller.snapshot().run.errorRetries ?? 0, 0);
 });
 
 test('public event simulation: legacy pauses only unresolved aborted failures after native recovery', async (t) => {
@@ -122,7 +122,7 @@ const observations = (client: IsolatedClient) => client.records
   .filter((record) => record.type === 'entry_appended' && (record.entry as { customType?: string })?.customType === 'dag-test.late-settle')
   .map((record) => (record.entry as { data: { stage: string; outcome: string; idle: boolean; publicSignalAborted: boolean | null; capturedSignalAborted: boolean | null } }).data);
 const reportsCancellation = (client: IsolatedClient) => client.records.some((record) => record.type === 'agent_settled' && typeof record.aborted === 'boolean');
-const retryEntries = async (client: IsolatedClient) => (await client.entries()).filter((entry) => (entry as { customType?: string }).customType === 'pi-dag-workflow.goal-retry');
+const retryEntries = async (client: IsolatedClient) => (await client.entries()).filter((entry) => (entry as { customType?: string }).customType === 'pi-dag-workflow.retry-request');
 async function startIsolated() {
   const root = await mkdtemp(join(tmpdir(), 'pi-dag-late-abort-'));
   await mkdir(join(root, 'agent'), { recursive: true });
@@ -146,6 +146,8 @@ for (const cancel of [true, false]) test(`actual offline Pi: async provider-abor
   const client = await startIsolated(); t.after(() => client.close());
   await createProviderAbortGoal(client);
   const modern = reportsCancellation(client);
+  // Arm /retry during the late-settle gap: only a reliable no-cancel settlement may recover.
+  await client.prompt('/retry when-error 1s count 2');
   const stop = client.records.length;
   if (cancel) {
     await client.send('clear_queue');

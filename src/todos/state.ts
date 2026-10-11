@@ -22,7 +22,7 @@ export const TODO_FILTERS = ['full', 'pending', 'completed', 'failed', 'cancelle
 export type TodoFilter = typeof TODO_FILTERS[number];
 export type ClearScope = 'all' | 'completed' | 'closed';
 export const TodoParamsSchema = Type.Object({
-  action: Type.Enum(['create', 'update', 'list', 'get', 'delete', 'clear', 'apply', 'reset', 'batch', 'presets'] as const, { type: 'string' }),
+  action: Type.Enum(['create', 'update', 'list', 'get', 'status', 'delete', 'clear', 'apply', 'reset', 'batch', 'presets'] as const, { type: 'string' }),
   operations: Type.Optional(Type.Array(BatchOperationSchema, { minItems: 1, maxItems: 50, description: "batch only: 1–50 pending creates or definition updates. A create may name ref; @ref in ids/dependencies refers only to earlier creates in this batch. Any failure rolls back the entire call." })),
   id: Type.Optional(Type.Integer({ minimum: 1, description: "Required for update/get/delete" })),
   subject: Type.Optional(Type.String({ description: "Short title; required for create" })),
@@ -70,14 +70,16 @@ export interface WorkflowState {
 export const STATE_TYPE = "pi-dag-workflow.state";
 export interface TodoPage { total: number; count: number; limit: number; afterId: number; nextAfterId?: number; next?: TodoParams }
 export interface TodoRelations { blocks: number[]; unmetPrerequisites: number[] }
-export interface TodoResult { state: WorkflowState; text: string; tasks?: Todo[]; page?: TodoPage; relations?: TodoRelations; removedIds?: number[]; refs?: Record<string, number>; operations?: TodoParams[]; presets?: { name: string; description?: string; steps: number }[]; preset?: Preset }
+/** One bounded read-only answer: current mode plus per-status counts. Deleted is listed separately. */
+export interface TodoStatusSummary { mode: 'normal' | 'plan'; total: number; counts: Record<Exclude<TodoStatus, 'deleted'>, number>; deleted: number }
+export interface TodoResult { state: WorkflowState; text: string; tasks?: Todo[]; page?: TodoPage; relations?: TodoRelations; removedIds?: number[]; refs?: Record<string, number>; operations?: TodoParams[]; presets?: { name: string; description?: string; steps: number }[]; preset?: Preset; status?: TodoStatusSummary }
 export const emptyState = (): WorkflowState => ({ version: 1, tasks: [], nextId: 1, plan: false, planTools: [], visible: true, view: "list", treeStyle: "paths" });
 
 const fields: Record<string, readonly string[]> = {
   create: ["subject", "description", "activeForm", "owner", "metadata", "blockedBy", "status"],
   update: ["id", "subject", "description", "activeForm", "owner", "metadata", "status", "addBlockedBy", "removeBlockedBy"],
   list: ["status", "includeDeleted", "limit", "afterId", "ready"], get: ["id"], delete: ["id"], clear: ['scope'],
-  apply: ["preset", "vars"], reset: ["preset", "run", "step"], presets: ["preset"],
+  apply: ["preset", "vars"], reset: ["preset", "run", "step"], presets: ["preset"], status: [],
   batch: ['operations'],
 };
 const transitions: Record<TodoStatus, readonly TodoStatus[]> = {
@@ -127,6 +129,14 @@ export function clearTodoRecords(state: WorkflowState, scope: ClearScope = 'all'
   return { state: next, text: msg`已清理 ${result.removedIds.length} 项（${scope}）；保留 ${result.keptIds.length} 项，编号不复用`, ...result };
 }
 
+/** Read-only summary from the canonical list; it never adds persisted state or renumbers tasks. */
+export function todoStatusSummary(state: WorkflowState): TodoStatusSummary {
+  const counts: Record<Exclude<TodoStatus, 'deleted'>, number> = { pending: 0, in_progress: 0, completed: 0, failed: 0, cancelled: 0 };
+  let deleted = 0;
+  for (const task of state.tasks) if (task.status === 'deleted') deleted++; else counts[task.status]++;
+  return { mode: state.plan ? 'plan' : 'normal', total: state.tasks.length - deleted, counts, deleted };
+}
+
 export function validateTodoFields(params: TodoParams, msg: Translator = chinese): void {
   const allowed = fields[params.action];
   if (!allowed) throw new Error(msg("未知 Todo 操作"));
@@ -136,6 +146,7 @@ export function validateTodoFields(params: TodoParams, msg: Translator = chinese
 /** Atomic pure mutation: errors never modify the current state. */
 export function applyTodo(state: WorkflowState, params: TodoParams, msg: Translator = chinese, presets?: PresetStore): TodoResult {
   validateTodoFields(params, msg);
+  if (params.action === 'status') { const status = todoStatusSummary(state); return { state, status, text: JSON.stringify(status, null, 2) }; }
   if (params.action === 'batch') return applyBatch(state, params.operations, msg);
   if (params.action === 'presets') {
     // Read-only discovery: compact directory summaries, or one full definition.
@@ -226,7 +237,8 @@ export function applyTodo(state: WorkflowState, params: TodoParams, msg: Transla
   const next = { ...state, tasks, nextId: state.nextId + (params.action === "create" ? 1 : 0) };
   if (!reuseDagStructure(state.tasks, tasks)) dagStructure(tasks); // delete safety, dangling dependencies, cycles
   if (["in_progress", "completed"].includes(task.status)) {
-    const unfinished = task.blockedBy.filter((id) => tasks.find((item) => item.id === id)?.status !== "completed");
+    const order = dagStructure(tasks).order;
+    const unfinished = task.blockedBy.filter((id) => tasks[order.get(id)!]?.status !== "completed");
     if (unfinished.length) throw new Error(msg`前置未完成：${unfinished.map((id) => `#${id}`).join(",")}；不能开始或完成 #${task.id}`);
   }
   if (JSON.stringify(task) === JSON.stringify(current)) return { state, tasks: [current!], text: msg`#${task.id} 无变化` };
@@ -280,6 +292,7 @@ function applyBatch(state: WorkflowState, operations: TodoBatchOperation[] | und
  * "prerequisites are done" hint; it never starts anything on its own.
  */
 export function newlyReady(before: WorkflowState, after: WorkflowState): Todo[] {
+  if (before.tasks === after.tasks) return [];
   const was = new Map(before.tasks.map((task) => [task.id, task.status]));
   if (!after.tasks.some((task) => task.status === "completed" && was.get(task.id) !== "completed")) return [];
   const now = new Map(after.tasks.map((task) => [task.id, task.status]));

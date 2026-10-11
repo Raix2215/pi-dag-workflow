@@ -8,7 +8,9 @@ Reference for child jobs, report delivery, task acceptance, and continuation. Fo
 
 Omitting `profile`, or selecting `inherit`, captures the parent's model, thinking level, and active supported built-in tools at dispatch time. A named profile overrides its declared fields; call-level `tools` replaces the list. Implicit thinking can adapt down to a supported level. An explicitly unsupported profile level fails.
 
-A child works in the same directory, discovers workspace rules, and has independent conversation history. Selected profile instructions and `context: true` fragment guidance arrive as task context. The fragment brief prioritizes current instructions and valid prerequisite report heads from the same fragment instance. It is bounded, and a full report remains available through inspection.
+A child works in the same directory, discovers workspace rules, and has independent conversation history. Selected profile instructions and `context: true` guidance arrive as task context. Ordinary task briefs contain the current requirements excerpt, direct prerequisite states, current valid report excerpts, and declared `metadata.artifacts` references. Fragment briefs include position and state from the same fragment instance. Briefs are bounded to 2,000 characters and never use stale reports as current evidence. Ordinary task briefs mark omitted input. Supply all required input in the assignment; references are unverified, and full output remains available through inspection.
+
+A profile may select up to eight local Markdown skill files with `skills`. Paths resolve from the dispatch working directory, `~/`, or an absolute path. Dispatch requires readable, nonempty files no larger than 64 KiB and an already selected `read` tool. Entries arrive as task references; bodies are read on demand. Skill text does not change tools or permissions, activate extensions/MCP, or override later direction.
 
 The child has `subagent_send` for parent communication. It cannot delegate children, and it does not run the parent's Goal. Its model auto-retry is disabled.
 
@@ -73,7 +75,7 @@ Child `subagent_send({ message, question: true })` waits for an answer. The pare
 
 Parent direction uses `subagent_send({ recipient, message })`. Normal direction enters at a safe steering boundary. `interrupt: true` clears obsolete queued work, aborts the current local turn, cleans the idle queue, and sends a new direction in the same child context. Confirmation is `accepted`, `queued`, or `answered`; inspect evidence to determine whether work followed the direction.
 
-Changing the task definition or fragment identity invalidates earlier acceptance evidence. Interrupting the child starts a new report scope. Old output remains queryable, with `outputStart` separating historical text from the current assignment. Late reports from an old tool batch remain historical until the new direction is consumed.
+Changing the task definition, declared artifact references, or fragment identity invalidates earlier acceptance evidence. Interrupting the child starts a new report scope. Old output remains queryable, with `outputStart` separating historical text from the current assignment. Late reports from an old tool batch remain historical until the new direction is consumed.
 
 ## Failure, cancellation, and continuation
 
@@ -85,7 +87,7 @@ The default execution deadline is 600 seconds; spawn `timeout` can set up to 86,
 
 - Keep the original Todo binding and saved assignment.
 - Supply the current continuation task; select another known profile when needed.
-- Keep the previous tool scope unless call-level `tools` explicitly overrides it.
+- Keep the previous tool scope unless call-level `tools` explicitly overrides it; selected skill entries come from the current chosen profile.
 - Reject changed Todo definitions; use a fresh self-contained assignment for the current scope.
 - Supply full instructions when the retained record has no saved original assignment.
 - Retain the old execution record and report history.
@@ -96,7 +98,7 @@ A parent abort during authentication/startup cancels dispatch and leaves its Tod
 
 ## Goal and recovery context
 
-Automatic child-report wakes and Goal continuations share the active Goal's allowance. Plan, Goal pause, Agent-delivery pause, or an exhausted finite allowance suppresses automatic wakes. Model failures hold buffered reports while native Pi or bounded Goal recovery runs. Successful recovery reopens delivery.
+Automatic child-report wakes and Goal continuations share the active Goal's allowance. Plan, Goal pause, Agent-delivery pause, or an exhausted finite allowance suppresses automatic wakes. Model failures hold buffered reports while native Pi or user-enabled `/retry` recovery runs. Successful recovery reopens delivery. `/retry` is off by default, applies only to the main session, and does not restart children. Its Goal requests obey the remaining continuation allowance; Plan remains read-only. User cancellation and branch changes cancel obsolete recovery. Restoring keeps retry settings but requires explicit re-enabling.
 
 `/agents resume` permits future report arrivals. Retrieve previously suppressed reports explicitly. Restoring or switching a session stops managed child processes and restores their records as interrupted; it does not revive execution or automatically resume the Goal.
 

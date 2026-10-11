@@ -1,5 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readConfigText, readConfigTextSync } from './config-file.ts';
 import { join } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { chinese, resolveLocale, type Language, type Locale, type Translator } from './i18n.ts';
@@ -38,7 +37,7 @@ function parseConfig(source: string, msg: Translator): WorkflowConfig {
 }
 export async function loadConfig(msg: Translator = chinese): Promise<WorkflowConfig> {
   let source: string;
-  try { source = await readFile(configPaths().config, 'utf8'); }
+  try { source = await readConfigText(configPaths().config, 16384, msg('配置超过 16 KiB')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultConfig(); throw error; }
   return parseConfig(source, msg);
 }
@@ -47,7 +46,7 @@ export async function loadConfig(msg: Translator = chinese): Promise<WorkflowCon
  * Goal's restore reports invalid configuration; localization itself never prevents recovery. */
 export function loadLocale(): Locale {
   try {
-    const source = readFileSync(configPaths().config, 'utf8');
+    const source = readConfigTextSync(configPaths().config, 16384, 'Config exceeds 16 KiB');
     if (Buffer.byteLength(source) <= 16384) {
       const value = JSON.parse(source) as Record<string, unknown> | null;
       if (value && ['auto', 'en', 'zh-CN'].includes(value.language as string)) return resolveLocale(value.language as Language);

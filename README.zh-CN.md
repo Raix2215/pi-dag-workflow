@@ -52,7 +52,8 @@ pi install https://github.com/Raix2215/pi-dag-workflow
 - **任务依赖**：`blockedBy` 关联前置任务。开始、完成或派发下游任务前，前置必须已完成。
 - **只读 Plan**：阅读、搜索、提问和编辑任务定义；实施与派发需先 `/plan off`。
 - **并行子 Agent**：最多八个独立 Pi 进程，支持明确派发、问题答复、报告、Profile 和原任务接续。
-- **Goal 续跑**：一次聚焦一个目标，共享续跑额度、有界错误恢复，以及用户控制的中断策略。
+- **Goal 续跑**：一次聚焦一个目标，共享续跑额度，支持用户控制的中断策略。
+- **错误恢复**：用户通过 `/retry` 控制 Normal、Plan 和 Goal 主会话重试；间隔循环，可限制每轮连续错误的实际次数。
 - **实时进度**：任务树或 DAG 预览、子进程活动、待交付和待核验状态；完整视图可滚动。
 - **会话持久化**：任务、Goal 和 Job 记录跟随 Pi 当前分支。恢复时自动工作保持暂停，原有子进程保持停止。
 
@@ -77,9 +78,10 @@ batch 接受 **1–50 个定义操作**：创建 pending 任务，或修改任�
 ```json
 {"action":"list","ready":true,"limit":50}
 {"action":"get","id":2}
+{"action":"status"}
 ```
 
-list 默认返回 50 项，每页最多 200 项。使用结果中的完整续页参数，保持同一筛选条件。get 返回完整任务、直接后继 `blocks` 和未满足前置 `unmetPrerequisites`。
+list 默认返回 50 项，每页最多 200 项。使用结果中的完整续页参数，保持同一筛选条件。get 返回完整任务、直接后继 `blocks` 和未满足前置 `unmetPrerequisites`。status 返回模式、任务计数、保护及重试状态的简短只读摘要；goal get 也附带重试状态。
 
 任务状态为 `pending`、`in_progress`、`completed`、`failed`、`cancelled`、`deleted`。单条 create 接受 pending，也可在依赖允许时创建为 in_progress；batch 创建 pending 任务。失败和取消的尝试不能满足前置依赖。
 
@@ -152,7 +154,19 @@ description 保存任务要求和必要上下文。验收摘要放在会话答�
 }
 ```
 
-通过 `subagent_spawn` 调用。todoId 可选；关联任务必须可执行。子 Agent 在同一工作目录中使用独立模型上下文，加载工作区规则，并收到本次任务、选中的 Profile 指导及可选片段简报。
+通过 `subagent_spawn` 调用。todoId 可选；关联任务必须可执行。子 Agent 在同一工作目录中使用独立模型上下文，加载工作区规则，并收到本次任务、选中的 Profile 指导及可选任务简报。
+
+### 前置简报
+
+关联 Job 设置 context:true，可附上任务要求摘要、直接前置状态和当前有效报告摘要。片段任务还包含步骤位置和片段状态。简报最多2,000字符，不复制主会话历史，不采用过期报告；普通任务简报注明省略的输入。
+
+在 Todo 的 metadata.artifacts 记录明确产物引用：
+
+```json
+{"action":"update","id":1,"metadata":{"artifacts":["build/results.csv","test-results.json"]}}
+```
+
+引用是未核验输入，不是完成证据或权限。实际派发说明仍需自包含，提供简报省略但本次必需的路径和要求。
 
 ### 查询、收集与调整
 
@@ -228,9 +242,28 @@ Goal 保存目标及验收条件。创建后保持暂停，`/goal enable` 开始
 
 progress 只记录重要验收结果、可复现发现、决定或阻塞变化。nextStep 仅在下一步实质改变时更新。工作笔记不改变原目标或权限。
 
-Goal 错误恢复等待 Pi 原生恢复结束。额度、计费、鉴权等明确永久错误会暂停；可恢复或未分类错误采用有界指数退避，默认最多五次重试。成功回合重置错误计数；nolimit 下错误重试仍有限。
+Goal 请求错误收尾后，开启 /retry 时等待恢复，否则暂停。Goal 恢复使用剩余续跑额度；nolimit 控制该额度，不控制 /retry 设置。
 
-Pi 1.1+ 在最终收尾时提供明确取消信号。缺少该信号的宿主会保守暂停尚未解决的 provider-aborted 运行，查明原因后明确恢复。
+## 错误恢复
+
+`/retry` 打开用户菜单，也可直接输入：
+
+```text
+/retry when-error 5m,30s,10m count 3
+/retry when-error 3m
+/retry off
+/retry status
+```
+
+恢复**默认关闭**，用于 Normal、Plan 和 Goal 的主会话，等待 Pi 原生恢复结束后处理错误。开启后覆盖已收尾的模型请求错误，包括额度和鉴权失败；原因未解决时可用 /retry off 停止重复尝试。
+
+- 间隔使用正整数和 s／m／h，以逗号分隔，序列循环。
+- count 限制一轮连续错误中的实际重试次数；省略不限。成功回合重置连续错误计数和间隔位置。
+- 到期时 Pi 仍忙，则再等同一间隔；不扣次数，也不推进序列。
+- 用户取消、模式或 Goal 范围改变、Goal 完成、导航和压缩会取消过期工作；Goal 额度与 Plan 只读限制仍有效。
+- 重载后设置保留、恢复保持关闭，需明确重新开启。不重试子 Agent 或 shell 工具。
+
+Pi 1.1+ 在最终收尾区分 provider 中止和用户取消；缺少该信号的宿主不自动恢复无法鉴别的 provider-aborted 请求。重试设置由用户控制，模型工具只能查询，不能配置。
 
 ## 工具与命令
 
@@ -238,7 +271,7 @@ Pi 1.1+ 在最终收尾时提供明确取消信号。缺少该信号的宿主会
 
 | 工具 | 用途 |
 |---|---|
-| `todo` | 任务、分页查询、依赖校验、片段和原子定义批量操作 |
+| `todo` | 任务、分页查询、只读状态、依赖校验、片段和原子定义批量操作 |
 | `goal` | 目标、重要进展、续跑和核验完成 |
 | `subagent_spawn` | 新子 Job 与 resumeFrom 接续尝试 |
 | `subagent_inspect` | 状态、可选输出／等待、Profile 发现 |
@@ -252,8 +285,9 @@ Pi 1.1+ 在最终收尾时提供明确取消信号。缺少该信号的宿主会
 | `/plan` | `start`、`off`、`status`、`tools 名称1,名称2` |
 | `/goal` | `new`、`enable`、`disable`、`complete`、`delete`、`edit`、`get`、`list`、`nopause`、`nolimit`、`config`、`reset` |
 | `/agents` | `list`、`wait`、`send`、`reply`、`cancel`、`remove`、`pause`、`resume`、`profiles`、`profile`、`unprofile`、`reset` |
+| `/retry` | 菜单、`when-error 间隔 [count N]`、`off`、`status` |
 
-各命令组的 help 显示具体语法。`/agents wait a1` 向用户展示输出；模型用 subagent_inspect 的 output:true 收集报告。
+/todos、/plan、/goal、/agents 的 help 显示具体语法；/retry 打开菜单。`/agents wait a1` 向用户展示输出；模型用 subagent_inspect 的 output:true 收集报告。
 
 ## 配置
 
@@ -268,7 +302,6 @@ Pi 1.1+ 在最终收尾时提供明确取消信号。缺少该信号的宿主会
   "language": "auto",
   "goalMaxTurns": 32,
   "goalNoProgressLimit": 8,
-  "goalErrorRetries": 5,
   "planTools": [],
   "goalNoPauseTools": ["ask_user_question"]
 }
@@ -279,7 +312,6 @@ Pi 1.1+ 在最终收尾时提供明确取消信号。缺少该信号的宿主会
 | language | auto、en、zh-CN；auto 跟随终端 locale |
 | goalMaxTurns | 1–200，新 Goal 的默认额度 |
 | goalNoProgressLimit | 1–100，重新规划前允许的无进展轮数 |
-| goalErrorRetries | 0–20；0 表示首次模型错误收尾后暂停 |
 | planTools | 最多 16 个可信额外只读工具名 |
 | goalNoPauseTools | 最多 16 个 nopause 运行时禁用的主会话工具 |
 
@@ -313,7 +345,15 @@ Profile 指导作为任务上下文交付。用 subagent_inspect 发现：
 {"profile":"research"}
 ```
 
-摘要包含设置、不含 instructions；命名查询返回一个完整 Profile，profiles:true 请求完整目录。Profile 名称 1–48 字符，最多 8 个工具，instructions 最多 2,000 字符；文件最多 64 个 Profile、64 KiB。`/agents profile` 使用仅属主读写权限保存。
+摘要包含设置、不含 instructions；命名查询返回一个完整 Profile，profiles:true 请求完整目录。Profile 名称 1–48 字符，最多 8 个工具，instructions 最多 2,000 字符；文件最多 64 个 Profile、64 KiB。`/agents profile` 使用仅属主读写权限保存，保留选定的技能入口。
+
+Profile 可选 skills 指定本地 Markdown 文件：
+
+```json
+{"name":"csv-review","tools":["read","grep"],"skills":["skills/csv-review/SKILL.md"]}
+```
+
+最多八个文件，支持绝对路径、~/、相对于派发工作目录的路径。派发时每个文件必须可读、非空、不超过64 KiB；所选工具中必须已有 read。入口作为任务引用一次性交付，子任务按需读取正文。技能文本不会启用工具、扩展或 MCP，不授予脚本权限，也不覆盖本次任务要求。
 
 ### 任务片段
 

@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-11
+
+### Added
+
+- User-controlled `/retry` error recovery for Normal, Plan, and Goal main sessions; default off, looping intervals, optional per-error-streak counts, and busy skips that preserve the current interval and attempt count.
+- Read-only mode, task-count, protection, and retry summaries through `todo status`; retry state is also available through `goal get`.
+- Ordinary Todo prerequisite briefs through `subagent_spawn context: true`, with current requirements, direct prerequisites, valid report excerpts, and unverified artifact references.
+- Explicit local Markdown skill entries through `Profile.skills`, delivered as task references and read on demand with existing tool permissions.
+
+### Fixed
+
+- Cancel obsolete recovery on user stops, navigation, compaction, and changed work; preserve Goal allowances, Plan guards, native recovery priority, and held child reports.
+- Handle deferred recovery commands, unstarted requests, and edits to pending provider-aborted retry settings without queued surprise runs or stuck startup state.
+- Preserve requirements and truncation notices when JSON escaping expands a bounded brief; keep artifact paths whole and invalidate reports when declared references change.
+- Prevent old reset confirmations and late asynchronous restore results from clearing or replacing a newly selected branch.
+- Reject Profile saves exceeding the configuration's count or encoded size limits; keep the existing file intact on failure.
+
+### Performance
+
+- Skip readiness scans for unchanged tasks, reuse dependency indexes, cache the current Goal readiness projection, and extract fragment report heads without processing whole long outputs.
+- Bound configuration reads and allocations to their accepted sizes, including files that grow during reading.
+
+### Verification
+
+- Pi 1.0 and Pi 1.1 isolated offline suites each pass 669 tests; type, package, and hygiene checks pass. CPU microbenchmarks use synthetic large inputs and do not claim model billing or terminal latency improvements.
+
 ## [0.4.0] - 2026-10-10
 
 ### Added

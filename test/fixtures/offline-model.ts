@@ -17,6 +17,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
   pi.registerFlag('dag-test-context-metrics', { type: 'boolean', description: 'Offline test-only size measurements of the provider-facing context' });
   pi.registerFlag('dag-test-context-export', { type: 'boolean', description: 'Offline test-only full normalized context and provider output in non-model custom entries' });
   pi.registerFlag('dag-test-important-progress', { type: 'boolean', description: 'Offline controlled workload: write every Goal round, update only verified milestone rounds' });
+  pi.registerFlag('dag-test-retry-failures', { type: 'string', description: 'Offline /retry test: fail a RETRY-TEST request and its recoveries this many times' });
   let contextExportSequence = 0;
   const prefix = Date.now();
   pi.registerProvider("dag-test", {
@@ -68,10 +69,21 @@ export default function offlineModel(pi: ExtensionAPI): void {
             const text = typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
             return !['Workflow state checkpoint', 'Goal state checkpoint', 'Goal contract (', 'No active Goal. Do not continue automatically.', 'Plan: read/search/ask', 'Normal:', 'Available Todo presets (', 'No Todo presets are available.', 'Profile and fragment guidance for this child run.'].some((prefix) => text.startsWith(prefix)) && !/^Goal #\d+ paused/.test(text);
           });
+          const messageText = (item: { content?: unknown }): string => {
+            if (typeof item.content === "string") return item.content;
+            if (!Array.isArray(item.content)) return "";
+            return item.content.filter((part) => (part as { type?: string })?.type === "text").map((part) => (part as { text?: string }).text ?? "").join("\n");
+          };
           const last = relevant.at(-1);
           const latestUser = relevant.findLast((item) => item.role === "user");
-          const rawPrompt = latestUser?.role === "user" ? typeof latestUser.content === "string" ? latestUser.content : latestUser.content.filter((item) => item.type === "text").map((item) => item.text).join("\n") : "";
+          const rawPrompt = latestUser?.role === "user" ? messageText(latestUser) : "";
           const prompt = rawPrompt.startsWith('Resume attempt from ') && rawPrompt.includes('\nCurrent continuation task:\n') ? rawPrompt.split('\nCurrent continuation task:\n').at(-1)! : rawPrompt;
+          // /retry sends one generic recovery request. Map it back to the goal work still
+          // pending in this context (never replay TEST CALL commands), so a retry continues
+          // the same objective instead of behaving like a fresh, empty request.
+          const recovery = rawPrompt.startsWith('The last model request failed.');
+          const recovered = recovery ? relevant.filter((item) => item.role === 'user' && messageText(item).startsWith('Goal #')).at(-1) : undefined;
+          const workPrompt = recovery && recovered ? messageText(recovered) : prompt;
           const calls: { name: string; arguments: ToolCall["arguments"] }[] = [];
           if (last?.role !== "toolResult") {
             if (prompt === 'HOLD-IDLE-ENABLE-CHILD') {
@@ -89,13 +101,20 @@ export default function offlineModel(pi: ExtensionAPI): void {
             const explicit = /^TEST CALL (\w+) (\{[\s\S]*\})$/.exec(prompt);
             // Goal error-recovery tests: one Goal fails the first two requests, another fails until
             // its retry budget is spent. Only Goal turns fail; the test's own tool calls stay intact.
-            const goalWork = prompt.startsWith('Goal #') || prompt.includes('自动重试');
-            if (goalWork && prompt.includes('永久故障测试')) throw new Error('429 insufficient_quota: billing limit exhausted');
-            if (goalWork && prompt.includes('provider断流测试') && flaky++ === 0) {
+            const goalWork = workPrompt.startsWith('Goal #') || prompt.includes('自动重试');
+            // Optional bounded failures for /retry tests without a Goal: fail only the marked
+            // ordinary request and its recovery requests, never unrelated provider traffic.
+            const retryFailures = Number(pi.getFlag('dag-test-retry-failures') ?? 0) || 0;
+            if ((prompt.includes('RETRY-TEST') || recovery) && retryFailures > 0 && flaky < retryFailures) {
+              flaky++; throw new Error(flaky % 2 ? 'scripted provider failure (500)' : 'scripted provider failure (503 auth_unavailable)');
+            }
+            if (goalWork && workPrompt.includes('永久故障测试')) throw new Error('429 insufficient_quota: billing limit exhausted');
+            if (goalWork && workPrompt.includes('认证故障测试')) throw new Error('401 invalid_api_key: authentication failed');
+            if (goalWork && workPrompt.includes('provider断流测试') && flaky++ === 0) {
               message.stopReason = 'aborted'; message.errorMessage = 'provider stream disconnected';
               stream.push({ type: 'error', reason: 'aborted', error: message }); stream.end(); return;
             }
-            const round = Number(/^Goal #\d+ (\d+)\//.exec(prompt)?.[1] ?? 0);
+            const round = Number(/^Goal #\d+ (\d+)\//.exec(workPrompt)?.[1] ?? 0);
             if (goalWork && pi.getFlag('dag-test-repeated-overflow') === true && [1, 3, 5].includes(round) && !overflowRounds.has(round)) {
               overflowRounds.add(round); throw new Error('maximum context length exceeded');
             }
@@ -103,12 +122,18 @@ export default function offlineModel(pi: ExtensionAPI): void {
               overflowed = true; throw new Error('maximum context length exceeded');
             }
             if (prompt === '报告重试触发失败' && flaky < 1) { flaky++; throw new Error('scripted provider failure (500)'); }
-            if (goalWork && prompt.includes('出错重试测试') && flaky < 2) { flaky++; throw new Error(flaky === 1 ? 'scripted provider failure (500)' : 'scripted provider failure (503 auth_unavailable)'); }
-            if (goalWork && prompt.includes('出错暂停测试')) throw new Error('scripted provider failure (500)');
+            if (goalWork && workPrompt.includes('出错重试测试') && flaky < 2) { flaky++; throw new Error(flaky === 1 ? 'scripted provider failure (500)' : 'scripted provider failure (503 auth_unavailable)'); }
+            if (goalWork && workPrompt.includes('出错暂停测试')) throw new Error('scripted provider failure (500)');
             const childRequest = /requestId=([^\]]+)/.exec(prompt);
             if (goalWork && pi.getFlag('dag-test-plain-goal') === true && plainGoalPhase < 2) {
               calls.push(plainGoalPhase === 0 ? { name: 'todo', arguments: { action: 'update', id: 1, status: 'completed' } } : { name: 'goal', arguments: { action: 'get', id: 1 } });
               plainGoalPhase++;
+            }
+            else if (prompt === 'TEST SELECTED SKILL') {
+              const guidance = context.messages.map((item) => typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n')).find((text) => text.includes('Selected local skill file entries: '));
+              const paths = guidance && /Selected local skill file entries: (\[[^\n]*\])/.exec(guidance)?.[1];
+              const selected: unknown = paths ? JSON.parse(paths) : [];
+              if (Array.isArray(selected) && typeof selected[0] === 'string') calls.push({ name: 'read', arguments: { path: selected[0] } });
             }
             else if (prompt === 'CONTROL LONG CALL') calls.push({ name: 'bash', arguments: { command: 'printf ORIGINAL-STATE > original-state.txt; sleep 45; printf UNEXPECTED > old-completed.txt', timeout: 60 } });
             else if (prompt === 'CONTROL REDIRECT') calls.push({ name: 'read', arguments: { path: 'original-state.txt' } });
@@ -117,8 +142,8 @@ export default function offlineModel(pi: ExtensionAPI): void {
             else if (prompt === 'CONTROL REDIRECT QUESTION') calls.push({ name: 'write', arguments: { path: 'redirect-question.txt', content: 'CONTROL-SELF-DECIDED' } });
             else if (prompt === 'CONTROL REPORT HOLD' || prompt === 'CONTROL FRESH REPORT HOLD') calls.push({ name: 'subagent_send', arguments: { message: prompt === 'CONTROL REPORT HOLD' ? 'CONTROL-PROGRESS' : 'FRESH-CURRENT-PROGRESS' } });
             else if (prompt.startsWith('子 Agent 报告') && prompt.includes('RECOVERY-CHILD-RESULT')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
-            else if (goalWork && prompt.includes('出错重试测试') && flaky >= 2) calls.push({ name: 'goal', arguments: { action: 'complete' } });
-            else if (goalWork && prompt.includes('provider断流测试')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
+            else if (goalWork && workPrompt.includes('出错重试测试') && flaky >= 2) calls.push({ name: 'goal', arguments: { action: 'complete' } });
+            else if (goalWork && workPrompt.includes('provider断流测试')) calls.push({ name: 'goal', arguments: { action: 'complete' } });
             else if (prompt.startsWith('子 Agent 报告') && prompt.includes('M3预算提问') && childRequest) calls.push({ name: 'subagent_send', arguments: { requestId: childRequest[1]!, message: '按指定范围完成' } });
             else if (prompt.startsWith('Goal #') && prompt.includes('空闲续跑测试')) {
               const dispatched = relevant.some((item) => item.role === 'toolResult' && item.toolName === 'subagent_spawn');

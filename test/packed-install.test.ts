@@ -26,7 +26,7 @@ test('packed package loads all five resources and spawns a child without a priva
   const client = await IsolatedClient.start(undefined, 'packed-distribution', [], ['--dag-workflow-test-child-provider', offlineProvider], false, [packed]);
   t.after(() => client.close());
   const commands = ((await client.send('get_commands')).data as { commands: { name: string }[] }).commands.map((item) => item.name);
-  assert.deepEqual(commands.sort(), ['agents', 'dag', 'goal', 'plan', 'todos']);
+  assert.deepEqual(commands.sort(), ['agents', 'dag', 'goal', 'plan', 'retry', 'todos']);
   await client.prompt('/todos add distribution task');
   const spawned = await client.prompt('TEST CALL subagent_spawn {"task":"Inspect the distribution","todoId":1}');
   const spawnResult = spawned.find((item) => item.type === 'tool_execution_end' && item.toolName === 'subagent_spawn')!;

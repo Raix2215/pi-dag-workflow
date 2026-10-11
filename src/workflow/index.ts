@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { createHash } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { applyTodo, clearTodoRecords, emptyState, newlyReady, restoreState, validateTodoFields, STATE_TYPE, type TodoFilter, type TodoParams, type WorkflowState } from "../todos/state.ts";
@@ -13,6 +14,7 @@ import type { registerCheckpoints } from '../todos/checkpoints.ts';
 import { loadConfig, loadLocale, configPaths, type WorkflowConfig } from '../shared/config.ts';
 import { createTranslator } from '../shared/i18n.ts';
 import { latestBoundJobs, taskFilterStatus } from '../ui/filter.ts';
+import { registerRetry } from '../retry/register.ts';
 
 const WIDGET = "pi-dag-workflow.todos";
 export function createWorkflow(pi: ExtensionAPI) {
@@ -64,6 +66,8 @@ export function createWorkflow(pi: ExtensionAPI) {
   const activeState = () => modules.todos ? state : { ...state, tasks: noTasks };
   let lastPaint: { tasks: WorkflowState['tasks']; state: string; jobs: string; ui: ExtensionContext['ui']; theme: ExtensionContext['ui']['theme'] } | undefined;
   let goals: ReturnType<typeof registerGoal> | undefined;
+  let retry: ReturnType<typeof registerRetry> | undefined;
+  const retryScope = () => { const goal = goals?.recoveryGoal(); return createHash('sha256').update(JSON.stringify([state.plan, goal ? [goal.id, goal.title, goal.description, goal.status, goal.modelPause] : null])).digest('hex'); };
   let checkpoints: ReturnType<typeof registerCheckpoints> | undefined;
 
   function paint(ctx: ExtensionContext): void {
@@ -117,7 +121,7 @@ export function createWorkflow(pi: ExtensionAPI) {
     pi.appendEntry(STATE_TYPE, next);
     state = next;
     if (source === 'command' && (changedTasks || changedMode)) checkpoints?.changed(ids);
-    if (changedMode) { planNotice = true; guidance.mark(); }
+    if (changedMode) { retry?.cancel(msg('模式已改变，旧计时已取消')); planNotice = true; guidance.mark(); }
     paint(ctx);
     warnEphemeral(ctx);
   }
@@ -147,7 +151,7 @@ export function createWorkflow(pi: ExtensionAPI) {
   }
 
   function mutate(params: TodoParams, ctx: ExtensionContext, source: 'tool' | 'command' = 'tool') {
-    if (restoreError && params.action !== "list" && params.action !== "get") throw new Error(msg`状态恢复失败，不能修改：${restoreError}`);
+    if (restoreError && params.action !== "list" && params.action !== "get" && params.action !== 'status') throw new Error(msg`状态恢复失败，不能修改：${restoreError}`);
     if (params.action === 'clear') {
       validateTodoFields(params, msg);
       const before = state;
@@ -197,6 +201,14 @@ export function createWorkflow(pi: ExtensionAPI) {
         started.add(event); Object.assign(modules, noFeatures()); restoreEpoch++;
         restoredState = undefined; restoreError = undefined; warnedEphemeral = false; branchCache = undefined; configPromise = undefined; lastPaint = undefined;
         guidance.reset(); planNotice = false; guidanceOwner = undefined;
+        // Register only from an entry whose session_start survived project filtering.
+        retry ??= registerRetry(owner, { msg, branch: readBranch, scope: retryScope, mode: () => state.plan ? 'plan' : goals?.recoveryGoal() ? 'goal' : 'normal', protected: () => !!restoreError,
+          failed: (ctx, waiting) => goals?.failedRequest(ctx, waiting),
+          prepare: (ctx) => goals?.prepareErrorRecovery(ctx) ?? true,
+          undoPrepare: (ctx) => goals?.undoErrorRecovery(ctx),
+          beforeRetry: (ctx) => { if (goals) goals.beforeWake(ctx); else { checkpoints?.beforeWake(ctx); guidance.beforeWake(ctx, (message) => owner.sendMessage(message, { triggerTurn: false })); } },
+        });
+        retry.restore(ctx);
       }
       modules[feature] = true;
       if ((feature === 'todos' || feature === 'plan') && guidanceOwner === undefined) guidanceOwner = feature;
@@ -268,7 +280,7 @@ export function createWorkflow(pi: ExtensionAPI) {
         const [{ registerTodos }, { registerCheckpoints }] = await Promise.all([import('../todos/register.ts'), import('../todos/checkpoints.ts')]);
         checkpoints = registerCheckpoints(owner, { state: activeState, jobs, protected: () => !!restoreError, branch: readBranch });
         registerTodos(owner, { msg, state: () => state, mutate, commit, show, protected: () => !!restoreError,
-          presets: () => presetList, refreshPresets,
+          presets: () => presetList, refreshPresets, retryStatus: () => retry?.snapshot(),
           userPrompt: async (title, run) => { userPromptTitles.add(title); try { return await run(); } finally { userPromptTitles.delete(title); } },
           reset: (ctx) => { restoreError = undefined; commit(emptyState(), ctx); },
         });
@@ -282,8 +294,9 @@ export function createWorkflow(pi: ExtensionAPI) {
       if (feature === 'agents') {
         const { registerAgents } = await import('../agents/register.ts');
         agents = registerAgents(owner, { msg, state: activeState, mutate, paint, protected: () => !!restoreError, ui: () => modules.ui, branch: readBranch,
-        canWake: () => !modules.goal || (goals?.canWake() ?? false),
-        reserveWake: (ctx) => !modules.goal || (goals?.reserveWake(ctx, true) ?? false),
+        holdingRecovery: () => retry?.pending() ?? false,
+        canWake: () => !retry?.pending() && (!modules.goal || (goals?.canWake() ?? false)),
+        reserveWake: (ctx) => !retry?.pending() && (!modules.goal || (goals?.reserveWake(ctx, true) ?? false)),
         pauseAuto: (ctx) => { if (modules.goal) goals?.pause(msg('用户暂停自动工作'), ctx); },
         resumeAuto: () => !modules.goal || (goals?.resumeAgentReports() ?? false),
         beforeWake: (ctx) => {
@@ -296,8 +309,9 @@ export function createWorkflow(pi: ExtensionAPI) {
       if (feature === 'goal') {
         const { registerGoal } = await import('../goal/register.ts');
         goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError, branch: readBranch, loadConfig: readConfig,
-        pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: warnEphemeral,
-        isUserPrompt: (title) => title !== undefined && userPromptTitles.has(title),
+        pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: (ctx) => { retry?.refreshScope(); warnEphemeral(ctx); },
+        retryEnabled: () => retry?.snapshot().enabled ?? false, cancelRecovery: () => retry?.cancel(), retryStatus: () => retry?.snapshot(),
+        isUserPrompt: (title) => title !== undefined && (userPromptTitles.has(title) || retry?.isPrompt(title) === true),
         beforeWake: (ctx) => { checkpoints?.beforeWake(ctx); guidance.beforeWake(ctx, (message) => pi.sendMessage(message, { triggerTurn: false })); },
         });
       }

@@ -7,6 +7,7 @@ import { getPackageDir } from '@earendil-works/pi-coding-agent';
 import { CHILD_NOTICE_PREFIX, CHILD_QUESTION_PREFIX } from "./child.ts";
 import { ProfileStore, THINKING_LEVELS, type ModelRef, type ThinkingLevel } from "./profiles.ts";
 import { agentFailure, safeDiagnostic, type AgentFailure } from './diagnostics.ts';
+import { CHILD_SKILLS_ENV, skillFiles } from './skills.ts';
 
 export type JobStatus = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface JobSummary {
@@ -316,10 +317,13 @@ export class AgentRuntime {
     this.changed(job); // Reserve the slot before the first await; concurrent spawn cannot exceed the limit.
     try {
       if (job.finishing) { await job.finishing; return structuredClone(job.summary); }
+      const startupSignal = input.signal ? AbortSignal.any([input.signal, job.startupAbort!.signal]) : job.startupAbort!.signal;
+      const selectedSkills = await abortable(skillFiles(profile.skills, this.options.cwd, profile.tools, startupSignal), startupSignal);
+      checkAbort(input.signal);
+      if (job.finishing) { await job.finishing; return structuredClone(job.summary); }
       const cli = this.options.testCliPath ?? resolvePiCli();
       let bootstrapEnv: NodeJS.ProcessEnv = {};
       if (this.options.getModelBootstrap) {
-        const startupSignal = input.signal ? AbortSignal.any([input.signal, job.startupAbort!.signal]) : job.startupAbort!.signal;
         const bootstrap = await abortable(this.options.getModelBootstrap(profile.model), startupSignal);
         checkAbort(input.signal);
         if (job.finishing) { await job.finishing; return structuredClone(job.summary); }
@@ -328,7 +332,12 @@ export class AgentRuntime {
       checkAbort(input.signal);
       const childExtension = fileURLToPath(new URL("./child.ts", import.meta.url));
       const args = ["--mode", "rpc", "--no-session", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve", "--provider", profile.model.provider, "--model", profile.model.id, "--tools", [...profile.tools, "subagent_send"].join(","), "-e", childExtension, ...(this.options.testExtensions ?? []).flatMap((path) => ["-e", path])];
-      job.pipe = new RpcPipe(cli, args, this.options.cwd, { ...process.env, ...this.options.childEnv, ...bootstrapEnv, ...(profile.instructions ? { PI_DAG_AGENT_PROFILE_PROMPT: profile.instructions } : {}), ...(input.context ? { PI_DAG_AGENT_CONTEXT: input.context } : {}), PI_OFFLINE: "1", PI_DAG_CHILD: "1" }, (record) => this.record(job, record), (error) => { void this.finish(job, "failed", "Child process failed", error.message); });
+      const childEnv = { ...process.env, ...this.options.childEnv, ...bootstrapEnv };
+      // Selection-only guidance must not be inherited accidentally from the parent environment.
+      delete childEnv.PI_DAG_AGENT_PROFILE_PROMPT; delete childEnv.PI_DAG_AGENT_CONTEXT; delete childEnv[CHILD_SKILLS_ENV];
+      delete childEnv.PI_DAG_AGENT_MODEL_BOOTSTRAP;
+      if (bootstrapEnv.PI_DAG_AGENT_MODEL_BOOTSTRAP !== undefined) childEnv.PI_DAG_AGENT_MODEL_BOOTSTRAP = bootstrapEnv.PI_DAG_AGENT_MODEL_BOOTSTRAP;
+      job.pipe = new RpcPipe(cli, args, this.options.cwd, { ...childEnv, ...(profile.instructions ? { PI_DAG_AGENT_PROFILE_PROMPT: profile.instructions } : {}), ...(input.context ? { PI_DAG_AGENT_CONTEXT: input.context } : {}), ...(selectedSkills.length ? { [CHILD_SKILLS_ENV]: JSON.stringify(selectedSkills) } : {}), PI_OFFLINE: "1", PI_DAG_CHILD: "1" }, (record) => this.record(job, record), (error) => { void this.finish(job, "failed", "Child process failed", error.message); });
       await job.pipe.command("get_state", {}, input.signal);
       if (job.finishing) { await job.finishing; return structuredClone(job.summary); }
       // CLI model lookup permits fuzzy IDs. RPC set_model must resolve the exact registry ID.

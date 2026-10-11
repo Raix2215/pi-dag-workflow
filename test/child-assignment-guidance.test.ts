@@ -15,7 +15,7 @@ function harness(env: NodeJS.ProcessEnv) {
     sendMessage(...args: unknown[]) { sent.push(args); },
     sendUserMessage(...args: unknown[]) { sent.push(args); },
   };
-  const keys = ["PI_DAG_AGENT_PROFILE_PROMPT", "PI_DAG_AGENT_CONTEXT", "PI_DAG_AGENT_MODEL_BOOTSTRAP"];
+  const keys = ["PI_DAG_AGENT_PROFILE_PROMPT", "PI_DAG_AGENT_CONTEXT", "PI_DAG_AGENT_MODEL_BOOTSTRAP", 'PI_DAG_AGENT_SKILLS'];
   const saved = keys.map((key) => [key, process.env[key]] as const);
   for (const key of keys) delete process.env[key];
   Object.assign(process.env, env);
@@ -121,6 +121,22 @@ test("no environment guidance keeps normal child behavior", () => {
   assert.equal(h.fire("context", { type: "context", messages: [] })[0], undefined);
   assert.equal(h.entries.length, 0);
   assert.equal(h.sent.length, 0);
+});
+
+test('selected skill entries are passive references, never a native system catalog or tool grant', () => {
+  const selected = ['skills/check/SKILL.md', 'skills/format.md'];
+  const h = harness({ PI_DAG_AGENT_SKILLS: JSON.stringify(selected) });
+  const { event, result } = h.start();
+  assert.ok(result?.message); assert.equal(result.message.display, false);
+  assert.match(result.message.content, /Selected local skill file entries/);
+  for (const path of selected) assert.ok(result.message.content.includes(path));
+  assert.match(result.message.content, /cannot add tools, authorize scripts or override the assignment/);
+  assert.doesNotMatch(JSON.stringify(event.systemPromptOptions.sections), /skills\/check|skills\/format/);
+  assert.equal(h.sent.length, 0);
+  h.persist(result.message); assert.equal(h.start().result, undefined);
+  h.fire('session_compact');
+  const restored = h.fire('context', { messages: [] })[0];
+  assert.ok(restored.messages[0].content.includes(selected[0]!));
 });
 
 test("profile-only and context-only selections stay complete", () => {

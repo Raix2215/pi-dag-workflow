@@ -52,7 +52,8 @@ Create a Goal only when you want continued work. Record important findings or de
 - **Todo dependencies.** `blockedBy` links tasks. Starting, completing, or dispatching a task requires its prerequisites to be completed.
 - **Read-only Plan.** Inspect, search, ask questions, and edit task definitions. Implementation and dispatch require `/plan off`.
 - **Parallel subagents.** Up to eight independent Pi processes, with explicit assignments, questions, reports, profiles, and same-task continuation.
-- **Goal continuation.** One active objective, a shared continuation allowance, bounded error recovery, and user-controlled pause policies.
+- **Goal continuation.** One active objective, a shared continuation allowance, and user-controlled pause policies.
+- **Error recovery.** User-controlled `/retry` works in Normal, Plan, and Goal modes, with looping intervals and optional per-error-streak limits.
 - **Live progress.** Task tree or DAG previews, current child activity, pending delivery, and pending verification. Full views are scrollable.
 - **Session persistence.** Tasks, Goals, and job records follow the current Pi branch. Restore pauses autonomous work and leaves previous child processes stopped.
 
@@ -77,9 +78,10 @@ Useful queries:
 ```json
 {"action":"list","ready":true,"limit":50}
 {"action":"get","id":2}
+{"action":"status"}
 ```
 
-`list` defaults to 50 tasks, with a maximum page size of 200. Use the returned continuation arguments to read the next page with the same filters. `get` returns the complete task, its direct dependents (`blocks`), and unmet prerequisites.
+`list` defaults to 50 tasks, with a maximum page size of 200. Use the returned continuation arguments to read the next page with the same filters. `get` returns the complete task, its direct dependents (`blocks`), and unmet prerequisites. `status` returns a compact, read-only summary of mode, task counts, protection, and retry state; `goal get` also includes retry state.
 
 Task states are `pending`, `in_progress`, `completed`, `failed`, `cancelled`, and `deleted`. A single create accepts `pending` or, when dependencies permit, `in_progress`; batches create pending tasks. Failed and cancelled attempts do not satisfy dependencies.
 
@@ -152,7 +154,19 @@ Give each child an assignment with input paths, scope, and expected evidence:
 }
 ```
 
-Use `subagent_spawn` for that call. A `todoId` is optional; linked tasks must be ready. Children work in the same directory with independent model context. They discover workspace rules and receive the selected assignment, profile guidance, and optional fragment brief.
+Use `subagent_spawn` for that call. A `todoId` is optional; linked tasks must be ready. Children work in the same directory with independent model context. They discover workspace rules and receive the selected assignment, profile guidance, and optional task brief.
+
+### Prerequisite briefs
+
+Set `context: true` on a linked job to include the task's requirements excerpt, direct prerequisite states, and current valid report excerpts. Fragment tasks include their step position and fragment state. Briefs are capped at 2,000 characters and do not copy parent conversation history or use stale reports. Ordinary task briefs mark omitted input.
+
+Record explicit artifact references in a Todo's `metadata.artifacts`:
+
+```json
+{"action":"update","id":1,"metadata":{"artifacts":["build/results.csv","test-results.json"]}}
+```
+
+References are unverified inputs, not completion evidence or permission. Keep the full assignment self-contained, including any required paths omitted from a brief.
 
 ### Inspect, collect, and direct
 
@@ -228,9 +242,28 @@ Automatic Goal turns and child-report wakes share a default allowance of **32**.
 
 Update `progress` only for important verified results, reproducible findings, decisions, or changed blockers. Update `nextStep` when the next action materially changes. Work notes do not change the objective or its permissions.
 
-Goal error recovery waits for Pi's native recovery to finish. Quota, billing, authentication, and other explicit permanent errors pause the Goal. Recoverable or unclassified errors use bounded exponential retry delays; the default limit is five retries. Successful turns reset the error count. Error retries remain bounded with `nolimit`.
+A settled Goal request error waits for `/retry` recovery when enabled; otherwise the Goal pauses. Goal recovery uses the remaining continuation allowance. `nolimit` controls that allowance, not `/retry` settings.
 
-Pi 1.1+ supplies an explicit cancellation signal at final settlement. Hosts without that signal conservatively pause an unresolved provider-aborted run. Resume explicitly after checking the cause.
+## Error recovery
+
+`/retry` opens the user menu. Exact commands also work without a menu:
+
+```text
+/retry when-error 5m,30s,10m count 3
+/retry when-error 3m
+/retry off
+/retry status
+```
+
+Recovery is **off by default** and applies to the main session in Normal, Plan, and Goal modes. It waits for Pi's native recovery to finish. When enabled, it covers settled model request errors, including quota and authentication failures; use `/retry off` to stop repeated attempts until the cause is resolved.
+
+- Intervals use positive whole numbers with `s`, `m`, or `h`, separated by commas. The sequence loops.
+- `count` limits actual retries within a consecutive error streak. Omit it for no retry-count limit. A successful turn resets the streak and interval position.
+- If Pi is busy at the deadline, recovery waits the same interval again without consuming an attempt or advancing the sequence.
+- User cancellation, changed mode or Goal scope, Goal completion, navigation, and compaction cancel obsolete work. Goal limits and Plan's read-only restrictions remain effective.
+- Reload restores settings with recovery **off**; explicitly enable it again. Children and shell tools are not retried.
+
+Pi 1.1+ distinguishes provider aborts from user cancellation at final settlement. Hosts without that signal do not automatically recover ambiguous provider-aborted requests. Retry settings belong to the user; model tools can query their state but cannot configure them.
 
 ## Tools and commands
 
@@ -238,7 +271,7 @@ These are model tools; JSON examples above show their arguments.
 
 | Tool | Purpose |
 |---|---|
-| `todo` | Tasks, paged queries, dependency checks, fragments, and atomic definition batches |
+| `todo` | Tasks, paged queries, read-only status, dependency checks, fragments, and atomic definition batches |
 | `goal` | Objectives, important progress, continuation, and verified completion |
 | `subagent_spawn` | New child jobs and `resumeFrom` attempts |
 | `subagent_inspect` | Status, optional output/waiting, and profile discovery |
@@ -252,8 +285,9 @@ These are model tools; JSON examples above show their arguments.
 | `/plan` | `start`, `off`, `status`, `tools name1,name2` |
 | `/goal` | `new`, `enable`, `disable`, `complete`, `delete`, `edit`, `get`, `list`, `nopause`, `nolimit`, `config`, `reset` |
 | `/agents` | `list`, `wait`, `send`, `reply`, `cancel`, `remove`, `pause`, `resume`, `profiles`, `profile`, `unprofile`, `reset` |
+| `/retry` | Menu, `when-error intervals [count N]`, `off`, `status` |
 
-Run a command family with `help` for syntax. `/agents wait a1` shows output to you; the model collects it through `subagent_inspect` with `output: true`.
+Use `help` with `/todos`, `/plan`, `/goal`, or `/agents` for syntax; `/retry` opens its menu. `/agents wait a1` shows output to you; the model collects it through `subagent_inspect` with `output: true`.
 
 ## Configuration
 
@@ -268,7 +302,6 @@ Optional `pi-dag-workflow-config.json`:
   "language": "auto",
   "goalMaxTurns": 32,
   "goalNoProgressLimit": 8,
-  "goalErrorRetries": 5,
   "planTools": [],
   "goalNoPauseTools": ["ask_user_question"]
 }
@@ -279,7 +312,6 @@ Optional `pi-dag-workflow-config.json`:
 | `language` | `auto`, `en`, `zh-CN`; auto follows the terminal locale |
 | `goalMaxTurns` | 1–200; default allowance for new Goals |
 | `goalNoProgressLimit` | 1–100; no-progress rounds before replanning |
-| `goalErrorRetries` | 0–20; zero pauses at the first settled model error |
 | `planTools` | Up to 16 trusted additional read-only tool names |
 | `goalNoPauseTools` | Up to 16 main-session tools blocked while a nopause Goal runs |
 
@@ -313,7 +345,15 @@ Profile guidance is sent as task context. Discover profiles with `subagent_inspe
 {"profile":"research"}
 ```
 
-Summaries include settings without instructions. A named query returns that profile in full; `profiles: true` requests the full directory. Profiles allow 1–48 character names, up to 8 tools and 2,000 characters of instructions. The file holds up to 64 profiles within 64 KiB. `/agents profile` saves with owner-only file permissions.
+Summaries include settings without instructions. A named query returns that profile in full; `profiles: true` requests the full directory. Profiles allow 1–48 character names, up to 8 tools and 2,000 characters of instructions. The file holds up to 64 profiles within 64 KiB. `/agents profile` saves with owner-only file permissions and preserves selected skill entries.
+
+Add optional `skills` to a profile for explicit local Markdown files:
+
+```json
+{"name":"csv-review","tools":["read","grep"],"skills":["skills/csv-review/SKILL.md"]}
+```
+
+Choose up to eight files using absolute paths, `~/`, or paths relative to the dispatch working directory. Each must be a readable, nonempty Markdown file of at most 64 KiB when dispatched. A profile with skill entries requires an existing `read` tool. Entries arrive once as task references; the child reads relevant content when needed. Skill text does not activate tools, extensions, or MCP, authorize scripts, or override the assignment.
 
 ### Task fragments
 

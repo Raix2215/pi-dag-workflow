@@ -61,7 +61,7 @@ test('Goal-only and UI-only never read Todo/preset state or fail on disabled cor
     try { await h.fire('session_start'); assert.equal(loads, 0); assert.equal(h.dataReads(), 0); assert.equal((await h.call('goal', { action: 'create', title: 'independent' })).isError, undefined); }
     finally { await h.close(); }
     const ui = await host(['ui']);
-    try { await ui.fire('session_start'); assert.equal(ui.reads(), 0); assert.equal(loads, 0); }
+    try { await ui.fire('session_start'); assert.equal(ui.reads(), 1, 'shared retry settings restore once, without reading Todo data'); assert.equal(loads, 0); }
     finally { await ui.close(); }
   } finally { PresetStore.prototype.load = original; }
 });

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readConfigText } from '../shared/config-file.ts';
 import type { Todo } from "./state.ts";
 
 /**
@@ -92,9 +92,8 @@ export class PresetStore {
   async load(): Promise<void> {
     if (!this.options.path) { this.presets.clear(); return; }
     let source: string;
-    try { source = await readFile(this.options.path, "utf8"); }
+    try { source = await readConfigText(this.options.path, MAX_FILE_BYTES, 'Preset configuration exceeds 64 KiB'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { this.presets.clear(); return; } throw error; }
-    if (Buffer.byteLength(source) > MAX_FILE_BYTES) throw new Error("Preset configuration exceeds 64 KiB");
     const config = object(JSON.parse(source));
     exactKeys(config, ["presets"]);
     if (!Array.isArray(config.presets) || config.presets.length > MAX_PRESETS) throw new Error(`presets must contain at most ${MAX_PRESETS} presets`);

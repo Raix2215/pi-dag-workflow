@@ -3,19 +3,20 @@ import { afterEach, test } from 'node:test';
 import { registerGoal } from '../src/goal/register.ts';
 import { emptyState, type Todo } from '../src/todos/state.ts';
 import { GOAL_TYPE, type GoalParams } from '../src/goal/state.ts';
+import { defaultConfig } from '../src/shared/config.ts';
 
 const cleanups = new Set<() => Promise<unknown>>();
 afterEach(async () => { await Promise.all([...cleanups].map((cleanup) => cleanup())); cleanups.clear(); });
 
-function host(retryDelayMs = 0, leafAware = false) {
+function host(leafAware = false) {
   const events = new Map<string, Function[]>();
   const tools = new Map<string, any>(); const commands = new Map<string, any>();
-  let workflow = emptyState(); let jobs: any[] = []; let protectedState = false; let idle = false;
+  let workflow = emptyState(); let jobs: any[] = []; let protectedState = false; let idle = false; let retryEnabled = false;
   const entries: any[] = []; const notifications: string[] = []; const wakes: any[] = []; const passive: any[] = [];
   let messageSeq = 0; let branchReads = 0;
   const ctx: any = { cwd: '/tmp', mode: 'rpc', hasUI: true, isIdle: () => idle, sessionManager: { getBranch: () => { branchReads++; return entries; }, ...(leafAware ? { getLeafId: () => String(entries.length) } : {}) }, ui: { notify: (text: string) => notifications.push(text), confirm: async () => true } };
   const pi: any = { on(name: string, handler: Function) { events.set(name, [...events.get(name) ?? [], handler]); return () => {}; }, registerTool(tool: any) { tools.set(tool.name, tool); }, registerCommand(name: string, cmd: any) { commands.set(name, cmd); }, appendEntry(customType: string, data: any) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any, options: any) { (options?.triggerTurn === false ? passive : wakes).push({ message, options }); }, sendUserMessage(message: string) { wakes.push({ message, options: { source: 'extension' } }); } };
-  const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, retryDelayMs, resumeDelayMs: 0 });
+  const controller = registerGoal(pi, { state: () => workflow, jobs: () => jobs, paint() {}, protected: () => protectedState, pauseAgents() {}, resumeAgents() {}, resumeDelayMs: 0, retryEnabled: () => retryEnabled, loadConfig: async () => defaultConfig() });
   const fire = async (name: string, event: any = {}) => {
     if (name === 'turn_end' || name === 'agent_before_settle') event.entries ??= [];
     let result: any;
@@ -44,26 +45,26 @@ function host(retryDelayMs = 0, leafAware = false) {
   // A settled run schedules its retry on a timer; drain it before asserting.
   const settled = async () => { await fire('agent_settled', { aborted: false }); await new Promise((resolve) => setTimeout(resolve, 0)); };
   const retries = () => wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-retry').length;
-  return { ctx, controller, fire, call, settle, propose, startTurn, enable, settled, message, retries, entries, notifications, wakes, passive, branchReads: () => branchReads, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, setTasks(tasks: Todo[]) { workflow = { ...workflow, tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 }; }, commands };
+  return { ctx, controller, fire, call, settle, propose, startTurn, enable, settled, message, retries, entries, notifications, wakes, passive, branchReads: () => branchReads, setPlan(value: boolean) { workflow = { ...workflow, plan: value }; }, setJobs(value: any[]) { jobs = value; }, setIdle(value: boolean) { idle = value; }, setProtected(value: boolean) { protectedState = value; }, setRetryEnabled(value: boolean) { retryEnabled = value; }, setTasks(tasks: Todo[]) { workflow = { ...workflow, tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 }; }, commands };
 }
 
 test('ordinary input without a Goal never reads session history; leaf-aware failure cache invalidates on changes', async () => {
   const empty = host();
   for (let i = 0; i < 30; i++) await empty.fire('input', { source: 'rpc', text: 'ordinary work' });
   assert.equal(empty.branchReads(), 0);
-  const h = host(0, true); await h.enable();
+  const h = host(true); await h.enable(); h.setRetryEnabled(true);
   await h.fire('input', { source: 'rpc', text: 'same leaf' });
   const reads = h.branchReads();
   for (let i = 0; i < 10; i++) await h.fire('input', { source: 'rpc', text: 'same leaf' });
   assert.equal(h.branchReads(), reads);
   h.message('error'); h.setIdle(true); await h.settled();
-  assert.equal(h.retries(), 1);
+  assert.equal(h.retries(), 0, 'Goal does not create its own recovery timer');
   assert.ok(h.branchReads() > reads, 'a new leaf is not served from the old cache');
   await h.fire('session_before_compact', { willRetry: false });
   h.entries.push({ type: 'compaction', id: 'changed-boundary' });
   await h.fire('session_compact', { willRetry: false });
   await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.equal(h.retries(), 1);
+  assert.equal(h.retries(), 0);
   assert.equal(h.wakes.some((wake) => wake.message?.customType === 'pi-dag-workflow.goal-continue'), true);
 });
 
@@ -92,66 +93,44 @@ test('mock host: shared Agent/Goal wakes consume one allowance, never reset on s
   await h.call({ action: 'enable', id: 1 }); // User explicitly enables after the input, so this is a resume.
   assert.equal(state.run.used, 2);
 });
-test('mock host: a model error retries automatically and keeps the goal active', async () => {
+test('mock host: Goal pauses on error by default without its own retry timer', async () => {
   const h = host(); await h.enable(); h.setIdle(true);
-  assert.equal(h.controller.snapshot().run.errorRetries, undefined);
-  // One failure reports at turn_end, agent_end and agent_before_settle: it must retry once, and only
-  // after the run settled, so Pi can finish its own recovery attempt first.
   h.message('error');
   await h.fire('turn_end', { outcome: 'error' });
   await h.fire('agent_before_settle', { outcome: 'error', continue: false });
-  assert.equal(h.retries(), 0, 'an unsettled run has not failed out yet');
+  assert.equal(h.retries(), 0);
   await h.settled();
-  const state = h.controller.snapshot();
-  assert.equal(state.run.paused, false, 'a recoverable error must not pause the goal');
-  assert.equal(state.run.errorRetries, 1);
-  assert.equal(h.retries(), 1, 'the same failure must not queue two retries');
-  assert.equal(h.notifications.filter((line) => line.includes('自动重试')).length, 1);
+  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.equal(h.controller.snapshot().run.errorRetries, undefined);
+  assert.match(h.controller.snapshot().run.reason!, /retry/);
+  assert.equal(h.retries(), 0);
 });
 
-test('mock host: each failure earns its own retry while the budget lasts', async () => {
+test('mock host: repeated failures do not revive the old five-attempt Goal recovery', async () => {
   const h = host(); await h.enable(); h.setIdle(true);
-  // Two failures inside one run stay one retry: the newest failed request names the failure.
-  h.message('error'); h.message('error');
-  await h.settled();
-  assert.equal(h.retries(), 1);
-  assert.equal(h.controller.snapshot().run.errorRetries, 1);
-  // The retry turn failing again is a new failure, so the next retry follows.
-  h.message('error');
-  await h.settled();
-  assert.equal(h.retries(), 2, 'a later failure is never swallowed by the previous retry');
-  assert.equal(h.controller.snapshot().run.errorRetries, 2);
-  // A settled run that ends on success never retries.
-  h.message('stop');
-  await h.settled();
-  assert.equal(h.retries(), 2);
+  for (let index = 0; index < 7; index++) { h.message('error'); await h.settled(); }
+  assert.equal(h.retries(), 0);
+  assert.equal(h.controller.snapshot().run.errorRetries, undefined);
+  assert.equal(h.controller.snapshot().run.paused, true);
 });
 
-test('mock host: retries stop at the configured limit and a successful turn clears the counter', async () => {
-  const h = host(); await h.enable(); h.setIdle(true);
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    h.message('error');
-    await h.settled();
-    assert.equal(h.controller.snapshot().run.paused, false, `attempt ${attempt} stays active`);
-    assert.equal(h.controller.snapshot().run.errorRetries, attempt);
-  }
-  h.message('error');
-  await h.settled();
-  const exhausted = h.controller.snapshot();
-  assert.equal(exhausted.run.paused, true, 'the sixth failure pauses');
-  assert.match(exhausted.run.reason!, /已重试 5 次/);
-  assert.equal(h.retries(), 5);
-
-  // A completed turn resets the budget for the next failure.
-  const fresh = host(); await fresh.enable(); fresh.setIdle(true);
-  fresh.message('error');
-  await fresh.settled();
-  assert.equal(fresh.controller.snapshot().run.errorRetries, 1);
-  await fresh.fire('turn_end', { outcome: 'completed' });
-  assert.equal(fresh.controller.snapshot().run.errorRetries, 0);
-  fresh.message('error');
-  await fresh.settled();
-  assert.equal(fresh.controller.snapshot().run.errorRetries, 1, 'a successful turn restores the full budget');
+test('Goal recovery reservations use remaining allowance, refund unstarted work, and never create timers', async () => {
+  const h = host(); await h.enable(3); h.setRetryEnabled(true); h.setIdle(true);
+  h.message('error'); await h.settled();
+  assert.equal(h.controller.snapshot().run.paused, false);
+  assert.equal(h.controller.canWake(), false, 'hold child-report wakes while the request has failed');
+  assert.equal(h.controller.prepareErrorRecovery(h.ctx), true);
+  assert.equal(h.controller.snapshot().run.used, 1);
+  h.controller.undoErrorRecovery(h.ctx);
+  assert.equal(h.controller.snapshot().run.used, 0, 'an unstarted request is refundable');
+  assert.equal(h.controller.prepareErrorRecovery(h.ctx), true);
+  await h.startTurn();
+  assert.equal(h.controller.snapshot().run.used, 1);
+  assert.equal(h.controller.snapshot().run.pendingWake, undefined);
+  assert.equal((await h.call({ action: 'update', title: 'expanded without user input' })).isError, true);
+  h.message('stop'); await h.fire('turn_end', { outcome: 'completed' });
+  assert.equal(h.controller.canWake(), true);
+  assert.equal(h.retries(), 0, 'the shared retry component, not Goal, sends recovery messages');
 });
 
 test('mock host: a user abort never retries', async () => {
@@ -165,7 +144,7 @@ test('mock host: a user abort never retries', async () => {
   assert.equal(h.retries(), 0);
 });
 
-test('provider aborted without a user abort recovers once after settlement', async () => {
+test('provider abort without a user stop still requires an explicit retry setting', async () => {
   const h = host(); await h.enable(); h.setIdle(true);
   h.ctx.signal = new AbortController().signal;
   h.message('aborted', 'connection reset while reading stream');
@@ -175,8 +154,8 @@ test('provider aborted without a user abort recovers once after settlement', asy
   assert.equal(h.controller.snapshot().run.paused, false);
   assert.equal(h.retries(), 0, 'native recovery gets the first opportunity');
   await h.settled(); await h.settled();
-  assert.equal(h.retries(), 1, 'several boundary events still name one failed request');
-  assert.equal(h.controller.snapshot().run.paused, false);
+  assert.equal(h.retries(), 0);
+  assert.equal(h.controller.snapshot().run.paused, true);
 });
 
 test('a real user signal abort takes priority over recoverable provider text', async () => {
@@ -271,31 +250,27 @@ test('mock host: explicit idle enable reserves and starts once; unknown extra ar
   assert.match(h.wakes[0].message, /Goal #1[\s\S]*不是用户新授权/);
 });
 
-test('the last paid wake still receives its independent error retries before the allowance pause', async () => {
-  const h = host(30); await h.enable(1); await h.settle();
+test('a failed last paid wake stops at the Goal allowance without extra retries', async () => {
+  const h = host(); await h.enable(1); await h.settle();
   assert.equal(h.controller.snapshot().run.used, 1);
-  h.setIdle(true); h.message('error'); await h.fire('agent_settled');
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(h.retries(), 1, 'idle fallback cannot preempt error recovery with a budget pause');
-  assert.equal(h.controller.snapshot().run.paused, false);
-  assert.equal(h.controller.snapshot().run.used, 1, 'error retries do not consume a second wake');
-  h.message('stop'); await h.fire('agent_settled');
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  h.setRetryEnabled(true); h.setIdle(true); h.message('error'); await h.settled();
+  assert.equal(h.retries(), 0);
   assert.equal(h.controller.snapshot().run.paused, true);
+  assert.equal(h.controller.snapshot().run.used, 1);
   assert.match(h.controller.snapshot().run.reason!, /上限/);
+  assert.equal(h.controller.prepareErrorRecovery(h.ctx), false);
 });
 
-test('mock host: a newer settled failure during the delay replaces the pending retry', async () => {
-  const h = host(30); await h.enable(); h.setIdle(true);
-  h.message('error'); await h.fire('agent_settled');
-  h.message('error'); await h.fire('agent_settled');
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(h.retries(), 1, 'one retry must address the newest failure instead of silently dropping both');
-  assert.equal(h.controller.snapshot().run.errorRetries, 1);
+test('Goal leaves repeated settled failures to the shared retry component', async () => {
+  const h = host(); await h.enable(); h.setRetryEnabled(true); h.setIdle(true);
+  h.message('error'); await h.settled(); h.message('error'); await h.settled();
+  assert.equal(h.retries(), 0);
+  assert.equal(h.controller.snapshot().run.errorRetries, undefined);
+  assert.equal(h.controller.canWake(), false);
 });
 
 test('mock host: a pending retry belongs to the failed goal, not a newly enabled goal', async () => {
-  const h = host(30); await h.enable(); h.setIdle(true);
+  const h = host(); await h.enable(); h.setIdle(true);
   h.message('error'); await h.fire('agent_settled');
   await h.call({ action: 'create', title: '第二个目标' });
   await h.commands.get('goal').handler('disable #1', h.ctx);
@@ -307,7 +282,7 @@ test('mock host: a pending retry belongs to the failed goal, not a newly enabled
 
 test('mock host: user input and cancelled navigation retire pending retries', async () => {
   for (const event of ['input', 'session_before_tree', 'session_before_fork', 'session_before_switch']) {
-    const h = host(30); await h.enable(); h.setIdle(true);
+    const h = host(); await h.enable(); h.setIdle(true);
     h.message('error'); await h.fire('agent_settled');
     await h.fire(event, { source: 'rpc', text: '我来处理' });
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -317,7 +292,7 @@ test('mock host: user input and cancelled navigation retire pending retries', as
 
 test('mock host: a user dialog or aborted turn cancels a retry that has not fired', async () => {
   for (const [event, detail] of [['ui_prompt_start', { kind: 'input' }], ['turn_end', { outcome: 'aborted' }]] as const) {
-    const h = host(30); await h.enable(); h.setIdle(true);
+    const h = host(); await h.enable(); h.setIdle(true);
     h.message('error'); await h.fire('agent_settled');
     await h.fire(event, detail);
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -330,6 +305,7 @@ test('mock host: an automatic retry does not inherit scope-changing authority fr
   const h = host(); await h.enable(); h.setIdle(true);
   await h.fire('input', { source: 'rpc', text: '继续当前范围' });
   h.message('error'); await h.settled();
+  assert.equal(h.controller.prepareErrorRecovery(h.ctx), true); await h.startTurn();
   assert.equal((await h.call({ action: 'update', title: '扩大范围' })).isError, true);
 });
 
@@ -486,34 +462,35 @@ test('successful shell work prevents a false no-progress pause when no Todo or p
   await h.fire('session_shutdown');
 });
 
-test('a retired pre-compaction error cannot strand an active Goal after successful compaction', async () => {
-  const h = host(); await h.enable(4); h.setIdle(true);
+test('a pre-compaction error cannot strand an active Goal waiting for shared recovery', async () => {
+  const h = host(); await h.enable(4); h.setRetryEnabled(true); h.setIdle(true);
   h.message('error'); await h.settled();
-  assert.equal(h.retries(), 1);
+  assert.equal(h.retries(), 0);
   await h.fire('session_before_compact', { reason: 'manual', willRetry: false });
   h.entries.push({ type: 'compaction', id: 'compact-after-retired-failure' });
   await h.fire('session_compact', { reason: 'manual', willRetry: false });
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(h.controller.snapshot().run.paused, false);
-  assert.equal(h.retries(), 1, 'an error from before the successful compaction is not a new failed request');
+  assert.equal(h.retries(), 0, 'Goal never creates an error timer of its own');
   assert.equal(h.wakes.filter((wake) => wake.message?.customType === 'pi-dag-workflow.goal-continue').length, 1, 'the retained retry id must not suppress continuation forever');
 });
 
-test('a post-compaction error still gets a bounded retry and user/budget pauses stay stopped', async () => {
-  const h = host(); await h.enable(4); h.setIdle(true);
+test('a post-compaction error still waits for shared recovery and user pauses stay stopped', async () => {
+  const h = host(); await h.enable(4); h.setRetryEnabled(true); h.setIdle(true);
   h.message('error');
   await h.fire('session_before_compact', { reason: 'overflow', willRetry: true });
   h.entries.push({ type: 'compaction', id: 'successful-overflow-boundary' });
   await h.fire('session_compact', { reason: 'overflow', willRetry: true });
   h.message('error'); // This is a new failed request after the successful compaction.
   await h.settled();
-  assert.equal(h.retries(), 1);
-  assert.equal(h.controller.snapshot().run.errorRetries, 1);
+  assert.equal(h.retries(), 0);
+  assert.equal(h.controller.snapshot().run.errorRetries, undefined);
+  assert.equal(h.controller.canWake(), false);
   await h.commands.get('goal').handler('disable', h.ctx);
   await h.fire('agent_settled');
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(h.controller.snapshot().run.paused, true);
-  assert.equal(h.retries(), 1);
+  assert.equal(h.retries(), 0);
 });
 
 test('native overflow retry takes priority over an idle fallback wake after compaction', async () => {
