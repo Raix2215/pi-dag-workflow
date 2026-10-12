@@ -200,8 +200,14 @@ test('expiry during a pending RPC select does not commit the cursor or return an
   const pending = choose(fake.ctx, 'Pick', items(10), { cursor, isCurrent: () => current });
   await new Promise((resolve) => setTimeout(resolve, 250));
   current = false;
-  assert.equal(await pending, undefined);
-  assert.deepEqual(cursor, { selectedId: 'keep' });
+  // A fake select has no live RPC pipe. Keep a bounded deadline referenced while
+  // the unref'ed expiry poll resolves, and fail if the dialog never closes.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Expired menu did not close')), 2000); });
+  try {
+    assert.equal(await Promise.race([pending, deadline]), undefined);
+    assert.deepEqual(cursor, { selectedId: 'keep' });
+  } finally { clearTimeout(timer); }
 });
 
 test('an unknown mode with hasUI falls back to RPC while print and json stay closed', async () => {
