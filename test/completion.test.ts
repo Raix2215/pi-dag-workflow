@@ -145,7 +145,7 @@ test('registered /todos, /plan and /goal expose argument completions over live s
 
   const plan = commands.get('plan').getArgumentCompletions;
   assert.equal(typeof plan, 'function');
-  assert.deepEqual(values(await plan('')), ['start', 'off', 'status', 'tools', 'help']);
+  assert.deepEqual(values(await plan('')), ['start', 'off', 'status', 'settings', 'tools', 'help']);
 
   // Seed the Goal state through the real session_start restore path.
   const goalState: GoalState = { version: 1, focusId: 1, nextId: 3, run: { paused: true, used: 0, stalled: 0 }, goals: [

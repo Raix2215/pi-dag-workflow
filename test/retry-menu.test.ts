@@ -6,14 +6,26 @@ import { emptyState } from '../src/todos/state.ts';
 import { defaultConfig } from '../src/shared/config.ts';
 import { createTranslator } from '../src/shared/i18n.ts';
 
+/** Map a scripted id/label onto the real display option (label plus current value) that the menu renders. */
+function displayChoice(options: readonly string[], wanted: string): string {
+  const norm = (text: string) => text.replace(/\s+/g, ' ').trim();
+  const target = norm(wanted);
+  const exact = options.find((option) => option === wanted || norm(option) === target);
+  if (exact) return exact;
+  const prefixed = options.find((option) => norm(option).startsWith(`${target} `));
+  if (prefixed) return prefixed;
+  throw new Error(`no display option for ${JSON.stringify(wanted)} in ${JSON.stringify(options)}`);
+}
+
 function host(language: 'zh-CN' | 'en' = 'zh-CN', onFailed?: (waiting: boolean) => void) {
   const handlers = new Map<string, Function[]>(); const entries: any[] = [], notices: string[] = [], requests: any[] = [], wakes: any[] = [];
   const timers = new Map<number, { due: number; callback: () => void }>(); let time = 0, serial = 0, command: any, scope = 'normal';
   const answers: any[] = [];
   const ask = async (method: string, title: string, value: unknown) => {
     requests.push({ method, title, value }); const next = answers.shift();
-    if (typeof next === 'function') return await next({ method, title, value });
-    return next;
+    const chosen = typeof next === 'function' ? await next({ method, title, value }) : next;
+    if (method === 'select' && chosen !== undefined && chosen !== null) return displayChoice(value as string[], String(chosen));
+    return chosen;
   };
   const ctx: any = { hasUI: true, isIdle: () => true, hasPendingMessages: () => false, sessionManager: { getBranch: () => entries, getLeafId: () => String(entries.length) }, ui: { notify: (message: string) => notices.push(message), select: (title: string, choices: string[]) => ask('select', title, choices), input: (title: string, placeholder: string) => ask('input', title, placeholder), editor: (title: string, prefill: string) => ask('editor', title, prefill), confirm: (title: string, message: string) => ask('confirm', title, message) } };
   const pi: any = { on(name: string, fn: Function) { handlers.set(name, [...handlers.get(name) ?? [], fn]); }, registerCommand(_name: string, value: any) { command = value; }, appendEntry(type: string, data: unknown) { entries.push({ type: 'custom', customType: type, data: structuredClone(data) }); }, sendUserMessage(text: string) { void command.handler(text.slice('/retry '.length), ctx); }, sendMessage(message: any) { wakes.push(message); } };
@@ -27,10 +39,14 @@ function host(language: 'zh-CN' | 'en' = 'zh-CN', onFailed?: (waiting: boolean) 
 
 for (const language of ['zh-CN', 'en'] as const) test(`settings/status return to the menu; only root exit or cancel closes (${language})`, async () => {
   const h = host(language); const zh = language === 'zh-CN';
-  const settings = zh ? '重试设置' : 'Retry settings', back = zh ? '返回' : 'Back', status = zh ? '查看状态' : 'Show status', exit = zh ? '退出菜单' : 'Exit menu';
-  h.reply(settings, back, status, back, exit); await h.menu();
+  const settings = zh ? '重试设置' : 'Retry settings', back = zh ? '返回' : 'Back', models = zh ? '替代模型' : 'Alternative models', exit = zh ? '退出菜单' : 'Exit menu';
+  h.reply(settings, back, models, back, exit); await h.menu();
   assert.equal(h.requests.length, 5); assert.equal(h.entries.length, 0); assert.equal(h.wakes.length, 0);
-  assert.ok(h.requests[0].value.includes(exit)); assert.ok(!h.requests[0].value.includes(back));
+  assert.ok(h.requests[0].value.includes(exit));
+  // Status is shown directly in the heading now: readable text, never JSON, and no separate status entry.
+  assert.match(h.requests[0].title, zh ? /自动重试：关闭/ : /Automatic retry: off/);
+  assert.ok(!h.requests[0].title.trim().startsWith('{'));
+  assert.ok(!h.requests[0].value.some((option: string) => /查看状态|show status/i.test(option)));
   assert.deepEqual(h.requests[0].value, h.requests[2].value); assert.deepEqual(h.requests[0].value, h.requests[4].value);
   h.reply(settings, undefined, undefined); await h.menu(); assert.equal(h.requests.length, 8);
 });
@@ -40,7 +56,7 @@ test('invalid editor text is kept editable, confirmed settings return to root wi
   const edits = h.requests.filter((request) => request.method === 'editor');
   assert.equal(edits.length, 2); assert.equal(edits[1].value, 'not an interval'); assert.ok(h.notices.length > 0);
   assert.equal(h.controller.snapshot().intervals, '2s,3s'); assert.equal(h.controller.snapshot().enabled, false);
-  assert.equal(h.requests.at(-1).value.includes('重试设置'), true);
+  assert.equal(h.requests.at(-1).value.some((option: string) => option.startsWith('重试设置')), true);
 });
 
 test('cancelled text or confirmation leaves settings and timer unchanged and returns one level', async () => {
@@ -115,7 +131,7 @@ test('a pending timer skips without probing command delivery while the root menu
 
 test('success during a menu keeps navigation open while resetting the streak', async () => {
   const h = host(); await h.cmd('when-error 1s count 2'); await h.failure();
-  h.reply(async () => { await h.fire('turn_end', { outcome: 'completed' }); return '查看状态'; }, '返回', '退出菜单'); await h.menu();
+  h.reply(async () => { await h.fire('turn_end', { outcome: 'completed' }); return '重试设置'; }, '返回', '退出菜单'); await h.menu();
   assert.equal(h.requests.length, 3); assert.equal(h.controller.snapshot().attempts, 0); assert.equal(h.controller.snapshot().phase, 'armed');
 });
 
@@ -131,8 +147,9 @@ test('old menu completion cannot release a new menu guard or erase its owned pro
   h.reply(() => new Promise<string>((resolve) => { oldReply = resolve; })); const old = h.menu();
   await h.fire('session_before_tree'); h.reply(() => new Promise<string>((resolve) => { newReply = resolve; })); const newer = h.menu();
   oldReply('退出菜单'); await old;
-  assert.equal(h.controller.isPrompt(h.requests.at(-1).title), true); await h.menu(); assert.ok(h.notices.some((message) => message.includes('重试菜单已打开')));
-  newReply('退出菜单'); await newer; assert.equal(h.controller.isPrompt(h.requests.at(-1).title), false);
+  // Ownership is registered under the dialog title (the heading's first line), not the whole summary block.
+  assert.equal(h.controller.isPrompt(h.requests.at(-1).title.split('\n')[0]), true); await h.menu(); assert.ok(h.notices.some((message) => message.includes('重试菜单已打开')));
+  newReply('退出菜单'); await newer; assert.equal(h.controller.isPrompt(h.requests.at(-1).title.split('\n')[0]), false);
 });
 
 for (const retryFirst of [true, false]) test(`active Goal recognizes owned dialogs but pauses on foreign input (retry first: ${retryFirst})`, async (t) => {
@@ -147,8 +164,8 @@ for (const retryFirst of [true, false]) test(`active Goal recognizes owned dialo
   t.after(() => fire('session_shutdown', {}));
   await tools.get('goal').execute('create', { action: 'create', title: 'Menu scope' }, undefined, undefined, ctx); await fire('input', { source: 'rpc', text: 'enable' });
   await tools.get('goal').execute('enable', { action: 'enable', id: 1 }, undefined, undefined, ctx); assert.equal(goal.snapshot().run.paused, false);
-  let step = 0; const replies = ['查看状态', '返回', '退出菜单'];
-  ctx.ui.select = async (title: string) => { await fire('ui_prompt_start', { title, kind: 'select' }); assert.equal(goal.snapshot().run.paused, false, 'own dialog never pauses active Goal'); await fire('ui_prompt_end', { title, kind: 'select' }); return replies[step++]; };
+  let step = 0; const replies = ['重试设置', '返回', '退出菜单'];
+  ctx.ui.select = async (title: string, options: string[]) => { await fire('ui_prompt_start', { title, kind: 'select' }); assert.equal(goal.snapshot().run.paused, false, 'own dialog never pauses active Goal'); await fire('ui_prompt_end', { title, kind: 'select' }); const want = replies[step++]; return want === undefined ? undefined : displayChoice(options, want); };
   await commands.get('retry').handler('', ctx); assert.equal(goal.snapshot().run.paused, false);
   await fire('ui_prompt_start', { title: 'Foreign question', kind: 'input' }); assert.equal(goal.snapshot().run.paused, true); assert.match(goal.snapshot().run.reason!, /等待用户答复/);
 });

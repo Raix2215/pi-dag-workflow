@@ -18,7 +18,18 @@ Restart Pi or run `/reload`. Use `pi config` to select the modules you need.
 
 Requires **Pi 1.0.0+** and **Node.js 22.19.0+**. Subagents require a Node-based Pi host. Use a Nerd Font for the panel icons. The interface supports English and Simplified Chinese.
 
-Use one extension for each shared name, such as `todo`, `/plan`, `/goal`, or `subagent_spawn`.
+Use one extension for each shared name, such as `todo`, `/plan`, `/goal`, `/retry`, or `subagent_spawn`.
+
+## Menus
+
+`/todos`, `/goal`, `/agents`, and `/retry` open menus with readable state summaries. Task, Goal, job, profile, fragment, and model directories support paging and search. Pages show up to eight entries and shrink on short terminals.
+
+- ↑/↓ selects; Enter opens or confirms the selected item.
+- PgUp/PgDn changes pages; type in the search field to filter.
+- Tab moves between the list and fixed actions; Ctrl+↑/↓ scrolls the selected preview.
+- Esc returns one level; Esc at the root closes the menu. Full text views also support Home/End.
+
+Settings do not start work. Drafts change runtime settings only after saving; cancellation leaves them unchanged. `/plan` directly toggles read-only mode; `/plan settings` opens its menu without changing mode. Each feature has its own summary visibility, controlled in its menu or with `show`/`hide`.
 
 ## Quick start
 
@@ -131,7 +142,7 @@ A dependency tree shows the current task and its worker:
           └───────────────────────────────┘
 ```
 
-`/todos` opens the full list; `/dag` opens the dependency graph. Use `paths` for a dependency tree or `flat` for a flat list. The above-editor preview shrinks with the terminal height, is capped at 12 lines, and prioritizes work needing attention. Graphs that do not fit use a dependency list. Full views support ↑/↓, PgUp/PgDn, Home/End, and Esc.
+`/todos` opens the task menu with requirement editing, status actions, and full selected details; `/dag` opens the scrollable dependency graph. Use `/todos list full` for the complete text list, `paths` for a dependency tree, or `flat` for a flat preview. The above-editor preview shrinks with terminal height, is capped at 12 lines, and prioritizes work needing attention. Graphs that do not fit use a dependency list. Hiding Todos leaves the other feature summaries visible.
 
 Filters: `full`, `pending`, `completed`, `failed`, `cancelled`.
 
@@ -280,7 +291,7 @@ Recovery is **off by default** and applies to the main session in Normal, Plan, 
 - User cancellation, changed mode or Goal scope, Goal completion, navigation, and compaction cancel obsolete work. Goal limits and Plan's read-only restrictions remain effective.
 - Reload restores settings with recovery **off**; explicitly enable it again. Children and shell tools are not retried.
 
-The menu has **Retry settings**, **Alternative models**, **Show status**, and **Exit menu**. Back or Esc in a child page returns one level; root Esc exits. Saving, status, and toggle actions return to the main menu. Editors retain invalid input for correction. Cancellation saves nothing. An unchanged value does not restart the countdown; editing only the total count preserves remaining time and used attempts.
+The menu shows current recovery state beside **Retry settings**, **Alternative models**, and **Show summary**. Back or Esc in a child page returns one level; **Exit menu** or root Esc closes it. Saving and toggles return to the main menu. Editors retain invalid input for correction. Cancellation saves nothing. An unchanged value does not restart the countdown; editing only the total count preserves remaining time and used attempts.
 
 ### Alternative models
 
@@ -291,7 +302,7 @@ The menu has **Retry settings**, **Alternative models**, **Show status**, and **
 /retry models off
 ```
 
-Use actual registered names in place of the placeholders, or choose models from the menu. Candidate order is explicit, with at most eight distinct models. Setting candidates enables model replacement, not automatic retry itself; `/retry when-error` enables recovery. Candidate and per-model setting changes require interactive confirmation. `/retry models off` keeps ordinary retry available.
+Use actual registered names in place of the placeholders, or search and page through registered models in the menu. Edit candidate order in a draft: add, move up/down, remove, then save. Candidate order is explicit, with at most eight distinct models. Setting candidates enables model replacement, not automatic retry itself; `/retry when-error` enables recovery. Candidate and per-model setting changes require interactive confirmation. `/retry models off` keeps ordinary retry available.
 
 Each error streak starts with the current model, then tries candidates in order, omitting duplicates. Each model gets at most two plugin attempts by default. The interval sequence and total `count` are shared across models: switching adds no extra delay and does not skip the next wait. Pi's native retries and the initial failure do not consume plugin attempts. Missing models, unconfigured authentication, or incompatible image input skip a candidate without a probe request.
 
@@ -318,7 +329,7 @@ These are model tools; JSON examples above show their arguments.
 |---|---|
 | `/todos` | `add`, `start`, `done`, `pending`, `failed`, `cancelled`, `edit`, `delete`, `clear`, `paths`, `flat`, `view`, `show`, `hide`, `presets`, `apply`, `reset` |
 | `/dag` | `[full/pending/completed/failed/cancelled]` |
-| `/plan` | `start`, `off`, `status`, `tools name1,name2` |
+| `/plan` | Direct toggle; `start`, `off`, `status`, `settings`, `tools name1,name2`, `show`, `hide` |
 | `/goal` | `new`, `enable`, `disable`, `complete`, `delete`, `edit`, `get`, `list`, `nopause`, `nolimit`, `autoresearch`, `config`, `reset` |
 | `/agents` | `list`, `wait`, `send`, `reply`, `cancel`, `remove`, `pause`, `resume`, `profiles`, `profile`, `unprofile`, `reset` |
 | `/retry` | Menu, `when-error intervals [count N]`, `off`, `status`, `models` |
@@ -428,17 +439,17 @@ Select these resources with `pi config`:
 
 | Resource | Provides |
 |---|---|
-| `src/todos/index.ts` | Todo tool, `/todos`, `/dag` |
-| `src/plan/index.ts` | Plan command and execution guard |
-| `src/agents/index.ts` | Child jobs, messages, and profiles |
-| `src/goal/index.ts` | Goal tracking and continuation |
-| `src/ui/index.ts` | Preview panel and full detail views |
+| `src/todos/index.ts` | Todo tool, `/todos`, `/dag`, task menus and preview |
+| `src/plan/index.ts` | Plan command, settings, read-only guard and summary |
+| `src/agents/index.ts` | Child jobs, messages, profiles and job menus |
+| `src/goal/index.ts` | Goal tracking, continuation, settings and summary |
+| `src/retry/index.ts` | `/retry`, error recovery, model selection and summary |
 
-For example, use Todos + Plan + UI for planning and execution, or Goal + UI for research. Task-linked jobs and task graphs require Todos. Reload applies module selection.
+Each feature works independently and includes its own menus and summary. Choose Todos + Plan for planning and execution, Goal for research, or Retry alone for error recovery. Task-linked jobs and task graphs require Todos; Agents also work without task bindings. Reload applies module selection.
 
 ## Safety and persistence
 
-- Tasks, Goals, assignments, diagnostics, and finalized child output are saved in Pi session records and follow the active branch. Treat session files as potentially sensitive.
+- Tasks, Plan settings, Goals, assignments, diagnostics, and finalized child output are saved in Pi session records and follow the active branch. Each feature restores its own state. Unreadable data remains protected until an explicit reset; read-only queries and view commands do not replace it. Treat session files as potentially sensitive.
 - Child jobs use your configured models and inherit the process environment. Plan and tool selection are execution guards; all processes run with your operating-system permissions.
 - Cancellation and branch navigation do not roll back files, commits, or external requests. Check side effects before continuing work.
 - Restore stops previous children and pauses the Goal. It restores records, not a child execution checkpoint. Partial text that never finalized before a crash may be unavailable.

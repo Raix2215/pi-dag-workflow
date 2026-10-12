@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { createWorkflow } from '../src/workflow/index.ts';
 import { emptyState, STATE_TYPE } from '../src/todos/state.ts';
+import { PLAN_TYPE } from '../src/plan/state.ts';
 import { widgetHeightBudget } from '../src/ui/render.ts';
 
 test('restored standalone handoff survives /todos hide -> /plan start at nine terminal rows', async () => {
@@ -48,7 +49,7 @@ test('restored standalone handoff survives /todos hide -> /plan start at nine te
     await fire('session_start');
     await commands.get('todos').handler('hide', ctx);
     await commands.get('plan').handler('start', ctx);
-    assert.ok(entries.at(-1).data.plan && !entries.at(-1).data.visible);
+    assert.ok(entries.findLast((entry) => entry.customType === PLAN_TYPE).data.enabled && !entries.findLast((entry) => entry.customType === STATE_TYPE).data.visible);
     assert.ok(!notifications.some((notification) => notification.type === 'error'), JSON.stringify(notifications));
     assert.equal(typeof widget, 'function');
     const terminal = { rows: 9 };

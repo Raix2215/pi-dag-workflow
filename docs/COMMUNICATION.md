@@ -26,9 +26,17 @@ The child has `subagent_send` for parent communication. It cannot delegate child
 | Parent `subagent_inspect`, `output: true` | Retained output, questions, usage, observation, and linked Todo status | Snapshot or bounded wait result |
 | Parent `subagent_send` | Delivery confirmation | Current tool result; subsequent child replies use the report channel |
 | Parent `subagent_cancel` | Stop/removal confirmation | Current tool result |
-| `/agents wait` | User-visible output | UI notification |
+| `/agents wait` | User-visible report and diagnosis | Readable detail view |
 
 A tool result is available to the following model request. Reports enter at `turn_end` or `agent_before_settle`, after the current tool batch; an idle report wake uses a follow-up message. Reports do not interrupt a tool batch already in progress.
+
+## User menus
+
+`/agents` opens a searchable, paginated job directory with attention and history filters. Selected details distinguish process status, report delivery, and linked Todo acceptance. Read reports, answer pending questions, send direction, or stop/remove a job from its action page. Cancellation and removal require confirmation and do not undo files.
+
+`/agents profiles` searches saved profiles and opens their model, tool, skill, and instruction details. The instruction and skill editors save only the confirmed current profile; cancellation and expired input leave it unchanged.
+
+Opening a menu or changing summary visibility does not start model requests or stop a job. `/agents show` and `/agents hide` affect only the Agent summary. The Agents feature can run independently; `todoId` bindings require the Todos feature.
 
 ## Queries and delivery
 

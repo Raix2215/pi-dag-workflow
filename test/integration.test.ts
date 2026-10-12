@@ -6,9 +6,13 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { test } from "node:test";
 import { IsolatedClient } from "./fixtures/isolated-client.ts";
 import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
+import { PLAN_TYPE, type PlanState } from "../src/plan/state.ts";
 
 function latestState(entries: unknown[]): WorkflowState | undefined {
   return entries.map((entry) => entry as { type?: string; customType?: string; data?: WorkflowState }).findLast((entry) => entry.type === "custom" && entry.customType === STATE_TYPE)?.data;
+}
+function latestPlan(entries: unknown[]): PlanState | undefined {
+  return entries.map((entry) => entry as { type?: string; customType?: string; data?: PlanState }).findLast((entry) => entry.type === "custom" && entry.customType === PLAN_TYPE)?.data;
 }
 function resultText(events: Record<string, unknown>[]): string {
   return events.filter((event) => event.type === "tool_execution_end").map((event) => JSON.stringify(event.result)).join("\n");
@@ -38,7 +42,7 @@ test("real tool calls cannot bypass Plan, dependencies or ! shell; rejected oper
   let events = await client.prompt('TEST CALL todo {"action":"update","id":2,"status":"completed"}');
   assert.match(resultText(events), /前置未完成/);
   await client.prompt("/plan start");
-  assert.equal(latestState(await client.entries())!.plan, true);
+  assert.equal(latestPlan(await client.entries())!.enabled, true);
   events = await client.prompt("请把第一项标为完成");
   assert.match(resultText(events), /Plan/);
   assert.equal(latestState(await client.entries())!.tasks[0]!.status, "pending");
@@ -66,7 +70,7 @@ test("commands and tools share one state; reload and restart restore it without 
   await client.prompt("/plan start");
   const before = latestState(await client.entries())!;
   assert.equal(before.tasks.length, 2);
-  assert.equal(before.plan, true);
+  assert.equal(latestPlan(await client.entries())!.enabled, true);
   const root = client.root;
   await client.close(false);
   client = await IsolatedClient.start(root);
@@ -75,6 +79,7 @@ test("commands and tools share one state; reload and restart restore it without 
   assert.match(notifications, /Plan/);
   const after = latestState(await client.entries())!;
   assert.deepEqual(after, before);
+  assert.equal(latestPlan(await client.entries())!.enabled, true, "Plan state persists across restart");
   await client.prompt("/plan off");
   await client.prompt('TEST CALL todo {"action":"list"}');
   assert.equal(latestState(await client.entries())!.tasks.length, 2);
@@ -121,7 +126,7 @@ test("extra read-only search tools require explicit user configuration", { timeo
   assert.match(resultText(await client.prompt('TEST CALL test_search {"query":"case"}')), /offline search: case/);
   await client.prompt("/plan off");
   await client.prompt("/plan tools write");
-  assert.deepEqual(latestState(await client.entries())!.planTools, ["test_search"]);
+  assert.deepEqual(latestPlan(await client.entries())!.tools, ["test_search"]);
 });
 
 test("corrupt native state stays protected until an explicit confirmed reset, without deleting its history", { timeout: 30000 }, async (t) => {

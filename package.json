@@ -1,6 +1,6 @@
 {
   "name": "pi-dag-workflow",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "A lightweight, session-local Todo DAG workflow for Pi",
   "repository": {
     "type": "git",
@@ -34,7 +34,7 @@
       "./src/plan/index.ts",
       "./src/agents/index.ts",
       "./src/goal/index.ts",
-      "./src/ui/index.ts"
+      "./src/retry/index.ts"
     ]
   },
   "engines": {

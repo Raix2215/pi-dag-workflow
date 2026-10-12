@@ -13,11 +13,12 @@ export const defaultConfig = (): WorkflowConfig => ({ language: 'auto', goalMaxT
 export const MAX_PLAN_TOOLS = 16;
 /** Accepted range per key; an absent key is a default, an out-of-range value is an error. */
 const limits: Record<string, { min: number; max: number }> = { goalMaxTurns: { min: 1, max: 200 }, goalNoProgressLimit: { min: 1, max: 100 }, goalErrorRetries: { min: 0, max: 20 } };
-function parseConfig(source: string, msg: Translator): WorkflowConfig {
+function parseConfig(source: string, msg: Translator, domain?: 'goal' | 'plan'): WorkflowConfig {
   if (Buffer.byteLength(source) > 16384) throw new Error(msg('配置超过 16 KiB'));
   const value = JSON.parse(source) as Record<string, unknown>;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(msg('配置需为 JSON 对象'));
   for (const [key, item] of Object.entries(value)) {
+    if (domain === 'plan' && !['language', 'planTools'].includes(key) || domain === 'goal' && !['language', 'goalMaxTurns', 'goalNoProgressLimit', 'goalErrorRetries', 'goalNoPauseTools'].includes(key)) { delete value[key]; continue; }
     if (key === 'language') {
       if (!['auto', 'en', 'zh-CN'].includes(item as string)) throw new Error(msg('language 需为 auto、en 或 zh-CN'));
       continue;
@@ -35,11 +36,11 @@ function parseConfig(source: string, msg: Translator): WorkflowConfig {
   }
   return { ...defaultConfig(), ...value } as WorkflowConfig;
 }
-export async function loadConfig(msg: Translator = chinese): Promise<WorkflowConfig> {
+export async function loadConfig(msg: Translator = chinese, domain?: 'goal' | 'plan'): Promise<WorkflowConfig> {
   let source: string;
   try { source = await readConfigText(configPaths().config, 16384, msg('配置超过 16 KiB')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultConfig(); throw error; }
-  return parseConfig(source, msg);
+  return parseConfig(source, msg, domain);
 }
 
 /** Read once when a runtime is assembled so command metadata and UI use the same language.

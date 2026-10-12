@@ -6,7 +6,9 @@
  * appearance. Nested string/template expressions get their own entries. User data,
  * variable values, command/tool names and Nerd Font glyphs are never included here.
  */
+import { uiEnglishMessages } from './messages.ui.en.ts';
 export const englishMessages: Readonly<Record<string, string>> = {
+  ...uiEnglishMessages,
   '/agents send jobId [--interrupt] 消息': '/agents send jobId [--interrupt] message',
   '切换续跑轮数上限：nolimit [ #编号]（当前目标可省略编号）': 'Toggle the continuation-turn allowance: nolimit [ #id] (omit the id for the current Goal)',
   'Goal 菜单需要交互界面': 'The Goal menu requires an interactive UI',

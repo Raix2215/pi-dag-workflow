@@ -3,12 +3,15 @@ import { Text, truncateToWidth } from '@earendil-works/pi-tui';
 import { CHECKPOINT_RULE } from './checkpoints.ts';
 import { TODO_FILTERS, statusLabel, TodoParamsSchema, type ClearScope, type TodoFilter, type TodoParams, type TodoResult, type WorkflowState } from './state.ts';
 import type { Preset } from './presets.ts';
-import { clean, notify } from '../ui/render.ts';
+import { choose, readView, type MenuCursor } from '../ui/menu.ts';
+import { todoSummary, toolDisplay } from '../ui/presentation.ts';
+import { filteredView } from '../ui/filter.ts';
+import { clean, notify, type AgentView } from '../ui/render.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
 
-interface Hooks { msg?: Translator; state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext, source?: 'tool' | 'command'): TodoResult; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag', filter?: TodoFilter): Promise<void>; userPrompt?<T>(title: string, run: () => Promise<T>): Promise<T>; presets?(): Preset[]; refreshPresets?(): Promise<void>; retryStatus?(): unknown }
+interface Hooks { jobs?(): readonly AgentView[]; previewClear?(scope: ClearScope): string; msg?: Translator; state(): WorkflowState; protected(): boolean; mutate(params: TodoParams, ctx: ExtensionContext, source?: 'tool' | 'command'): TodoResult; commit(next: WorkflowState, ctx: ExtensionContext): void; reset(ctx: ExtensionContext): void; show(ctx: ExtensionContext, view: 'list' | 'dag', filter?: TodoFilter): Promise<void>; userPrompt?<T>(title: string, run: () => Promise<T>): Promise<T>; presets?(): Preset[]; refreshPresets?(): Promise<void>; retryStatus?(): unknown }
 const asId = (text?: string, msg: Translator = chinese): number => {
   if (!text || !/^#?[1-9]\d*$/.test(text)) throw new Error(msg('请给出任务编号，例如 #2'));
   return Number(text.replace(/^#/, ''));
@@ -72,6 +75,40 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
         .map((task) => ({ token: `#${task.id}`, label: `#${task.id} ${task.subject}`, description: msg(statusLabel[task.status]) }));
     },
   };
+  async function tasksMenu(ctx: ExtensionContext) {
+    const epoch = sessionEpoch, cursor: MenuCursor = {};
+    const current = () => epoch === sessionEpoch;
+    let selectedFilter = hooks.state().filter ?? 'full';
+    const owned = <T>(title: string, run: () => Promise<T>) => hooks.userPrompt ? hooks.userPrompt(title, run) : run();
+    while (current()) {
+      const title = msg('任务清单');
+      const state = hooks.state();
+      const list = filteredView(state.tasks, selectedFilter, hooks.jobs?.() ?? []).tasks;
+      const selected = await owned(title, () => choose(ctx, title, list.map((task) => ({ id: String(task.id), label: `#${task.id} ${task.subject}`, value: msg(statusLabel[task.status]), description: task.blockedBy.length ? msg`依赖：#${task.blockedBy.join(', #')}` : '' })), { msg, cursor, searchable: true, isCurrent: current, lines: (item) => { const task = hooks.state().tasks.find((value) => String(value.id) === item.id); return task ? todoSummary(task, msg) : []; }, actions: [{ id: 'filter', label: msg('筛选'), value: selectedFilter }, { id: 'graph', label: msg('查看依赖图') }, { id: 'summary', label: msg('显示摘要'), value: state.visible ? msg('开启') : msg('关闭') }] }));
+      if (!current() || selected === undefined) return;
+      if (selected === 'summary') { commit({ ...hooks.state(), visible: !hooks.state().visible }, ctx); continue; }
+      if (selected === 'graph') { await show(ctx, 'dag', selectedFilter); continue; }
+      if (selected === 'filter') {
+        const value = await owned(msg('筛选'), () => choose(ctx, msg('筛选'), TODO_FILTERS.map((id) => ({ id, label: id })), { msg, isCurrent: current }));
+        if (value) { selectedFilter = value as TodoFilter; cursor.page = 0; } continue;
+      }
+      const task = hooks.state().tasks.find((value) => String(value.id) === selected); if (!task) continue;
+      const detailTitle = `Todo #${task.id} · ${task.subject}`;
+      const action = await owned(detailTitle, () => choose(ctx, detailTitle, [
+        { id: 'read', label: msg('读取完整要求') }, { id: 'edit', label: msg('编辑任务要求') },
+        { id: 'start', label: msg('开始任务'), ...(state.plan || task.blockedBy.some((id) => state.tasks.find((value) => value.id === id)?.status !== 'completed') || task.status === 'completed' ? { disabledReason: msg('当前模式或依赖不允许开始') } : {}) },
+        { id: 'complete', label: msg('核验后完成任务'), ...(state.plan ? { disabledReason: msg('Plan 不允许完成任务') } : {}) },
+      ], { msg, isCurrent: current, lines: todoSummary(task, msg) }));
+      if (!current() || action === undefined || hooks.state().tasks.find((value) => value.id === task.id) !== task) continue;
+      if (action === 'read') await readView(ctx, detailTitle, todoSummary(task, msg).join('\n'), { msg, isCurrent: current });
+      if (action === 'edit') {
+        const description = await owned(msg('任务要求'), () => ctx.ui.editor(msg('任务要求'), task.description ?? ''));
+        if (current() && description !== undefined && hooks.state().tasks.find((value) => value.id === task.id) === task) mutate({ action: 'update', id: task.id, description }, ctx, 'command');
+      }
+      if (action === 'start') mutate({ action: 'update', id: task.id, status: 'in_progress' }, ctx, 'command');
+      if (action === 'complete' && await owned(msg('确认任务已核验？'), () => ctx.ui.confirm(msg('确认任务已核验？'), task.subject)) && current() && hooks.state().tasks.find((value) => value.id === task.id) === task) mutate({ action: 'update', id: task.id, status: 'completed' }, ctx, 'command');
+    }
+  }
   pi.registerTool({
     name: "todo", label: "Todos", namespace: workflowNamespace, annotations: sessionMutation,
     description: "Manage one Todo DAG: create/update/list/get/delete/clear, apply/reset fragments, presets discovery, read-only status summary, or atomic batch definition edits. blockedBy defines prerequisites; failed/cancelled never unblock work. Create pending/in_progress; complete after verification. list is paged (use continuation); ready selects executable pending tasks; get includes blocks/unmetPrerequisites. status returns one small JSON summary (mode, per-status counts, deleted, protected). clear preserves active, undelivered, unverified and required dependency records; files, Goal and history are unchanged. Plan edits definitions only.",
@@ -108,7 +145,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
     },
     renderCall(args, theme) { return new Text(theme.fg("toolTitle", `󰄬 todo ${args.action}${args.id ? ` #${args.id}` : ""}${args.subject ? ` ${clean(args.subject)}` : ""}`), 0, 0); },
     renderResult(result, options, theme) {
-      const text = result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
+      const text = toolDisplay(result.details, result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n"), msg);
       const lines = text.split("\n").map(clean);
       const preview = !options.expanded && lines.length > 6 ? [...lines.slice(0, 4), msg`… 另 ${lines.length - 5} 行，展开查看`, lines.at(-1)!] : lines;
       if (!options.expanded) return { render: (width: number) => preview.map((line) => truncateToWidth(theme.fg(result.isError ? 'error' : 'text', line), width)), invalidate() {} };
@@ -126,9 +163,14 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
         if (action === 'help') { ctx.ui.notify(msg('/todos · add 标题 [--after 1,2] · start/done/pending/failed/cancelled/delete #编号 · edit #编号 标题 · clear [completed/closed/all] · paths/flat · show/hide · view list/dag [full/pending/completed/failed/cancelled] · list [筛选] · presets · apply 名称 [键=值] · reset 名称 [步骤键]；/dag [筛选] 查看完整图'), 'info'); return; }
         if (action === 'presets') {
           await hooks.refreshPresets?.();
-          const list = hooks.presets?.() ?? [];
-          ctx.ui.notify(list.length ? list.map((preset) => `${preset.name}${preset.description ? ` — ${preset.description}` : ''}（${preset.steps.length} 步${preset.skill ? `，skill ${preset.skill}` : ''}）`).join('\n') : msg('未配置 Todo 片段：在 ~/.pi/agent/pi-dag-workflow/pi-dag-workflow-preset.json 里定义'), 'info');
-          return;
+          const epoch = sessionEpoch, cursor: MenuCursor = {};
+          while (epoch === sessionEpoch) {
+            const list = hooks.presets?.() ?? [];
+            const selected = await choose(ctx, msg('任务片段'), list.map((preset) => ({ id: preset.name, label: preset.name, value: msg`${preset.steps.length} 步`, ...(preset.description ? { description: preset.description } : {}) })), { msg, cursor, searchable: true, isCurrent: () => epoch === sessionEpoch });
+            if (selected === undefined || epoch !== sessionEpoch) return;
+            const preset = list.find((value) => value.name === selected); if (!preset) continue;
+            await readView(ctx, preset.name, toolDisplay({ version: 2, preset }, '', msg), { msg, isCurrent: () => epoch === sessionEpoch });
+          }
         }
         if (action === 'apply' || action === 'reset') {
           await hooks.refreshPresets?.();
@@ -157,6 +199,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
         };
         if (!trimmed || action === "list") {
           if (parts.length > 1) throw new Error(msg('用法：/todos list [筛选]'));
+          if (ctx.mode === 'tui' && !parts[0]) { await tasksMenu(ctx); return; }
           return await show(ctx, "list", filter(parts[0]));
         }
         if (action === "view") {
@@ -188,7 +231,8 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
               if (scope === undefined) return;
             }
             const title = msg`确认清理 ${scope} 记录？`;
-            if (!await userPrompt(title, () => ctx.ui.confirm(title, msg('保留运行／待交付／待核验和依赖必需记录，不修改文件、Goal或对话历史；编号不复用。')))) return;
+            const preview = hooks.previewClear?.(scope) ?? msg('保留运行／待交付／待核验和依赖必需记录，不修改文件、Goal或对话历史；编号不复用。');
+            if (!await userPrompt(title, () => ctx.ui.confirm(title, preview))) return;
             if (prompt.epoch !== sessionEpoch) return;
             if (hooks.protected()) { if (scope !== 'all') throw new Error(msg('状态受保护时只能明确 clear all 重置')); hooks.reset(ctx); }
             else notify(ctx, mutate({ action: "clear", scope }, ctx, 'command').text, 'info');

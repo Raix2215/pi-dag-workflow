@@ -18,7 +18,18 @@ pi install https://github.com/Raix2215/pi-dag-workflow
 
 要求 **Pi 1.0.0+**、**Node.js 22.19.0+**。子 Agent 需要基于 Node 的 Pi 宿主。建议使用 Nerd Font 显示面板图标。界面支持英文和简体中文。
 
-对于 `todo`、`/plan`、`/goal`、`subagent_spawn` 等同名入口，只启用一个提供它的扩展。
+对于 `todo`、`/plan`、`/goal`、`/retry`、`subagent_spawn` 等同名入口，只启用一个提供它的扩展。
+
+## 菜单操作
+
+`/todos`、`/goal`、`/agents`、`/retry` 打开菜单并显示可读状态摘要。任务、Goal、Job、Profile、片段和模型目录支持分页与搜索，每页最多八项，短屏时自动减少。
+
+- ↑/↓ 选择，Enter 打开或确认所选项。
+- PgUp/PgDn 翻页，在搜索框中输入文字即可筛选。
+- Tab 在列表与固定操作区之间切换，Ctrl+↑/↓ 滚动当前预览。
+- Esc 返回上一级，主菜单 Esc 退出；完整文本视图另支持 Home/End。
+
+设置不会启动工作，草稿保存后才改变运行设置，取消保持原值。裸 `/plan` 直接切换只读模式，`/plan settings` 只打开设置。各功能独立控制摘要显示，可在菜单或通过 show/hide 操作。
 
 ## 快速上手
 
@@ -131,7 +142,7 @@ description 保存任务要求和必要上下文。验收摘要放在会话答�
           └───────────────────────────────┘
 ```
 
-`/todos` 打开完整清单，`/dag` 打开依赖图。`paths` 按依赖树展示，`flat` 平铺展示。编辑器上方的预览随终端高度收缩，最多 12 行，优先显示需要关注的工作。放不下的图形用依赖列表展示。完整视图支持 ↑/↓、PgUp/PgDn、Home/End，Esc 返回。
+`/todos` 打开任务菜单，可编辑要求、修改状态及读取完整详情；`/dag` 打开可滚动依赖图。`/todos list full` 显示完整文本清单，`paths` 按依赖树展示，`flat` 平铺预览。编辑器上方的预览随终端高度收缩，最多 12 行，优先显示需要关注的工作。放不下的图形用依赖列表展示。隐藏 Todos 不影响其他功能的摘要。
 
 筛选：`full`、`pending`、`completed`、`failed`、`cancelled`。
 
@@ -280,7 +291,7 @@ Goal 请求错误收尾后，开启 /retry 时等待恢复，否则暂停。Goal
 - 用户取消、模式或 Goal 范围改变、Goal 完成、导航和压缩会取消过期工作；Goal 额度与 Plan 只读限制仍有效。
 - 重载后设置保留、恢复保持关闭，需明确重新开启。不重试子 Agent 或 shell 工具。
 
-菜单包含“重试设置”“替代模型”“查看状态”和“退出菜单”。子页返回或 Esc 回上一级，主菜单 Esc 退出。保存、状态和开关操作后返回主菜单；非法输入保留供修改，取消不保存。无变化不重启倒计时；只改总次数保留剩余等待和已用次数。
+菜单直接显示当前恢复状态，提供“重试设置”“替代模型”和“显示摘要”。子页返回或 Esc 回上一级，“退出菜单”或主菜单 Esc 关闭菜单。保存和开关操作后返回主菜单；非法输入保留供修改，取消不保存。无变化不重启倒计时；只改总次数保留剩余等待和已用次数。
 
 ### 替代模型
 
@@ -291,7 +302,7 @@ Goal 请求错误收尾后，开启 /retry 时等待恢复，否则暂停。Goal
 /retry models off
 ```
 
-示例占位符需替换为 Pi 已注册名称，也可在菜单中选择。候选顺序明确指定，最多八个不同模型。设置候选会启用模型替代，不会开启自动重试；恢复仍通过 /retry when-error 开启。候选和每模型次数的修改需要交互确认。/retry models off 关闭替代，保留普通重试。
+示例占位符需替换为 Pi 已注册名称，也可在菜单分页搜索模型。候选顺序在草稿中编辑：添加、上移／下移、移除，最后保存。最多八个不同模型。设置候选会启用模型替代，不会开启自动重试；恢复仍通过 /retry when-error 开启。候选和每模型次数的修改需要交互确认。/retry models off 关闭替代，保留普通重试。
 
 每轮连续错误先尝试当前模型，再按顺序使用候选并去重。每模型默认最多两次插件尝试；间隔序列和总 count 跨模型共用，切换不增加等待，也不跳过下一次等待。初始失败和 Pi 原生重试不扣插件次数。已不存在、未配置鉴权或不支持当前图像输入的候选会跳过，不发探测请求。
 
@@ -318,7 +329,7 @@ Pi 1.1+ 在最终收尾区分 provider 中止和用户取消；缺少该信号�
 |---|---|
 | `/todos` | `add`、`start`、`done`、`pending`、`failed`、`cancelled`、`edit`、`delete`、`clear`、`paths`、`flat`、`view`、`show`、`hide`、`presets`、`apply`、`reset` |
 | `/dag` | `[full/pending/completed/failed/cancelled]` |
-| `/plan` | `start`、`off`、`status`、`tools 名称1,名称2` |
+| `/plan` | 裸命令切换；`start`、`off`、`status`、`settings`、`tools 名称1,名称2`、`show`、`hide` |
 | `/goal` | `new`、`enable`、`disable`、`complete`、`delete`、`edit`、`get`、`list`、`nopause`、`nolimit`、`autoresearch`、`config`、`reset` |
 | `/agents` | `list`、`wait`、`send`、`reply`、`cancel`、`remove`、`pause`、`resume`、`profiles`、`profile`、`unprofile`、`reset` |
 | `/retry` | 菜单、`when-error 间隔 [count N]`、`off`、`status`、`models` |
@@ -428,17 +439,17 @@ Profile 可选 skills 指定本地 Markdown 文件：
 
 | 资源 | 功能 |
 |---|---|
-| `src/todos/index.ts` | Todo 工具、/todos、/dag |
-| `src/plan/index.ts` | Plan 命令和执行限制 |
-| `src/agents/index.ts` | 子 Job、消息和 Profile |
-| `src/goal/index.ts` | Goal 记录与续跑 |
-| `src/ui/index.ts` | 预览面板与完整详情 |
+| `src/todos/index.ts` | Todo 工具、/todos、/dag、任务菜单和预览 |
+| `src/plan/index.ts` | Plan 命令、设置、只读限制和摘要 |
+| `src/agents/index.ts` | 子 Job、消息、Profile 和任务菜单 |
+| `src/goal/index.ts` | Goal 记录、续跑、设置和摘要 |
+| `src/retry/index.ts` | /retry、错误恢复、模型选择和摘要 |
 
-例如，Todo＋Plan＋UI 用于规划和执行，Goal＋UI 用于研究。任务关联和任务图需要 Todo。重载后模块选择生效。
+各功能独立运行，自带菜单与摘要。可选 Todo＋Plan 规划和执行、Goal 持续研究，或仅 Retry 处理错误恢复。关联任务和任务图需要 Todos；Agents 也可独立运行、不关联任务。重载后模块选择生效。
 
 ## 安全与持久化
 
-- 任务、Goal、派发说明、诊断和已完成的子输出保存在 Pi 会话记录中，跟随活动分支。会话文件可能含敏感信息。
+- 任务、Plan 设置、Goal、派发说明、诊断和已完成的子输出保存在 Pi 会话记录中，跟随活动分支。各功能恢复自己的状态；不可读记录保留保护，需明确重置，只读查询和视图命令不会覆盖它。会话文件可能含敏感信息。
 - 子进程使用已配置模型并继承进程环境。Plan 和工具选择是执行限制，所有进程仍使用你的操作系统权限。
 - 取消和分支导航不回滚文件、提交或已发出的外部请求。接续前先检查副作用。
 - 恢复时原有子进程停止、Goal 暂停；恢复的是记录，不是子执行断点。崩溃前尚未封口的流式文本可能没有保留。

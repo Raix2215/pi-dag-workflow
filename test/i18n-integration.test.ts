@@ -112,10 +112,10 @@ test("actual Pi English independent Goal: continuation, untranslated description
   assert.equal(state.goals[0]!.title, "预算目标");
   assert.equal(state.goals[0]!.description, "完整描述不要翻译");
 
-  const listing = notifications(await client.prompt("/goal list"));
-  assert.ok(listing.some((message) => message.includes("Continuation 2/2 · Auto-continuation reached the 2-turn limit")), listing.join(" | "));
+  const listing = notifications(await client.prompt("/goal get #1"));
+  assert.ok(listing.some((message) => message.includes("Continuations used: 2/2") && message.includes("Auto-continuation reached the 2-turn limit")), listing.join(" | "));
   assert.ok(listing.some((message) => message.includes("预算目标")), listing.join(" | "));
-  assert.ok(!hasHan(listing.join("\n").replace("预算目标", "")), listing.join(" | "));
+  assert.ok(!hasHan(listing.join("\n").replaceAll("预算目标", "").replaceAll("完整描述不要翻译", "")), listing.join(" | "));
 });
 
 test("actual Pi English Goal with a Todo reaches the turn budget and reports it in English", { timeout: 40000 }, async (t) => {
@@ -135,7 +135,7 @@ test("actual Pi English Goal with a Todo reaches the turn budget and reports it 
   const state = goalState(await client.entries())!;
   assert.equal(state.run.used, 2);
   assert.equal(state.run.reason, "Auto-continuation reached the 2-turn limit");
-  const notices = notifications(await client.prompt("/goal list"));
+  const notices = notifications(await client.prompt("/goal get #1"));
   assert.ok(notices.some((message) => message.includes("Auto-continuation reached the 2-turn limit")), notices.join(" | "));
   const early = notifications(client.records as Record<string, unknown>[]);
   assert.ok(early.some((message) => message.includes("Goal paused: Auto-continuation reached the 2-turn limit")), early.join(" | "));

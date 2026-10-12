@@ -1,5 +1,7 @@
 import { Type, type Static } from 'typebox';
 import { chinese, type Translator } from '../shared/i18n.ts';
+import { goalAutoresearch, goalModelPause, goalNolimit, goalLimitLabel, goalBudgetSpent } from './policy.ts';
+export { goalAutoresearch, goalModelPause, goalNolimit, goalLimitLabel, goalBudgetSpent } from './policy.ts';
 
 export const GoalParamsSchema = Type.Object({
   action: Type.Enum(['create', 'update', 'list', 'get', 'delete', 'enable', 'disable', 'complete'] as const, { type: 'string' }),
@@ -19,14 +21,6 @@ export const GOAL_TYPE = 'pi-dag-workflow.goal';
 export const GOAL_DEFAULT_TURNS = 32;
 export const emptyGoalState = (): GoalState => ({ version: 1, goals: [], nextId: 1, run: { paused: true, used: 0, stalled: 0 } });
 export const focusedGoal = (state: GoalState): Goal | undefined => state.goals.find((goal) => goal.id === state.focusId && !['completed', 'deleted'].includes(goal.status));
-/** User-owned continuous mode overlays the ordinary controls without replacing them. */
-export const goalAutoresearch = (goal: Pick<Goal, 'autoresearch'>): boolean => goal.autoresearch === true;
-export const goalModelPause = (goal: Pick<Goal, 'modelPause' | 'autoresearch'>): ModelPausePolicy => goalAutoresearch(goal) ? 'deny' : goal.modelPause ?? 'allow';
-export const goalNolimit = (goal: Pick<Goal, 'nolimit' | 'autoresearch'>): boolean => goal.autoresearch === true || goal.nolimit === true;
-/** Display label: unlimited Goals read as ∞, finite Goals keep their numeric cap. State never stores Infinity. */
-export const goalLimitLabel = (goal: Pick<Goal, 'nolimit' | 'maxTurns' | 'autoresearch'>): string => goalNolimit(goal) ? '∞' : String(goal.maxTurns);
-/** Single budget gate shared by Goal wakes and child-report wakes; unlimited Goals always have allowance. */
-export const goalBudgetSpent = (state: Pick<GoalState, 'run'>, goal: Pick<Goal, 'nolimit' | 'maxTurns' | 'autoresearch'>): boolean => !goalNolimit(goal) && state.run.used >= goal.maxTurns;
 export const activates = (action: GoalParams['action']): boolean => action === 'enable';
 export const stops = (action: GoalParams['action']): boolean => ['disable', 'complete', 'delete'].includes(action);
 function text(value: unknown, field: string, bytes: number, required = false, msg: Translator = chinese): asserts value is string {

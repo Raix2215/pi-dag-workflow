@@ -3,6 +3,17 @@ import { test } from 'node:test';
 import { registerRetry } from '../src/retry/register.ts';
 import { emptyRetryState, intervalText, parseRetrySettings, RETRY_MESSAGE, RETRY_TYPE, restoreRetryState, retryDelay, validateRetryState } from '../src/retry/state.ts';
 
+/** Map a scripted id/label onto the real display option (label plus current value). */
+function displayChoice(options: readonly string[], wanted: string): string {
+  const norm = (text: string) => text.replace(/\s+/g, ' ').trim();
+  const target = norm(wanted);
+  const exact = options.find((option) => option === wanted || norm(option) === target);
+  if (exact) return exact;
+  const prefixed = options.find((option) => norm(option).startsWith(`${target} `));
+  if (prefixed) return prefixed;
+  throw new Error(`no display option for ${JSON.stringify(wanted)} in ${JSON.stringify(options)}`);
+}
+
 function host() {
   const events = new Map<string, Function[]>(); let command: any;
   const entries: any[] = [], wakes: any[] = [], notices: string[] = [];
@@ -43,7 +54,8 @@ test('default off does not retry errors and status is read-only', async () => {
   assert.equal(h.wakes.length, 0); assert.equal(h.controller.snapshot().enabled, false);
   const mark = h.entries.length; await h.cmd('status');
   assert.equal(h.entries.length, mark); assert.equal(h.wakes.length, 0);
-  assert.equal(JSON.parse(h.notices.at(-1)!).enabled, false);
+  assert.equal(h.controller.snapshot().enabled, false);
+  const statusText = h.notices.at(-1)!; assert.match(statusText, /自动重试：关闭/); assert.ok(!statusText.trim().startsWith('{'));
   for (const cmd of ['now', 'after 1s', 'every 1s', 'on', 'cancel', 'when-error 1s count 0', 'off extra', 'status extra']) await h.cmd(cmd);
   assert.equal(h.wakes.length, 0); assert.equal(h.entries.length, mark);
 });
@@ -182,7 +194,7 @@ test('a start failure with no settlement is detected locally without a model pol
 test('menu changes retain a known provider abort and its timer', async () => {
   const h = host(); await h.cmd('when-error 1s,2s count 3'); await h.failure('provider disconnected', false, 'aborted'); h.tick(1000); await h.start(); await h.failure('provider disconnected again', false, 'aborted');
   const choices = ['重试设置', '修改间隔', '退出菜单'];
-  h.ctx.ui.select = async () => choices.shift(); h.ctx.ui.editor = async () => '2s'; h.ctx.ui.confirm = async () => true;
+  h.ctx.ui.select = async (_title: string, options: string[]) => { const want = choices.shift(); return want === undefined ? undefined : displayChoice(options, want); }; h.ctx.ui.editor = async () => '2s'; h.ctx.ui.confirm = async () => true;
   await h.cmd(''); assert.equal(h.controller.snapshot().attempts, 1); assert.equal(h.controller.snapshot().phase, 'waiting');
   h.tick(2000); assert.equal(h.wakes.length, 2);
 });
@@ -196,7 +208,7 @@ test('a command prefix is not a retry command and cannot keep an old timer alive
 test('editing a running policy through the menu preserves the actual attempt count', async () => {
   const h = host(); await h.cmd('when-error 1s count 3'); await h.failure(); h.tick(1000); await h.start(); await h.failure();
   const choices = ['重试设置', '修改间隔', '退出菜单'];
-  h.ctx.ui.select = async () => choices.shift();
+  h.ctx.ui.select = async (_title: string, options: string[]) => { const want = choices.shift(); return want === undefined ? undefined : displayChoice(options, want); };
   h.ctx.ui.editor = async () => '2s'; h.ctx.ui.confirm = async () => true;
   await h.cmd(''); assert.equal(h.controller.snapshot().attempts, 1); assert.equal(h.controller.snapshot().intervals, '2s');
   h.tick(1999); assert.equal(h.wakes.length, 1); h.tick(1); await h.start(); assert.equal(h.controller.snapshot().attempts, 2);

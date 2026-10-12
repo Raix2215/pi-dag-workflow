@@ -6,6 +6,7 @@ import { IsolatedClient } from "./fixtures/isolated-client.ts";
 import { AGENTS_TYPE } from "../src/agents/register.ts";
 import { foldAgentEntries } from "../src/agents/persistence.ts";
 import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
+import { PLAN_TYPE, type PlanState } from "../src/plan/state.ts";
 
 const offline = fileURLToPath(new URL("./fixtures/offline-model.ts", import.meta.url));
 const controls = fileURLToPath(new URL("./fixtures/session-controls.ts", import.meta.url));
@@ -17,6 +18,7 @@ async function call(client: IsolatedClient, name: string, args: unknown) {
   return event.result as { isError?: boolean; details: Record<string, any>; content: { text: string }[] };
 }
 const state = (entries: unknown[]) => (entries as { customType?: string; data?: WorkflowState }[]).findLast((entry) => entry.customType === STATE_TYPE)!.data!;
+const planState = (entries: unknown[]) => (entries as { customType?: string; data?: PlanState }[]).findLast((entry) => entry.customType === PLAN_TYPE)?.data;
 const widgets = (client: IsolatedClient) => client.records.filter((item) => item.method === "setWidget").flatMap((item) => (item.widgetLines as string[] | undefined) ?? []).map(stripTerminalSequences).join("\n");
 
 test("actual Pi delegates an unblocked Todo, shows real waiting/profile state, guards edits/Plan, replies, and requires explicit Todo completion", { timeout: 30000 }, async (t) => {
@@ -41,7 +43,7 @@ test("actual Pi delegates an unblocked Todo, shows real waiting/profile state, g
   assert.equal(inspect.details.jobs[0].phase, 'waiting');
   assert.equal(inspect.details.profiles[0].name, "research");
   await client.prompt("/plan start");
-  assert.equal(state(await client.entries()).plan, false);
+  assert.equal(planState(await client.entries())?.enabled ?? false, false);
   assert.ok(client.records.some((item) => item.method === "notify" && typeof item.message === "string" && item.message.includes("子 Agent 仍在执行")));
   result = await call(client, "todo", { action: "update", id: 1, status: "completed" });
   assert.equal(result.isError, true);
@@ -58,7 +60,7 @@ test("actual Pi delegates an unblocked Todo, shows real waiting/profile state, g
   assert.ok(!result.details.requests.length);
   assert.equal(state(await client.entries()).tasks[0]!.status, "in_progress");
   result = await call(client, "todo", { action: "update", id: 1, status: "completed" }); assert.ok(!result.isError);
-  await client.prompt("/plan start"); assert.equal(state(await client.entries()).plan, true);
+  await client.prompt("/plan start"); assert.equal(planState(await client.entries())!.enabled, true);
   result = await call(client, "subagent_spawn", { task: "forbidden" }); assert.match(result.content[0]!.text, /Plan/);
   result = await call(client, "subagent_inspect", {}); assert.ok(!result.isError);
 });

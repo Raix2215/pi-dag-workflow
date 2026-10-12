@@ -24,6 +24,8 @@ async function call(client: IsolatedClient, name: string, args: object) {
   const event = events.find((item) => item.type === 'tool_execution_end' && item.toolName === name)!; assert.ok(event);
   return { ...event.result as any, isError: event.isError === true || (event.result as any)?.isError === true };
 }
+const widgetText = (client: IsolatedClient) => client.records.filter((item) => item.method === 'setWidget').flatMap((item) => (item.widgetLines as string[] | undefined) ?? []).join('\n');
+const painted = (client: IsolatedClient) => client.records.some((item) => item.method === 'setWidget' && Array.isArray(item.widgetLines) && (item.widgetLines as string[]).length > 0);
 test('native Pi package filters cover all 32 resource combinations with no duplicate tools/commands', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dag-filter-matrix-'));
   try {
@@ -42,21 +44,22 @@ test('native Pi package filters cover all 32 resource combinations with no dupli
     }
   } finally { await import('node:fs/promises').then((fs) => fs.rm(root, { recursive: true, force: true })); }
 });
-test('actual Pi: Todo-only and no UI exclude Goal/Agent/Plan schemas and background widgets', { timeout: 30000 }, async (t) => {
+test('actual Pi: Todo-only registers Todo without retry and paints its own widget', { timeout: 30000 }, async (t) => {
   const client = await start(['todos']); t.after(() => client.close());
   const commands = (await client.send('get_commands')).data as any;
-  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['dag', 'retry', 'todos']);
+  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['dag', 'todos']);
   assert.equal((await call(client, 'todo', { action: 'create', subject: '只管理任务' })).isError, false);
-  assert.ok(!client.records.some((item) => item.method === 'setWidget'));
+  assert.match(widgetText(client), /只管理任务/);
   const messages = (await client.send('get_messages')).data as any;
   const schemas = messages.messages.filter((item: any) => item.role === 'system').flatMap((item: any) => item.toolsAdded ?? []).map((item: any) => item.name);
   assert.ok(schemas.includes('todo')); assert.ok(!schemas.includes('goal')); assert.ok(!schemas.includes('subagent_spawn'));
 });
 test('actual Pi: Goal works without Todo/Agent and retains bounded independent research', { timeout: 30000 }, async (t) => {
-  const client = await start(['goal', 'ui']); t.after(() => client.close());
+  const client = await start(['goal']); t.after(() => client.close());
   const commands = (await client.send('get_commands')).data as any;
-  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['goal', 'retry']);
+  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['goal']);
   await call(client, 'goal', { action: 'create', title: '完成测试', maxTurns: 2 }); await call(client, 'goal', { action: 'enable', id: 1 });
+  assert.ok(painted(client), 'Goal-only paints its own widget');
   const entries = await client.entries() as any[];
   const goal = entries.findLast((entry) => entry.customType === 'pi-dag-workflow.goal').data;
   assert.equal(goal.goals[0].status, 'completed');
@@ -69,7 +72,7 @@ test('actual Pi: standalone Agents spawn/return without Goal gates or Todo links
   const result = await call(client, 'subagent_inspect', { jobId: job.details.jobId, output: true, timeout: 10 });
   assert.equal(result.details.status, 'completed');
   assert.equal((await call(client, 'subagent_spawn', { task: '不允许关联未启用任务', todoId: 1 })).isError, true);
-  assert.ok(!client.records.some((item) => item.method === 'setWidget'));
+  assert.match(widgetText(client), /Standalone Subagents/);
 });
 test('actual Pi: disabling Plan on reload does not strand old read-only state; Todo history remains', { timeout: 30000 }, async (t) => {
   let client = await start(['todos', 'plan']); t.after(() => client.close());
@@ -84,8 +87,9 @@ test('actual Pi: disabling Plan on reload does not strand old read-only state; T
 test('actual Pi: Plan-only guards implementation without task tools', { timeout: 30000 }, async (t) => {
   const client = await start(['plan']); t.after(() => client.close());
   const commands = (await client.send('get_commands')).data as any;
-  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['plan', 'retry']);
+  assert.deepEqual(commands.commands.map((item: any) => item.name).sort(), ['plan']);
   await client.prompt('/plan start');
+  assert.match(widgetText(client), /Plan.*只读/);
   assert.equal((await call(client, 'write', { path: 'blocked.txt', content: 'no' })).isError, true);
   await client.prompt('/plan off');
   assert.equal((await call(client, 'write', { path: 'allowed.txt', content: 'yes' })).isError, false);
@@ -101,7 +105,7 @@ test('actual Pi: disabled Todo history cannot block an independent Goal', { time
 });
 test('actual Pi: reload applies Pi resource toggles and creates a fresh coordinator', { timeout: 30000 }, async (t) => {
   const controls = fileURLToPath(new URL('./fixtures/session-controls.ts', import.meta.url));
-  const client = await start(['todos', 'plan', 'ui'], [controls]); t.after(() => client.close());
+  const client = await start(['todos', 'plan'], [controls]); t.after(() => client.close());
   await call(client, 'todo', { action: 'create', subject: '重载保留' }); await client.prompt('/plan start');
   await configure(client.root, ['todos']); await client.prompt('/test-reload');
   const commands = ((await client.send('get_commands')).data as any).commands.map((item: any) => item.name);
@@ -109,7 +113,7 @@ test('actual Pi: reload applies Pi resource toggles and creates a fresh coordina
   assert.equal((await call(client, 'todo', { action: 'update', id: 1, status: 'completed' })).isError, false);
   const mark = client.records.length;
   await call(client, 'todo', { action: 'create', subject: '无 UI 的新任务' });
-  assert.ok(!client.records.slice(mark).some((item) => item.method === 'setWidget'));
+  assert.match(client.records.slice(mark).filter((item) => item.method === 'setWidget').flatMap((item) => (item.widgetLines as string[] | undefined) ?? []).join('\n'), /无 UI 的新任务/);
 });
 test('actual Pi: reverse factory order retains Todo links, Plan guard and shared Goal/Agent state', { timeout: 30000 }, async (t) => {
   const entries = [...FEATURE_NAMES].reverse().map((name) => join(packagePath, `src/${name}/index.ts`));
@@ -123,7 +127,7 @@ test('actual Pi: reverse factory order retains Todo links, Plan guard and shared
 test('actual Pi: project trust can filter preloaded personal resources without phantom modules', { timeout: 30000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dag-project-filter-'));
   await configure(root, [...FEATURE_NAMES]); await mkdir(join(root, '.pi'), { recursive: true });
-  const project = selection(['goal', 'ui']);
+  const project = selection(['goal']);
   await writeFile(join(root, '.pi', 'settings.json'), JSON.stringify({ packages: project.packages.map((item) => ({ ...item, autoload: false })) }));
   const controls = fileURLToPath(new URL('./fixtures/session-controls.ts', import.meta.url));
   const client = await IsolatedClient.start(root, 'project', [controls], ['--approve'], true); t.after(() => client.close());

@@ -6,16 +6,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IsolatedClient, type RpcRecord } from './fixtures/isolated-client.ts';
 
+/** Map a scripted id/label onto the real display option (label plus current value) sent over RPC. */
+function resolveOption(options: readonly string[], wanted: string): string {
+  const norm = (text: string) => text.replace(/\s+/g, ' ').trim();
+  const target = norm(wanted);
+  const exact = options.find((option) => option === wanted || norm(option) === target);
+  if (exact) return exact;
+  const prefixed = options.find((option) => norm(option).startsWith(`${target} `));
+  if (prefixed) return prefixed;
+  throw new Error(`no display option for ${JSON.stringify(wanted)} in ${JSON.stringify(options)}`);
+}
+
 async function menuDriver(client: IsolatedClient) {
   let at = client.records.length;
   const next = async (method: string, title: RegExp) => {
     const matches = (record: RpcRecord) => record.type === 'extension_ui_request' && record.method === method && typeof record.id === 'string';
     await client.until(() => client.records.slice(at).some(matches));
     const index = client.records.findIndex((record, i) => i >= at && matches(record)); const record = client.records[index]!; at = index + 1;
-    assert.match(String(record.title), title); return record;
+    assert.match(String(record.title).split('\n')[0]!, title); return record;
   };
   const answer = (record: RpcRecord, response: object) => { client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: record.id, ...response })}\n`); };
-  return { next, answer, choose: async (title: RegExp, value?: string) => { const record = await next('select', title); if (value !== undefined) assert.ok((record.options as string[]).includes(value), `${value} in ${JSON.stringify(record.options)}`); answer(record, value === undefined ? { cancelled: true } : { value }); return record; } };
+  return { next, answer, choose: async (title: RegExp, value?: string) => { const record = await next('select', title); if (value !== undefined) { const target = resolveOption(record.options as string[], value); assert.ok((record.options as string[]).includes(target), `${value} in ${JSON.stringify(record.options)}`); answer(record, { value: target }); } else answer(record, { cancelled: true }); return record; } };
 }
 const state = (client: IsolatedClient) => client.records.filter((record) => record.type === 'entry_appended' && (record.entry as any)?.customType === 'pi-dag-workflow.retry').map((record) => (record.entry as any).data).at(-1);
 const call = async (client: IsolatedClient, name: string, args: object) => {
@@ -28,8 +39,12 @@ test('actual Pi RPC: menu back/status/invalid correction/empty count/toggle all 
   const client = await IsolatedClient.start(undefined, 'retry-menu-rpc'); t.after(() => client.close());
   await client.prompt('/retry when-error 5m count 3');
   const driver = await menuDriver(client); const opening = client.prompt('/retry');
-  await driver.choose(/重试恢复/, '重试设置'); await driver.choose(/^重试设置$/, '返回');
-  await driver.choose(/重试恢复/, '查看状态'); await driver.choose(/^查看状态/, '返回');
+  // Status is direct readable summary text in the root heading, never JSON, and there is no separate status entry.
+  const root = await driver.choose(/重试恢复/, '重试设置');
+  assert.match(String(root.title), /自动重试：开启/);
+  assert.ok(!String(root.title).trim().startsWith('{'));
+  assert.ok(!(root.options as string[]).some((option) => /查看状态/.test(option)));
+  await driver.choose(/^重试设置$/, '返回');
   await driver.choose(/重试恢复/, '重试设置'); await driver.choose(/^重试设置$/, '修改间隔');
   const first = await driver.next('editor', /错误后等待/); assert.equal(first.prefill, '5m'); driver.answer(first, { value: 'bad interval' });
   const second = await driver.next('editor', /错误后等待/); assert.equal(second.prefill, 'bad interval'); driver.answer(second, { value: '3m,4m' });
@@ -89,9 +104,10 @@ test('actual Pi RPC: retry dialogs do not pause a Goal; foreign dialogs do pause
   const fixture = fileURLToPath(new URL('./fixtures/retry-menu-dialog.ts', import.meta.url));
   const root = fileURLToPath(new URL('../', import.meta.url));
   for (const order of [['todos', 'goal'], ['goal', 'todos']]) {
-    const client = await IsolatedClient.start(undefined, `retry-menu-goal-${order[0]}`, [fixture], [], false, order.map((feature) => `${root}src/${feature}/index.ts`));
+    const client = await IsolatedClient.start(undefined, `retry-menu-goal-${order[0]}`, [fixture], [], false, [...order.map((feature) => `${root}src/${feature}/index.ts`), `${root}src/retry/index.ts`]);
     try {
       await call(client, 'goal', { action: 'create', title: 'Synthetic menu Goal', maxTurns: 1 });
+      await call(client, 'goal', { action: 'enable', id: 1 });
       await client.prompt('/retry when-error 3m count 1');
       const driver = await menuDriver(client); const opening = client.prompt('/retry');
       await driver.choose(/重试恢复/, '重试设置'); await driver.choose(/^重试设置$/, '修改间隔');

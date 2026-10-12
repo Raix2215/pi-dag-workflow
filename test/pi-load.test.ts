@@ -18,7 +18,7 @@ test('Pi actual resource loader loads all five public entries without user setti
     assert.equal(loaded.extensions.length, 5);
     assert.deepEqual(loaded.extensions.map((item) => item.resolvedPath).sort(), FEATURE_NAMES.map((name) => join(root, `src/${name}/index.ts`)).sort());
     assert.deepEqual(loaded.extensions.flatMap((item) => [...item.tools.keys()]).sort(), ['todo', 'goal', 'subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_cancel'].sort());
-    assert.deepEqual(loaded.extensions.flatMap((item) => [...item.commands.keys()]).sort(), ['todos', 'dag', 'plan', 'agents', 'goal'].sort());
+    assert.deepEqual(loaded.extensions.flatMap((item) => [...item.commands.keys()]).sort(), ['todos', 'dag', 'plan', 'agents', 'goal', 'retry'].sort());
     for (const resource of loaded.extensions) for (const tool of resource.tools.values()) {
       assert.equal(tool.definition.namespace?.name, 'pi_dag_workflow');
       assert.ok(tool.definition.namespace?.instructions);

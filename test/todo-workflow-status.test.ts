@@ -96,7 +96,7 @@ async function call(client: IsolatedClient, params: object) {
   return { ...(event.result as any), isError: event.isError === true || (event.result as any).isError === true };
 }
 
-test('actual Pi: protected restored state still permits a read-only status query', { timeout: 30000 }, async (t) => {
+test('actual Pi: a corrupt Todo record stays protected while status still reports normal mode', { timeout: 30000 }, async (t) => {
   const controls = fileURLToPath(new URL('./fixtures/session-controls.ts', import.meta.url));
   const client = await IsolatedClient.start(undefined, 'protected-status', [controls]);
   t.after(() => client.close());
@@ -105,7 +105,7 @@ test('actual Pi: protected restored state still permits a read-only status query
   const result = await call(client, { action: 'status' });
   assert.equal(result.isError, false, JSON.stringify(result));
   assert.equal(JSON.parse(result.content[0].text).protected, true);
-  assert.equal(JSON.parse(result.content[0].text).mode, 'plan');
+  assert.equal(JSON.parse(result.content[0].text).mode, 'normal', 'a broken Todo record is not a global Plan error');
   assert.equal((await client.entries() as any[]).filter((entry) => entry.customType === STATE_TYPE).length, before);
 });
 

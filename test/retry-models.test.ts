@@ -3,11 +3,22 @@ import { test } from 'node:test';
 import { registerRetry } from '../src/retry/register.ts';
 import { defaultRetryModels, emptyRetryState, modelRefText, parseModelRefs, RETRY_TYPE, restoreRetryState, validateRetryState } from '../src/retry/state.ts';
 
+/** Map a scripted id/label onto the real display option (label plus current value). */
+function displayChoice(options: readonly string[], wanted: string): string {
+  const norm = (text: string) => text.replace(/\s+/g, ' ').trim();
+  const target = norm(wanted);
+  const exact = options.find((option) => option === wanted || norm(option) === target);
+  if (exact) return exact;
+  const prefixed = options.find((option) => norm(option).startsWith(`${target} `));
+  if (prefixed) return prefixed;
+  throw new Error(`no display option for ${JSON.stringify(wanted)} in ${JSON.stringify(options)}`);
+}
+
 function host() {
   const events = new Map<string, Function[]>(), entries: any[] = [], requests: any[] = [], changes: string[] = [], notices: string[] = [], dialogs: any[] = [], answers: any[] = [];
-  const catalog = new Map(['A', 'B', 'C'].map((id) => [`test/${id}`, { provider: 'test', id, input: ['text'], reasoning: true }])); let model: any = catalog.get('test/A'), command: any, time = 0, serial = 0, pending = false, idle = true, scope = 'normal', thinking = 'high';
+  const catalog = new Map(['A', 'B', 'C'].map((id) => [`test/${id}`, { provider: 'test', id, name: `Model ${id}`, input: ['text'], reasoning: true }])); let model: any = catalog.get('test/A'), command: any, time = 0, serial = 0, pending = false, idle = true, scope = 'normal', thinking = 'high';
   const timers = new Map<number, { at: number; fn: () => void }>(), missingAuth = new Set<string>(), rejected = new Set<string>(); let gate: ((target: string) => Promise<void>) | undefined;
-  const ctx: any = { hasUI: true, get model() { return model; }, isIdle: () => idle, hasPendingMessages: () => pending, modelRegistry: { find: (provider: string, id: string) => catalog.get(`${provider}/${id}`), getAvailable: () => [...catalog.values()].filter((m) => !missingAuth.has(modelRefText(m))), hasConfiguredAuth: (m: any) => !missingAuth.has(modelRefText(m)) }, sessionManager: { getBranch: () => entries, getLeafId: () => String(entries.length) }, ui: { notify: (text: string) => notices.push(text), confirm: async (title: string, message: string) => { dialogs.push({ title, message }); const reply = answers.shift(); return typeof reply === 'function' ? reply() : reply ?? true; }, select: async (title: string, options: string[]) => { dialogs.push({ title, options }); const reply = answers.shift(); return typeof reply === 'function' ? reply() : reply; }, editor: async (title: string, prefill: string) => { dialogs.push({ title, prefill }); return answers.shift(); } } };
+  const ctx: any = { hasUI: true, get model() { return model; }, isIdle: () => idle, hasPendingMessages: () => pending, modelRegistry: { find: (provider: string, id: string) => catalog.get(`${provider}/${id}`), getAvailable: () => [...catalog.values()].filter((m) => !missingAuth.has(modelRefText(m))), hasConfiguredAuth: (m: any) => !missingAuth.has(modelRefText(m)) }, sessionManager: { getBranch: () => entries, getLeafId: () => String(entries.length) }, ui: { notify: (text: string) => notices.push(text), confirm: async (title: string, message: string) => { dialogs.push({ title, message }); const reply = answers.shift(); return typeof reply === 'function' ? reply() : reply ?? true; }, select: async (title: string, options: string[]) => { dialogs.push({ title, options }); const reply = answers.shift(); const chosen = typeof reply === 'function' ? await reply() : reply; return chosen === undefined || chosen === null ? chosen : displayChoice(options, String(chosen)); }, editor: async (title: string, prefill: string) => { dialogs.push({ title, prefill }); return answers.shift(); } } };
   const fire = async (name: string, event: any = {}) => { for (const fn of events.get(name) ?? []) await fn(event, ctx); };
   const pi: any = { on(name: string, fn: Function) { events.set(name, [...events.get(name) ?? [], fn]); }, registerCommand(_name: string, value: any) { command = value; }, appendEntry(customType: string, data: any) { entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendUserMessage(text: string) { void command.handler(text.slice('/retry '.length), ctx); }, sendMessage(message: any) { requests.push({ model: modelRefText(model), at: time, message }); }, getThinkingLevel: () => thinking, setThinkingLevel(level: string) { thinking = model.reasoning ? level : 'off'; }, async setModel(target: any) { const key = modelRefText(target); if (gate) await gate(key); if (rejected.has(key)) return false; const previousModel = model; model = target; changes.push(key); thinking = model.reasoning ? 'medium' : 'off'; await fire('model_select', { model: target, previousModel, source: 'set' }); return true; } };
   const failed: boolean[] = []; const controller = registerRetry(pi, { branch: () => entries as never, scope: () => scope, mode: () => 'normal', protected: () => false, failed: (_ctx, waiting) => failed.push(waiting), now: () => time, setTimer(fn, delay) { const id = ++serial; timers.set(id, { at: time + delay, fn }); return id as never; }, clearTimer(id) { timers.delete(id as never); } });
@@ -100,7 +111,7 @@ test('policy editors preserve actual usage and countdown; cancelled/stale dialog
 });
 
 test('candidate and per-model menus return to root, preserve invalid text and allow clearing without enabling', async () => {
-  const h = host(); h.answers.push('修改候选顺序', 'test/B', '保存候选顺序', true, '退出菜单'); await h.cmd('models'); assert.equal(h.controller.snapshot().models!.enabled, false); assert.equal(h.controller.snapshot().enabled, false);
+  const h = host(); h.answers.push('修改候选顺序', '添加候选…', 'B', '保存候选顺序', true, '退出菜单'); await h.cmd('models'); assert.equal(h.controller.snapshot().models!.enabled, false); assert.equal(h.controller.snapshot().enabled, false); assert.deepEqual(h.controller.snapshot().models!.candidates, [{ provider: 'test', id: 'B' }]);
   h.answers.push('修改每模型次数', 'bad', '3', true, '退出菜单'); await h.cmd('models'); assert.ok(h.dialogs.some((dialog) => dialog.prefill === 'bad')); assert.equal(h.controller.snapshot().models!.after, 3);
   h.answers.push('开启模型替代', true, '退出菜单'); await h.cmd('models'); assert.equal(h.controller.snapshot().models!.enabled, true); assert.equal(h.controller.snapshot().enabled, false);
   h.answers.push('修改候选顺序', '清空候选', '保存候选顺序', true, '退出菜单'); await h.cmd('models'); assert.deepEqual(h.controller.snapshot().models!.candidates, []); assert.equal(h.controller.snapshot().models!.enabled, false);

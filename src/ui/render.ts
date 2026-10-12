@@ -2,7 +2,8 @@ import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-cod
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { dagStructure, type DagStructure } from "../dag/cache.ts";
 import { dagLayout } from "../dag/layout.ts";
-import { statusLabel, type Todo, type TodoFilter, type WorkflowState } from "../todos/state.ts";
+import type { Todo, TodoFilter, WorkflowState } from "../todos/state.ts";
+import { taskStatusLabels as statusLabel } from '../shared/state-types.ts';
 import { chinese, type Translator } from "../shared/i18n.ts";
 import { filteredView, latestBoundJobs, type TaskView } from "./filter.ts";
 import { objectId, snapshotCache, weakMemo } from "./render-cache.ts";

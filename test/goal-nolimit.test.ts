@@ -208,7 +208,7 @@ test('real Pi: the nolimit menu flips a Goal without starting it and reports ∞
   await client.until(() => client.records.slice(offset).some((event) => event.method === 'select'));
   const menu = client.records.slice(offset).find((event) => event.method === 'select')!;
   const options = menu.options as string[];
-  assert.equal(options.length, 2);
+  assert.equal(options.length, 3, 'two choices and explicit back');
   assert.match(String(menu.title), /续跑轮数/);
   assert.ok(options.some((option) => option.includes('不限')));
   client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: options[1] })}\n`);
@@ -219,6 +219,6 @@ test('real Pi: the nolimit menu flips a Goal without starting it and reports ∞
   assert.equal(saved.goals[0].maxTurns, 2);
   assert.equal(saved.run.used, 0);
   assert.equal(saved.run.paused, true);
-  await client.prompt('/goal list');
+  await client.prompt('/goal get #1');
   assert.ok(client.records.some((record) => record.method === 'notify' && String(record.message).includes('∞')), 'the Goal list shows the unlimited allowance');
 });

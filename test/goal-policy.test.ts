@@ -216,7 +216,7 @@ for (const language of ['zh-CN', 'en']) {
     await client.until(() => client.records.slice(offset).some((event) => event.method === 'select'));
     const menu = client.records.slice(offset).find((event) => event.method === 'select')!;
     const options = menu.options as string[];
-    assert.equal(options.length, 2); assert.match(String(menu.title), /运行中模型中断|Model interruption while running/); if (language === 'en') assert.doesNotMatch(String(menu.title), /\p{Script=Han}/u);
+    assert.equal(options.length, 3, 'two policies and explicit back'); assert.match(String(menu.title), /运行中模型中断|Model interruption while running/); if (language === 'en') assert.doesNotMatch(String(menu.title), /\p{Script=Han}/u);
     client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: options[1] })}\n`);
     await configuring;
     assert.equal(client.records.slice(offset).filter((event) => event.type === 'agent_start').length, 0);

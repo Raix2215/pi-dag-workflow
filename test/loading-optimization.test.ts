@@ -9,7 +9,7 @@ import { emptyState, STATE_TYPE } from '../src/todos/state.ts';
 import { PresetStore } from '../src/todos/presets.ts';
 import { widgetHeightBudget } from '../src/ui/render.ts';
 
-async function host(features: readonly Feature[], branch: any[] = [], tui = false) {
+async function host(features: readonly (Feature | 'ui')[], branch: any[] = [], tui = false) {
   const root = await mkdtemp(join(tmpdir(), 'dag-lifecycle-'));
   const events = new Map<string, Function[]>(), tools = new Map<string, any>();
   let reads = 0, widgets = 0, dataReads = 0, leaf = 1, active: string[] = [];
@@ -27,7 +27,7 @@ async function host(features: readonly Feature[], branch: any[] = [], tui = fals
   return { ctx, fire, call, widget: () => latestWidget, reads: () => reads, dataReads: () => dataReads, widgets: () => widgets, close: async () => { await fire('session_shutdown'); await rm(root, { recursive: true, force: true }); } };
 }
 
-test('all loaded modules share one branch read, one Todo restore and one preset load in either order', async () => {
+test('all loaded modules share one branch read while Todo and legacy Plan each read their own domain once, with one preset load in either order', async () => {
   const original = PresetStore.prototype.load;
   const previous = process.env.PI_CODING_AGENT_DIR;
   let loads = 0;
@@ -40,11 +40,11 @@ test('all loaded modules share one branch read, one Todo restore and one preset 
       const h = await host(features, [{ type: 'custom', customType: STATE_TYPE, data: state }]);
       try {
         await h.fire('session_start');
-        assert.equal(h.reads(), 1); assert.equal(h.dataReads(), 1); assert.equal(loads, 1);
+        assert.equal(h.reads(), 1); assert.equal(h.dataReads(), 2, 'Todo and Plan each read the legacy record once'); assert.equal(loads, 1);
         const blocked = await h.call('todo', { action: 'update', id: 1, status: 'completed' });
-        assert.equal(blocked.isError, true, 'the Plan bit survives a later-loaded Plan module');
+        assert.equal(blocked.isError, true, 'the legacy Plan bit still restores independently when Plan loads later');
         await h.fire('session_tree');
-        assert.equal(h.reads(), 2); assert.equal(h.dataReads(), 2); assert.equal(loads, 2);
+        assert.equal(h.reads(), 2); assert.equal(h.dataReads(), 4); assert.equal(loads, 2);
       } finally { await h.close(); }
     }
   } finally {
@@ -61,7 +61,7 @@ test('Goal-only and UI-only never read Todo/preset state or fail on disabled cor
     try { await h.fire('session_start'); assert.equal(loads, 0); assert.equal(h.dataReads(), 0); assert.equal((await h.call('goal', { action: 'create', title: 'independent' })).isError, undefined); }
     finally { await h.close(); }
     const ui = await host(['ui']);
-    try { await ui.fire('session_start'); assert.equal(ui.reads(), 1, 'shared retry settings restore once, without reading Todo data'); assert.equal(loads, 0); }
+    try { await ui.fire('session_start'); assert.equal(ui.reads(), 0, 'the inert UI entry restores nothing, not even shared retry settings'); assert.equal(loads, 0); }
     finally { await ui.close(); }
   } finally { PresetStore.prototype.load = original; }
 });

@@ -9,15 +9,17 @@ import { CORE_TOOLS, ProfileStore, type Profile } from "./profiles.ts";
 import { contextArtifacts, taskContext } from "./context.ts";
 import { resetClosure } from "../todos/presets.ts";
 import { AgentNotices, type Notice } from "./notices.ts";
-import { clean, displayText, notify } from "../ui/render.ts";
-import { applyTodo, type ClearScope, type Todo, type TodoParams, type WorkflowState } from "../todos/state.ts";
+import { choose, readView, type MenuCursor } from '../ui/menu.ts';
+import { jobSummary, profileSummary, toolDisplay } from '../ui/presentation.ts';
+import { clean, notify } from "../ui/render.ts";
+import type { ClearScope, Todo, TodoParams, WorkflowState } from "../todos/state.ts";
 import { workflowNamespace, readOnly } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
 import { AgentJournal, AGENTS_ENTRY_TYPE, foldAgentEntries } from './persistence.ts';
 
 export const AGENTS_TYPE = AGENTS_ENTRY_TYPE;
-interface Hooks { msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean; beforeWake?(ctx: ExtensionContext): void; compacting?(): boolean; holdingRecovery?(): boolean; branch?(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']> }
+interface Hooks { userPrompt?<T>(title: string, run: () => Promise<T>): Promise<T>; summary?(): boolean; setSummary?(visible: boolean, ctx: ExtensionContext): void; msg?: Translator; ui?(): boolean; state(): WorkflowState; mutate(params: TodoParams, ctx: ExtensionContext): unknown; paint(ctx: ExtensionContext): void; protected(): boolean; canWake?(): boolean; reserveWake?(ctx: ExtensionContext): boolean; pauseAuto?(ctx: ExtensionContext): void; resumeAuto?(): boolean; beforeWake?(ctx: ExtensionContext): void; compacting?(): boolean; holdingRecovery?(): boolean; branch?(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']> }
 const active = (job: JobSummary) => ["starting", "running", "waiting"].includes(job.status);
 const fingerprint = (state: WorkflowState, id?: number) => {
   const task = state.tasks.find((item) => item.id === id);
@@ -272,7 +274,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     if (execution && hooks.state().plan) throw new Error(msg("Plan 中不实施／派发／发送执行信息；先 /plan off"));
     return runtime;
   }
-  const renderResult = (result: { content: { type: string; text?: string }[]; isError?: boolean }, _options: unknown, theme: ExtensionContext["ui"]["theme"]) => new Text(theme.fg(result.isError ? "error" : "text", displayText(result.content.map((item) => item.text ?? "").join("\n"))), 0, 0);
+  const renderResult = (result: { content: { type: string; text?: string }[]; details?: unknown; isError?: boolean }, _options: unknown, theme: ExtensionContext["ui"]["theme"]) => new Text(theme.fg(result.isError ? "error" : "text", toolDisplay(result.details, result.content.map((item) => item.text ?? "").join("\n"), msg)), 0, 0);
   const reply = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data });
   const fail = (cause: unknown) => { const error = safeDiagnostic(String(cause)); return { isError: true, content: [{ type: 'text' as const, text: error }], details: { error } }; };
 
@@ -298,6 +300,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         const task = before.tasks.find((item) => item.id === todoId);
         if (todoId !== undefined) {
           if (!task || task.status === "completed" || task.status === "deleted") throw new Error(msg("只能派发未完成的当前 Todo"));
+          const { applyTodo } = await import('../todos/state.ts');
           applyTodo(before, { action: "update", id: task.id, status: "in_progress" }, msg); // Validate without claiming work on startup failure.
         }
         // Opt-in: the parent decides per dispatch, and only a bound task can carry a fragment brief.
@@ -376,6 +379,68 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     async execute(_id, params, _signal, _update, ctx) { try { const agent = ready(ctx, false); const job = agent.inspect(params.jobId)[0]!; if (params.remove || job.status !== 'completed' || job.reportDelivery !== 'pending') notices.drop(params.jobId); await agent.cancel(params.jobId, { ...(params.remove !== undefined ? { remove: params.remove } : {}) }); original.delete(params.jobId); adjusted.delete(params.jobId); return reply({ jobId: params.jobId, stopped: true, removed: params.remove ?? false }); } catch (cause) { return fail(cause); } },
   });
 
+  async function profilesMenu(ctx: ExtensionContext) {
+    const epoch = generation, cursor: MenuCursor = {};
+    const current = () => epoch === generation;
+    const owned = <T>(title: string, run: () => Promise<T>) => hooks.userPrompt ? hooks.userPrompt(title, run) : run();
+    while (current()) {
+      await profiles!.load(); if (!current()) return;
+      const all = profiles!.list(), title = msg('Profile');
+      const selected = await owned(title, () => choose(ctx, title, all.map((profile) => ({ id: profile.name, label: profile.name, value: profile.model ? `${profile.model.provider}/${profile.model.id}` : msg('继承主会话'), description: profile.tools?.join(', ') ?? msg('继承主会话核心工具') })), { msg, cursor, searchable: true, isCurrent: current, lines: (item) => { const profile = all.find((value) => value.name === item.id); return profile ? profileSummary(profile, msg) : []; } }));
+      if (!current() || selected === undefined) return;
+      const profile = all.find((value) => value.name === selected); if (!profile) continue;
+      const detail = msg`Profile ${profile.name}`;
+      const action = await owned(detail, () => choose(ctx, detail, [{ id: 'read', label: msg('读取完整指令') }, { id: 'instructions', label: msg('编辑 Profile 指令') }, { id: 'skills', label: msg('编辑技能文件入口') }], { msg, isCurrent: current, lines: profileSummary(profile, msg) }));
+      if (!current() || action === undefined) continue;
+      if (action === 'read') await owned(detail, () => readView(ctx, detail, profileSummary(profile, msg).join('\n'), { msg, isCurrent: current }));
+      if (action === 'instructions' || action === 'skills') {
+        const title = action === 'instructions' ? msg('Profile 指令') : msg('技能文件：每行一个本地 Markdown 路径');
+        const input = await owned(title, () => ctx.ui.editor(title, action === 'instructions' ? profile.instructions ?? '' : (profile.skills ?? []).join('\n')));
+        if (!current() || input === undefined) continue;
+        await profiles!.load(); if (!current()) return;
+        if (JSON.stringify(profiles!.get(profile.name)) !== JSON.stringify(profile)) { notify(ctx, msg('Profile 已改变，未保存过期输入'), 'warning'); continue; }
+        profiles!.set({ ...profile, ...(action === 'instructions' ? { instructions: input } : { skills: input.split('\n').map((value) => value.trim()).filter(Boolean) }) }); await profiles!.save();
+      }
+    }
+  }
+  async function agentsMenu(ctx: ExtensionContext) {
+    const epoch = generation, cursor: MenuCursor = {}, current = () => epoch === generation;
+    const owned = <T>(title: string, run: () => Promise<T>) => hooks.userPrompt ? hooks.userPrompt(title, run) : run();
+    let filter: 'attention' | 'all' = 'attention';
+    while (current()) {
+      const all = ready(ctx, false).exportSummaries();
+      const rows = all.filter((job) => filter === 'all' || active(job) || job.reportDelivery === 'pending' || job.todoId !== undefined && todoStatusOf(job.todoId) !== 'completed' || ['failed', 'interrupted'].includes(job.status) && !job.dismissed);
+      const title = msg('子 Agent');
+      const selected = await owned(title, () => choose(ctx, title, rows.map((job) => ({ id: job.id, label: `${job.id} ${job.label ?? ''}`, value: statusLabel(job), description: job.todoId ? `Todo #${job.todoId}` : msg('独立任务') })), { msg, cursor, searchable: true, isCurrent: current, lines: (item) => { const job = runtime?.exportSummaries().find((job) => job.id === item.id); return job ? jobSummary({ ...job, ...(todoStatusOf(job.todoId) ? { todoStatus: todoStatusOf(job.todoId)! } : {}) }, msg) : []; }, actions: [{ id: 'profiles', label: msg('Profile…') }, { id: 'filter', label: msg('筛选'), value: filter === 'attention' ? msg('需要关注') : msg('全部') }, { id: 'summary', label: msg('显示摘要'), value: hooks.summary?.() !== false ? msg('开启') : msg('关闭') }, { id: 'delivery', label: msg('结果自动唤醒'), value: paused ? msg('暂停') : msg('开启') }] }));
+      if (!current() || selected === undefined) return;
+      if (selected === 'profiles') { await profilesMenu(ctx); continue; }
+      if (selected === 'filter') { filter = filter === 'all' ? 'attention' : 'all'; cursor.page = 0; continue; }
+      if (selected === 'summary') { hooks.setSummary?.(hooks.summary?.() === false, ctx); continue; }
+      if (selected === 'delivery') { if (!paused) { paused = true; clearDelivery(); hooks.pauseAuto?.(ctx); } else if (!hooks.resumeAuto || hooks.resumeAuto()) { paused = false; failedRound = false; } else notify(ctx, msg('Goal 续跑仍暂停；先明确 /goal enable'), 'warning'); continue; }
+      const job = runtime?.exportSummaries().find((job) => job.id === selected); if (!job) continue;
+      const jobTitle = `${job.id} · ${job.label ?? job.profile}`;
+      const action = await owned(jobTitle, () => choose(ctx, jobTitle, [
+        { id: 'output', label: msg('阅读报告与诊断') },
+        { id: 'send', label: msg('发送方向'), ...(!active(job) ? { disabledReason: msg('子 Agent 已停止') } : {}) },
+        { id: 'answer', label: msg('回答问题'), ...(job.pendingRequests === 0 ? { disabledReason: msg('当前没有待答复问题') } : {}) },
+        { id: 'cancel', label: msg('停止此子 Agent'), ...(!active(job) ? { disabledReason: msg('子 Agent 已停止') } : {}) },
+        { id: 'remove', label: msg('移除记录') },
+      ], { msg, isCurrent: current, lines: () => jobSummary(runtime?.exportSummaries().find((value) => value.id === job.id) ?? job, msg) }));
+      if (!current() || action === undefined) continue;
+      if (action === 'output') { const output = await ready(ctx, false).wait(job.id, { timeout: 0 }); if (current()) await owned(jobTitle, () => readView(ctx, jobTitle, jobSummary({ ...output, ...(todoStatusOf(output.todoId) ? { todoStatus: todoStatusOf(output.todoId)! } : {}) }, msg).join('\n'), { msg, isCurrent: current })); }
+      if (action === 'send' || action === 'answer') {
+        const requests = action === 'answer' ? (await ready(ctx, false).wait(job.id, { timeout: 0 })).requests : [];
+        const question = requests.length ? requests[0] : undefined;
+        const inputTitle = action === 'answer' ? msg('答复子 Agent') : msg('调整子 Agent 方向');
+        const input = await owned(inputTitle, () => ctx.ui.editor(inputTitle, question?.message ?? ''));
+        if (current() && input?.trim()) await ready(ctx).send({ ...(action === 'answer' && question ? { requestId: question.requestId } : { recipient: job.id }), message: input });
+      }
+      if (action === 'cancel' || action === 'remove') {
+        const prompt = action === 'cancel' ? msg('停止子 Agent？') : msg('移除子 Agent 记录？');
+        if (await owned(prompt, () => ctx.ui.confirm(prompt, msg('不撤销文件修改；移除会丢弃保留报告和记录。'))) && current()) { if (action === 'remove' || job.status !== 'completed' || job.reportDelivery !== 'pending') notices.drop(job.id); await ready(ctx, false).cancel(job.id, { remove: action === 'remove' }); }
+      }
+    }
+  }
   pi.registerCommand("agents", { description: msg("子 Agent 状态／消息／取消与 Profile；也可直接描述需求"), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
@@ -391,13 +456,14 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         await restore(ctx); return;
       }
       const agent = ready(ctx, false);
-      if (!args.trim() || action === "list") { notify(ctx, JSON.stringify({ jobs: agent.inspect(), paused }, null, 2), "info"); return; }
+      if (!args.trim() || action === 'list') { await agentsMenu(ctx); return; }
+      if (action === 'show' || action === 'hide') { hooks.setSummary?.(action === 'show', ctx); return; }
       if (action === "pause") { paused = true; clearDelivery(); hooks.pauseAuto?.(ctx); ctx.ui.notify(msg("已暂停结果自动唤醒；子 Agent 仍可能运行，停止请用 /agents cancel"), "info"); return; }
       if (action === "resume") { ready(ctx); if (hooks.resumeAuto ? !hooks.resumeAuto() : hooks.canWake?.() === false) throw new Error(msg("Goal 续跑仍暂停；先明确 /goal enable")); paused = false; failedRound = false; ctx.ui.notify(msg("后续新结果可自动唤醒；暂停期间旧报告仍可 /agents wait 查看"), "info"); return; }
       if (action === "cancel" || action === "remove") { if (parts.length !== 1) throw new Error(msg`/agents ${action} jobId`); const job = agent.inspect(parts[0]!)[0]!; if (action === 'remove' || job.status !== 'completed' || job.reportDelivery !== 'pending') notices.drop(parts[0]!); await agent.cancel(parts[0]!, { remove: action === "remove" }); return; }
-      if (action === "wait") { notify(ctx, JSON.stringify(await agent.wait(parts[0]!, { timeout: 0 })), "info"); return; }
+      if (action === 'wait') { const epoch = generation; const job = await agent.wait(parts[0]!, { timeout: 0 }); await readView(ctx, job.id, jobSummary(job, msg).join('\n'), { msg, isCurrent: () => epoch === generation }); return; }
       if (action === "send" || action === "reply") { ready(ctx); const target = parts.shift(); if (!target || !parts.length) throw new Error(msg`/agents ${action} 编号 消息`); const interrupt = action === 'send' && parts[0] === '--interrupt'; if (interrupt) parts.shift(); if (!parts.length) throw new Error(msg('/agents send jobId [--interrupt] 消息')); await agent.send({ ...(action === "send" ? { recipient: target } : { requestId: target }), message: parts.join(" "), ...(interrupt ? { interrupt: true } : {}) }); if (action === "send") adjusted.add(target); return; }
-      if (action === "profiles") { await profiles!.load(); notify(ctx, JSON.stringify(profiles!.list(), null, 2), "info"); return; }
+      if (action === 'profiles') { await profilesMenu(ctx); return; }
       if (action === "profile") {
         ready(ctx);
         const [name, model, thinking, tools] = parts;

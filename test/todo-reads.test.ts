@@ -65,7 +65,8 @@ test('read, single mutation and no-op details are compact; rendering expands onl
   assert.equal(list.details.page.total, 1000);
   assert.ok(h.render(list, false).length <= 6);
   assert.ok(h.render(list, true).length >= 50);
-  assert.match(h.render(list, false).join('\n'), /afterId/);
+  assert.match(h.render(list, false).join('\n'), /50.*1000/);
+  assert.doesNotMatch(h.render(list, false).join('\n'), /afterId|"action"/);
   const get = await h.call({ action: 'get', id: 7 });
   assert.deepEqual(get.details.tasks.map((task: Todo) => task.id), [7]);
   const noOp = await h.call({ action: 'update', id: 7, subject: 'Task 7' });

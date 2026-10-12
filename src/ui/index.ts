@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { connectFeature } from '../workflow/connect.ts';
 
-/** Public Pi resource, selected independently with pi config. */
-export default async function (pi: ExtensionAPI): Promise<void> { await connectFeature(pi, 'ui'); }
+/** Compatibility for saved Pi path filters. UI no longer activates a feature or controller. */
+export default function (_pi: ExtensionAPI): void {}

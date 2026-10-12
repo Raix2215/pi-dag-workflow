@@ -91,7 +91,7 @@ for (const language of ['zh-CN', 'en'] as const) test(`actual Pi: autoresearch m
   await client.prompt('TEST CALL goal {"action":"create","title":"预算测试","description":"ORIGINAL-SCOPE","maxTurns":1}');
   const mark = client.records.length, configuring = client.prompt('/goal autoresearch #1'); await client.until(() => client.records.slice(mark).some((record) => record.method === 'select'));
   const menu = client.records.slice(mark).find((record) => record.method === 'select')!; client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: (menu.options as string[])[1] })}\n`); await configuring;
-  assert.equal(client.records.slice(mark).filter((record) => record.type === 'agent_start').length, 0); await client.prompt('/goal list'); assert.ok(client.records.some((record) => record.method === 'notify' && String(record.message).includes('∞')));
+  assert.equal(client.records.slice(mark).filter((record) => record.type === 'agent_start').length, 0); await client.prompt('/goal get #1'); assert.ok(client.records.some((record) => record.method === 'notify' && String(record.message).includes('∞')));
   await client.prompt('/goal enable #1'); await client.until(() => client.records.some((record) => record.type === 'entry_appended' && (record.entry as any)?.customType === GOAL_TYPE && (record.entry as any).data.run.used >= 4));
   await client.prompt('/goal disable #1'); await client.send('abort');
   const entries = await client.entries() as any[], saved = entries.findLast((entry) => entry.customType === GOAL_TYPE).data;

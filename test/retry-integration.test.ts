@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
-import { STATE_TYPE, type WorkflowState } from '../src/todos/state.ts';
+import { PLAN_TYPE } from '../src/plan/state.ts';
 
 /** Offline session-level /retry: no Goal module involvement, no network or credentials. */
 async function agentRoot(): Promise<string> {
@@ -20,13 +20,15 @@ const retryStates = (client: IsolatedClient) => client.records
   .filter((record) => record.type === 'entry_appended' && (record.entry as { customType?: string } | undefined)?.customType === 'pi-dag-workflow.retry')
   .map((record) => (record.entry as { data: { enabled: boolean; attempts: number; skipped: number; settings?: { count?: number } } }).data);
 const retryState = (client: IsolatedClient) => retryStates(client).at(-1);
-const workflow = (client: IsolatedClient) => client.records
-  .filter((record) => record.type === 'entry_appended' && (record.entry as { customType?: string } | undefined)?.customType === STATE_TYPE)
-  .map((record) => (record.entry as { data: WorkflowState }).data).at(-1);
+const planState = (client: IsolatedClient) => client.records
+  .filter((record) => record.type === 'entry_appended' && (record.entry as { customType?: string } | undefined)?.customType === PLAN_TYPE)
+  .map((record) => (record.entry as { data: { enabled?: boolean } }).data).at(-1);
 
-test('actual Pi: /retry recovers ordinary work without any Goal', { timeout: 30000 }, async (t) => {
+test('actual Pi: Retry-only recovers ordinary work without loading other features', { timeout: 30000 }, async (t) => {
   const root = await agentRoot();
-  const client = await start(root, 'retry-normal', 2); t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  const retryEntry = fileURLToPath(new URL('../src/retry/index.ts', import.meta.url));
+  const client = await IsolatedClient.start(root, 'retry-normal', [], ['--dag-test-retry-failures', '2'], false, [retryEntry]); t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  assert.deepEqual(((await client.send('get_commands')).data as any).commands.map((command: any) => command.name), ['retry']);
   await client.prompt('/retry when-error 1s count 2');
   await client.prompt('RETRY-TEST normal');
   await client.until(() => retryStates(client).some((state) => state.attempts === 2), 20000);
@@ -45,7 +47,7 @@ test('actual Pi: /retry recovers in Plan mode without unlocking its read-only po
   await client.until(() => retryStates(client).some((state) => state.attempts === 1), 20000);
   await client.until(() => retryState(client)?.attempts === 0, 20000);
   assert.equal((await retryRequests(client)).length, 1);
-  assert.equal(workflow(client)?.plan, true, 'recovery keeps Plan read-only');
+  assert.equal(planState(client)?.enabled, true, 'recovery keeps Plan read-only');
 });
 
 test('actual Pi: retry status is readable without granting a model edit parameter or running a request', { timeout: 30000 }, async (t) => {
@@ -53,10 +55,12 @@ test('actual Pi: retry status is readable without granting a model edit paramete
   await client.prompt('/retry when-error 3m,4m count 3');
   const notifications = await client.prompt('/retry status');
   assert.equal(notifications.some((record) => record.type === 'agent_start'), false);
+  const summary = String(notifications.findLast((record) => record.method === 'notify')?.message ?? '');
+  assert.match(summary, /自动重试：开启/); assert.match(summary, /重试间隔：3m,4m/); assert.ok(!summary.trim().startsWith('{'));
   const events = await client.prompt('TEST CALL todo {"action":"status"}');
   const result = events.find((record) => record.type === 'tool_execution_end' && record.toolName === 'todo')!.result as any;
-  const status = JSON.parse(result.content[0].text);
-  assert.equal(status.retry.enabled, true); assert.equal(status.retry.intervals, '3m,4m'); assert.equal(status.retry.count, 3);
+  const status = (result.details as { status: { retry: { enabled: boolean; intervals: string; count: number; mode: string } } }).status.retry;
+  assert.equal(status.enabled, true); assert.equal(status.intervals, '3m,4m'); assert.equal(status.count, 3);
   assert.equal(status.mode, 'normal'); assert.equal('tasks' in result.details, false);
   const mark = retryStates(client).length;
   await client.prompt('TEST CALL todo {"action":"status","intervals":"1s"}');
@@ -71,8 +75,8 @@ test('actual Pi: reload cancels pending recovery and retains settings in the bra
   await client.prompt('/test-reload'); await new Promise((resolve) => setTimeout(resolve, 1200));
   assert.equal((await retryRequests(client)).length, 0);
   const result = await client.prompt('/retry status');
-  const status = JSON.parse(String(result.findLast((record) => record.method === 'notify')!.message));
-  assert.equal(status.enabled, false); assert.equal(status.intervals, '1s'); assert.equal(status.count, 3);
+  const summary = String(result.findLast((record) => record.method === 'notify')!.message);
+  assert.match(summary, /自动重试：关闭/); assert.match(summary, /重试间隔：1s/); assert.match(summary, /0\/3/); assert.ok(!summary.trim().startsWith('{'));
   assert.equal(client.records.some((record) => record.type === 'extension_error'), false);
 });
 

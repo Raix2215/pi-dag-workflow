@@ -3,11 +3,16 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from '@e
 import { chinese, type Translator } from '../shared/i18n.ts';
 import { completeArguments } from '../shared/completion.ts';
 import { notify } from '../ui/render.ts';
+import { choose, type MenuCursor } from '../ui/menu.ts';
+import { retrySummary } from '../ui/presentation.ts';
 import { safeDiagnostic } from '../agents/diagnostics.ts';
 import { defaultRetryModels, modelRefText, parseModelRefs, validateRetryModels, type RetryModels, type RetryModelRef, emptyRetryState, intervalText, parseCount, parseIntervals, parseRetrySettings, RETRY_MESSAGE, RETRY_TYPE, restoreRetryState, retryDelay, retrySpent, validateRetryState, type RetryState } from './state.ts';
 
 interface Failure { id: string; stopReason: 'error' | 'aborted'; message: string }
 interface Hooks {
+  onChanged?(ctx: ExtensionContext): void;
+  summary?(): boolean;
+  setSummary?(visible: boolean, ctx: ExtensionContext): void;
   msg?: Translator;
   branch(ctx: ExtensionContext): ReturnType<ExtensionContext['sessionManager']['getBranch']>;
   scope(): string;
@@ -343,33 +348,48 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
       for (const ref of candidates) if (!ctx.modelRegistry.find(ref.provider, ref.id)) throw new Error(msg`找不到模型 ${modelRefText(ref)}`);
       await confirmModels({ ...before, candidates, enabled: true }, ctx);
     }
-    notify(ctx, JSON.stringify(snapshot(), null, 2), 'info');
+    notify(ctx, retrySummary(snapshot(), msg).join('\n'), 'info');
   }
   async function modelsMenu(ctx: ExtensionCommandContext, active: () => boolean) {
     const title = msg('替代模型'), editOrder = msg('修改候选顺序'), editAfter = msg('修改每模型次数'), back = msg('返回');
     while (active()) {
       const before = state.models ?? defaultRetryModels(), revision = settingsRevision;
       const toggle = msg(before.enabled ? '关闭模型替代' : '开启模型替代');
-      const choice = await prompt(title, () => ctx.ui.select(title, [toggle, editOrder, editAfter, back]));
+      const choice = await prompt(title, () => choose(ctx, title, [{ id: toggle, label: toggle }, { id: editOrder, label: editOrder, value: msg`${before.candidates.length} 个候选` }, { id: editAfter, label: editAfter, value: String(before.after) }], { msg, isCurrent: active, lines: () => retrySummary(snapshot(), msg) }));
       if (!active() || choice === undefined || choice === back) return;
       if (revision !== settingsRevision) continue;
       try {
         if (choice === toggle && before.enabled) { await modelsCommand(['off'], ctx); return; }
         if (choice === editOrder || choice === toggle && !before.candidates.length) {
           let candidates = [...before.candidates];
-          const done = msg('保存候选顺序'), clear = msg('清空候选');
+          const done = msg('保存候选顺序'), clear = msg('清空候选'), add = msg('添加候选…');
+          const cursor: MenuCursor = {}, pickerCursor: MenuCursor = {};
           while (active() && revision === settingsRevision) {
-            const available = ctx.modelRegistry.getAvailable().filter((model) => !candidates.some((ref) => modelRefText(ref) === modelRefText(model))).map(modelRefText).sort();
-            const orderTitle = msg`候选顺序 · ${candidates.map(modelRefText).join(' → ') || '-'}`;
-            const selected = await prompt(orderTitle, () => ctx.ui.select(orderTitle, [...(candidates.length < 8 ? available : []), done, clear, back]));
-            if (!active() || revision !== settingsRevision || selected === undefined || selected === back) break;
+            const orderTitle = msg('候选顺序 · 草稿');
+            const selected = await prompt(orderTitle, () => choose(ctx, orderTitle, candidates.map((ref, index) => ({ id: modelRefText(ref), label: `${index + 1}  ${ref.id}`, value: ref.provider })), { msg, cursor, isCurrent: () => active() && revision === settingsRevision, lines: [msg('选择候选可上移、下移或移除；保存前不会改变运行设置。')], actions: [{ id: add, label: add, ...(candidates.length >= 8 ? { disabledReason: msg('最多八个候选模型') } : {}) }, { id: done, label: done }, { id: clear, label: clear }] }));
+            if (!active() || revision !== settingsRevision || selected === undefined) break;
             if (selected === clear) { candidates = []; continue; }
             if (selected === done) {
               if (choice === toggle && !candidates.length) { notify(ctx, msg('请先选择候选模型'), 'warning'); continue; }
               if (await confirmModels({ ...before, candidates, enabled: candidates.length > 0 && (before.enabled || choice === toggle) }, ctx, active)) return;
               break;
             }
-            if (available.includes(selected) && candidates.length < 8) candidates.push(...parseModelRefs([selected], msg));
+            if (selected === add) {
+              const available = ctx.modelRegistry.getAvailable().filter((model) => !candidates.some((ref) => modelRefText(ref) === modelRefText(model))).sort((a, b) => modelRefText(a).localeCompare(modelRefText(b)));
+              const title = msg('添加候选模型');
+              const picked = await prompt(title, () => choose(ctx, title, available.map((model) => ({ id: modelRefText(model), label: model.id, value: model.provider, description: model.name })), { msg, cursor: pickerCursor, searchable: true, isCurrent: () => active() && revision === settingsRevision, lines: (item) => { const model = available.find((value) => modelRefText(value) === item.id); return model ? [modelRefText(model), model.name, model.input.includes('image') ? msg('支持图像') : msg('仅文字'), msg('选择候选不会立即切换当前模型')] : []; } }));
+              if (picked && active() && revision === settingsRevision && candidates.length < 8) candidates.push(...parseModelRefs([picked], msg));
+              continue;
+            }
+            const index = candidates.findIndex((ref) => modelRefText(ref) === selected);
+            if (index >= 0) {
+              const title = msg('调整候选位置');
+              const action = await prompt(title, () => choose(ctx, title, [{ id: 'up', label: msg('上移'), ...(index === 0 ? { disabledReason: msg('已是第一个') } : {}) }, { id: 'down', label: msg('下移'), ...(index === candidates.length - 1 ? { disabledReason: msg('已是最后一个') } : {}) }, { id: 'remove', label: msg('移除此候选') }], { msg, isCurrent: () => active() && revision === settingsRevision, lines: [selected] }));
+              if (!active() || revision !== settingsRevision) break;
+              if (action === 'remove') candidates.splice(index, 1);
+              if (action === 'up' && index > 0) [candidates[index - 1], candidates[index]] = [candidates[index]!, candidates[index - 1]!];
+              if (action === 'down' && index < candidates.length - 1) [candidates[index + 1], candidates[index]] = [candidates[index]!, candidates[index + 1]!];
+            }
           }
         } else if (choice === editAfter) {
           const inputTitle = msg('每个模型最多尝试几次？输入正整数'), base = String(before.after); let draft = base;
@@ -389,7 +409,7 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
     if (menuSession) throw new Error(msg('重试菜单已打开'));
     const session = {}, scope = hooks.scope(); menuSession = session;
     const active = () => menuSession === session && scope === hooks.scope();
-    const settings = msg('重试设置'), models = msg('替代模型'), back = msg('返回'), exit = msg('退出菜单'), status = msg('查看状态');
+    const settings = msg('重试设置'), models = msg('替代模型'), back = msg('返回'), exit = msg('退出菜单');
     const editIntervals = msg('修改间隔'), editCount = msg('修改次数');
     const current = (base: typeof state.settings, enabled: boolean, revision: number) => {
       if (!active()) return false;
@@ -422,7 +442,7 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
     }
     async function settingsMenu() {
       while (active()) {
-        const choice = await prompt(settings, () => ctx.ui.select(settings, [editIntervals, editCount, back]));
+        const choice = await prompt(settings, () => choose(ctx, settings, [{ id: editIntervals, label: editIntervals, value: state.settings ? intervalText(state.settings) : msg('未设置间隔') }, { id: editCount, label: editCount, value: String(state.settings?.count ?? msg('不限')) }], { msg, isCurrent: active, lines: () => retrySummary(snapshot(), msg) }));
         if (!active() || choice === undefined || choice === back) return;
         if (choice === editIntervals || choice === editCount) { if (await edit(choice === editIntervals ? 'intervals' : 'count')) return; }
       }
@@ -433,15 +453,14 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
         const enabled = state.enabled, base = state.settings, revision = settingsRevision;
         const toggle = msg(enabled ? '关闭自动重试' : '开启自动重试');
         const title = msg`重试恢复 · ${enabled ? msg('开启') : msg('关闭')} · ${base ? intervalText(base) : msg('未设置间隔')} · ${base?.count ?? msg('不限')} 次`;
-        const choice = await prompt(title, () => ctx.ui.select(title, [toggle, settings, models, status, exit]));
+        const choice = await prompt(title, () => choose(ctx, title, [{ id: toggle, label: toggle }, { id: settings, label: settings, value: base ? intervalText(base) : msg('未设置间隔') }, { id: models, label: models, value: state.models?.enabled ? msg('开启') : msg('关闭') }, { id: 'summary', label: msg('显示摘要'), value: hooks.summary?.() !== false ? msg('开启') : msg('关闭') }], { msg, isCurrent: active, lines: () => [...retrySummary(snapshot(), msg), msg('菜单打开期间不会发起重试')], actions: [{ id: 'stop', label: msg('停止本轮恢复'), ...(!failure ? { disabledReason: msg('当前没有待恢复请求') } : {}) }, { id: exit, label: exit }] }));
         if (!active() || choice === undefined || choice === exit) return;
         try {
           if (choice === models) await modelsMenu(ctx, active);
           else if (choice === settings) await settingsMenu();
-          else if (choice === status) {
-            const summary = `${status}\n${JSON.stringify(snapshot(), null, 2)}`;
-            await prompt(summary, () => ctx.ui.select(summary, [back]));
-          } else if (choice === toggle && current(base, enabled, revision)) {
+          else if (choice === 'summary') hooks.setSummary?.(hooks.summary?.() === false, ctx);
+          else if (choice === 'stop') { cancelled(ctx, msg('用户停止本轮恢复')); hooks.failed?.(ctx, false); }
+          else if (choice === toggle && current(base, enabled, revision)) {
             if (enabled) off(ctx);
             else if (!base) await edit('intervals', true);
             else {
@@ -475,11 +494,12 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
         // A previously cancelled internal command can still be delivered by Pi; ignore it.
         if (action && !parts.length && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(action)) return;
         if (!args.trim()) { await menu(ctx); return; }
-        if (action === 'models') { await modelsCommand(parts, ctx); return; }
+        if (action === 'show' || action === 'hide') { hooks.setSummary?.(action === 'show', ctx); return; }
+        if (action === 'models') { await modelsCommand(parts, ctx); hooks.onChanged?.(ctx); return; }
         if (action === 'when-error') { const settings = parseRetrySettings(parts, msg); configure(settings.intervals, settings.count, ctx); }
         else if (action === 'off' && !parts.length) off(ctx);
         else if (action !== 'status' || parts.length) throw new Error(msg('用法：/retry [when-error 5m,30s,10m [count 3] | off | status | models [provider/model ... | after N | off]]'));
-        notify(ctx, JSON.stringify(snapshot(), null, 2), 'info');
+        hooks.onChanged?.(ctx); notify(ctx, retrySummary(snapshot(), msg).join('\n'), 'info');
       } catch (cause) {
         if (internal) {
           error = safeDiagnostic(String(cause)); retire(msg('重试记录无法保存，已停止')); phase = 'off';
@@ -489,18 +509,19 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
       }
     },
   });
-  pi.on('agent_settled', (event, ctx) => observe(ctx, (event as { aborted?: boolean }).aborted));
-  pi.on('turn_start', () => {
+  pi.on('agent_settled', (event, ctx) => { observe(ctx, (event as { aborted?: boolean }).aborted); hooks.onChanged?.(ctx); });
+  pi.on('turn_start', (_event, ctx) => {
     requestScope = hooks.scope();
     if (!starting) return;
     clear(); starting = false; admitted = true; phase = 'running';
     save({ ...state, attempts: state.attempts + 1 });
     if (roundModels && startingModel) roundModels.used.set(startingModel, (roundModels.used.get(startingModel) ?? 0) + 1);
-    startingModel = undefined;
+    startingModel = undefined; hooks.onChanged?.(ctx);
   });
   pi.on('turn_end', (event, ctx) => {
     if (event.outcome === 'aborted' && ctx.signal?.aborted) { cancelled(ctx, msg('用户中断，计时已取消')); return; }
     if (event.outcome === 'completed') { observedError = undefined; if (failure || state.attempts || state.skipped) success(); }
+    hooks.onChanged?.(ctx);
   });
   pi.on('agent_end', (_event, ctx) => { if (ctx.signal?.aborted) cancelled(ctx, msg('用户中断，计时已取消')); });
   pi.on('input', (event) => { if (!issuing && event.source !== 'extension' && !/^\/retry(?:\s|$)/.test(event.text.trim())) { closeMenu(); retire(msg('收到新输入，旧计时已取消')); } });

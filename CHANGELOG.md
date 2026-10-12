@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-12
+
+### Added
+
+- Five independently selectable features: Todos, Plan, Agents, Goal, and Retry. Each includes its own menus and summary; Retry can run alone.
+- Searchable, paginated terminal menus for tasks, Goals, jobs, profiles, fragments, and model candidates, with readable state summaries, full details, and fixed actions.
+- `/plan settings` for inspecting and editing Plan controls without toggling the mode. Bare `/plan` retains its direct toggle.
+- Independent summary visibility and draft candidate ordering with add, move, remove, cancel, and save confirmation.
+
+### Changed
+
+- User commands and tool renderers show readable requirements, status, delivery, acceptance, and recovery information. Model tools retain their structured results.
+- Plan restores its own branch-local state. Each selected feature restores only its data; task-linked dispatch requires Todos.
+- Menus use focused native terminal overlays with responsive page sizes, full-width rows, and stable selection across resizing. Profile and job menus preserve complete selected details.
+
+### Fixed
+
+- Protected Todo queries and view commands preserve damaged records; a no-op main-session takeover still updates child ownership.
+- Todo-only writes preserve unrelated Plan settings used for state restoration.
+- Old task acceptance confirmations cannot complete changed requirements, and old Plan pages cannot override a newer mode or tool selection.
+- Goal tool output selects the requested Goal and its own run state. Job menus retain assignment titles, and English summaries translate recovery phases and counts.
+- Hiding one feature does not suppress the other selected summaries. Browsing menus and editing settings do not start model requests or pause a running Goal.
+
+### Verification
+
+- Pi 1.0 and Pi 1.1 offline suites each pass 747 tests, including real isolated operations and reloads across all 32 feature combinations. Type, packaging, localization, and release-hygiene checks pass.
+- Keyboard-driven TUI tests cover paging, searching, draft cancellation and saving, narrow terminals, and reloads. Live model tests in a full configured extension environment cover Plan guards, dependency execution, child verification, Goal completion, and user-controlled continuous-research stops. Real service-failure recovery and unlimited-duration runs are not claimed by these live tests.
+
 ## [0.4.2] - 2026-10-12
 
 ### Added

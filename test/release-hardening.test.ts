@@ -89,10 +89,12 @@ test('actual Pi: saving a profile preserves external file edits and safely displ
   const saved = JSON.parse(await readFile(path, 'utf8'));
   assert.deepEqual(saved.profiles.map((profile: any) => profile.name), ['original', 'external', 'added']);
   const mark = client.records.length;
-  await client.prompt('/agents profiles');
-  const note = client.records.slice(mark).find((record) => record.method === 'notify')!;
-  assert.doesNotMatch(String(note.message), /\u202e/);
-  assert.match(String(note.message), /\n  \{/);
+  const opening = client.prompt('/agents profiles');
+  await client.until(() => client.records.slice(mark).some((record) => record.method === 'select'));
+  const menu = client.records.slice(mark).find((record) => record.method === 'select')!;
+  assert.doesNotMatch(String(menu.title) + JSON.stringify(menu.options), /\u202e/);
+  assert.ok((menu.options as string[]).some((label) => label.startsWith('external')));
+  client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, cancelled: true })}\n`); await opening;
 });
 
 test('notifications strip terminal controls while keeping intended lines and stored user content', { timeout: 30000 }, async (t) => {
@@ -100,7 +102,7 @@ test('notifications strip terminal controls while keeping intended lines and sto
   const title = 'Goal\u001b[31mred\u001b[0m\u202e';
   await call(client, 'goal', { action: 'create', title });
   const mark = client.records.length;
-  await client.prompt('/goal list');
+  await client.prompt('/goal get #1');
   const note = client.records.slice(mark).find((record) => record.method === 'notify')!;
   assert.doesNotMatch(String(note.message), /\u001b|\u202e/);
   assert.match(String(note.message), /Goalred/);
