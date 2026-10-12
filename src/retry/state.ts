@@ -3,8 +3,20 @@ import { chinese, type Translator } from '../shared/i18n.ts';
 export const RETRY_TYPE = 'pi-dag-workflow.retry';
 export const RETRY_MESSAGE = 'pi-dag-workflow.retry-request';
 export interface RetrySettings { intervals: number[]; count?: number }
+export interface RetryModelRef { provider: string; id: string }
+export interface RetryModels { enabled: boolean; candidates: RetryModelRef[]; after: number }
+export const modelRefText = (model: RetryModelRef): string => `${model.provider}/${model.id}`;
+export const defaultRetryModels = (): RetryModels => ({ enabled: false, candidates: [], after: 2 });
+export function parseModelRefs(values: readonly string[], msg: Translator = chinese): RetryModelRef[] {
+  const refs = values.map((value) => { const slash = value.indexOf('/'); if (slash < 1 || slash === value.length - 1) throw new Error(msg('候选模型需使用 provider/model 格式')); return { provider: value.slice(0, slash), id: value.slice(slash + 1) }; });
+  validateRetryModels({ enabled: true, candidates: refs, after: 2 }, msg); return refs;
+}
+export function validateRetryModels(models: RetryModels, msg: Translator = chinese): void {
+  const valid = (text: unknown): text is string => typeof text === 'string' && text.length > 0 && text.length <= 256 && !/[\s\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(text);
+  if (!models || typeof models.enabled !== 'boolean' || !Number.isSafeInteger(models.after) || models.after < 1 || !Array.isArray(models.candidates) || models.candidates.length > 8 || models.enabled && !models.candidates.length || models.candidates.some((ref) => !ref || !valid(ref.provider) || ref.provider.includes('/') || !valid(ref.id)) || new Set(models.candidates.map(modelRefText)).size !== models.candidates.length) throw new Error(msg('模型替代设置无效：最多 8 个不同的 provider/model，每模型次数为正整数'));
+}
 export interface RetryState {
-  version: 1; enabled: boolean; settings?: RetrySettings;
+  version: 1; enabled: boolean; settings?: RetrySettings; models?: RetryModels;
   attempts: number; skipped: number; cancelledFailure?: string; failure?: { id: string; scope: string };
 }
 export const emptyRetryState = (): RetryState => ({ version: 1, enabled: false, attempts: 0, skipped: 0 });
@@ -13,6 +25,7 @@ export function validateRetryState(state: RetryState, msg: Translator = chinese)
   if (!state || state.version !== 1 || typeof state.enabled !== 'boolean' || !Number.isSafeInteger(state.attempts) || state.attempts < 0 || !Number.isSafeInteger(state.skipped) || state.skipped < 0) throw new Error(msg('重试记录损坏，保留原记录，不自动运行'));
   if (state.cancelledFailure !== undefined && (typeof state.cancelledFailure !== 'string' || !state.cancelledFailure || state.cancelledFailure.length > 256)) throw new Error(msg('重试记录损坏，保留原记录，不自动运行'));
   if (state.failure !== undefined && (!state.failure || typeof state.failure.id !== 'string' || !state.failure.id || state.failure.id.length > 256 || typeof state.failure.scope !== 'string' || !state.failure.scope || state.failure.scope.length > 256)) throw new Error(msg('重试记录损坏，保留原记录，不自动运行'));
+  if (state.models !== undefined) validateRetryModels(state.models, msg);
   const settings = state.settings;
   if (state.enabled && !settings || settings !== undefined && (!settings || typeof settings !== 'object' || Array.isArray(settings) || !Array.isArray(settings.intervals) || !settings.intervals.length || settings.intervals.length > 32 || settings.intervals.some((value) => !Number.isSafeInteger(value) || value < 1000 || value % 1000 !== 0) || settings.count !== undefined && (!Number.isSafeInteger(settings.count) || settings.count < 1))) throw new Error(msg('重试设置无效'));
 }

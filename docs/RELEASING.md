@@ -20,7 +20,7 @@ npm run test:performance
 
 `check:release` verifies metadata, package contents, and machine-trace hygiene. It rejects personal home paths, private model literals, personal emails, real credential formats, `.env` files, session records, or a tracked `AGENTS.md`. Findings show only the file and rule, never the matched secret.
 
-The default test suite requires no credentials or network model. Its integration tests launch isolated Pi processes with scripted providers, including transient failures, native and user-enabled `/retry` coexistence, read-only status, ordinary prerequisite briefs, and explicit profile skill files. The packed-install test loads all five entry points and launches a child using the host's Pi dependencies. To validate another installed host, run `PI_DAG_TEST_CLI="<host dist/bundle/cli.js>" npm test` and record that host version separately.
+The default test suite requires no credentials or network model. Its integration tests launch isolated Pi processes with scripted providers, including transient failures, native and user-enabled `/retry` coexistence, ordered model replacement, late model-selection cancellation, continuous Goal control, read-only status, ordinary prerequisite briefs, and explicit profile skill files. The packed-install test loads all five entry points and launches a child using the host's Pi dependencies. To validate another installed host, run `PI_DAG_TEST_CLI="<host dist/bundle/cli.js>" npm test` and record that host version separately.
 
 With a caller-selected registered model, also run the bounded opt-in acceptance scripts:
 
@@ -55,6 +55,6 @@ Create a non-prerelease GitHub Release for the tag using its CHANGELOG section. 
 
 ## 4. Confirm installation
 
-Update only the approved package with `pi update <package-source>`, then compare its installed manifest version and commit with the release. Running sessions need `/reload` or a restart. Reload pauses restored Goals; use `/goal enable` explicitly when ready to resume.
+Update only the approved package with `pi update <package-source>`, then compare its installed manifest version and commit with the release. Running sessions need `/reload` or a restart. Reload pauses restored Goals, including autoresearch, and keeps `/retry` off; explicitly re-enable each when ready. Verify the saved candidate order and Goal controls were preserved.
 
 Keep private vulnerability reporting enabled as described in `SECURITY.md`. Preserve session history, user configuration, and unrelated packages during installation updates.

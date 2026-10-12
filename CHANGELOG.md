@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-12
+
+### Added
+
+- User-controlled ordered model replacement through `/retry models`, with up to eight candidates and a default of two plugin attempts per model. Intervals and total counts are shared across models; success retains the session model without changing global defaults.
+- Per-Goal `/goal autoresearch` for continuous autonomous research without model completion. The mode supplies unlimited continuation and no model pause, preserves saved `nolimit`/`nopause` choices, and retains user stops and failure safeguards.
+- Effective Goal controls in read-only `goal get` results.
+
+### Fixed
+
+- Retry menus keep their navigation after settings, status, and toggles; child pages return one level and editors preserve invalid input for correction.
+- Settings cancellation, unchanged values, and count-only edits preserve existing work and countdowns; stale confirmations cannot override a later close or policy change.
+- Retry-owned dialogs do not pause a Goal, while other dialogs retain their normal pause behavior. An open menu skips due retries without queueing a surprise request.
+- Cancelled model switches and their compensating selections honor later user selections and branch changes. Missing authentication, absent models, and incompatible image input skip candidates without probes.
+- Policy/scope changes retire pending error recovery and leave the affected Goal visibly paused, without clearing used turns.
+
+### Verification
+
+- Pi 1.0 and Pi 1.1 isolated offline suites each pass 726 tests; type, package, localization, and release-hygiene checks pass. RPC dialogs and scripted model switches are covered; no claim is made about untested terminal layouts or all external provider behavior.
+
 ## [0.4.1] - 2026-10-11
 
 ### Added

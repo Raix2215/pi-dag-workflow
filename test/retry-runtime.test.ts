@@ -10,7 +10,7 @@ function host() {
   const deferred: (() => void)[] = []; let deferCommands = false, silentSend = false;
   let time = 0, serial = 0, idle = true, pending = false, mode: 'normal' | 'plan' = 'normal', protectedState = false, scope = 'normal', allowed = true, sendsFail = false, writesFail = false;
   let prepared = 0, refunded = 0;
-  const ctx: any = { isIdle: () => idle, hasPendingMessages: () => pending, hasUI: true, sessionManager: { getBranch: () => entries, getLeafId: () => String(entries.length) }, ui: { notify: (text: string) => notices.push(text), select: async () => undefined, input: async () => undefined, confirm: async () => false } };
+  const ctx: any = { isIdle: () => idle, hasPendingMessages: () => pending, hasUI: true, sessionManager: { getBranch: () => entries, getLeafId: () => String(entries.length) }, ui: { notify: (text: string) => notices.push(text), select: async () => undefined, input: async () => undefined, editor: async () => undefined, confirm: async () => false } };
   const pi: any = { on(name: string, fn: Function) { events.set(name, [...events.get(name) ?? [], fn]); }, registerCommand(_name: string, cmd: any) { command = cmd; }, sendUserMessage(text: string) { const run = () => { void command.handler(text.slice('/retry '.length), ctx); }; if (deferCommands) deferred.push(run); else run(); }, appendEntry(customType: string, data: unknown) { if (writesFail) throw new Error('write failed'); entries.push({ type: 'custom', customType, data: structuredClone(data) }); }, sendMessage(message: any, options: any) { if (sendsFail) throw new Error('send failed'); if (!silentSend) wakes.push({ message, options }); } };
   const controller = registerRetry(pi, { branch: () => entries as never, mode: () => mode, scope: () => scope, protected: () => protectedState, prepare: () => { prepared++; return allowed; }, undoPrepare: () => { refunded++; }, now: () => time, setTimer(fn, ms) { const id = ++serial; timers.set(id, { due: time + ms, fn }); return id as never; }, clearTimer(id) { timers.delete(id as never); } });
   const fire = async (name: string, event: any = {}) => { for (const fn of events.get(name) ?? []) await fn(event, ctx); };
@@ -181,7 +181,8 @@ test('a start failure with no settlement is detected locally without a model pol
 
 test('menu changes retain a known provider abort and its timer', async () => {
   const h = host(); await h.cmd('when-error 1s,2s count 3'); await h.failure('provider disconnected', false, 'aborted'); h.tick(1000); await h.start(); await h.failure('provider disconnected again', false, 'aborted');
-  h.ctx.ui.select = async (_title: string, choices: string[]) => choices[1]; h.ctx.ui.input = async () => '2s'; h.ctx.ui.confirm = async () => true;
+  const choices = ['重试设置', '修改间隔', '退出菜单'];
+  h.ctx.ui.select = async () => choices.shift(); h.ctx.ui.editor = async () => '2s'; h.ctx.ui.confirm = async () => true;
   await h.cmd(''); assert.equal(h.controller.snapshot().attempts, 1); assert.equal(h.controller.snapshot().phase, 'waiting');
   h.tick(2000); assert.equal(h.wakes.length, 2);
 });
@@ -194,8 +195,9 @@ test('a command prefix is not a retry command and cannot keep an old timer alive
 
 test('editing a running policy through the menu preserves the actual attempt count', async () => {
   const h = host(); await h.cmd('when-error 1s count 3'); await h.failure(); h.tick(1000); await h.start(); await h.failure();
-  h.ctx.ui.select = async (_title: string, choices: string[]) => choices[1];
-  h.ctx.ui.input = async () => '2s'; h.ctx.ui.confirm = async () => true;
+  const choices = ['重试设置', '修改间隔', '退出菜单'];
+  h.ctx.ui.select = async () => choices.shift();
+  h.ctx.ui.editor = async () => '2s'; h.ctx.ui.confirm = async () => true;
   await h.cmd(''); assert.equal(h.controller.snapshot().attempts, 1); assert.equal(h.controller.snapshot().intervals, '2s');
   h.tick(1999); assert.equal(h.wakes.length, 1); h.tick(1); await h.start(); assert.equal(h.controller.snapshot().attempts, 2);
 });
@@ -221,11 +223,12 @@ test('long intervals use multiple bounded timers rather than an immediate Node o
 test('menus are cancellable, user-only and settings are committed only after confirmation', async () => {
   const h = host(); const mark = h.entries.length;
   await h.cmd(''); assert.equal(h.entries.length, mark);
-  h.ctx.ui.select = async (_title: string, choices: string[]) => choices[0];
-  h.ctx.ui.input = async () => '1s,2s'; h.ctx.ui.confirm = async () => false;
+  let choices = ['开启自动重试'];
+  h.ctx.ui.select = async () => choices.shift();
+  h.ctx.ui.editor = async () => '1s,2s'; h.ctx.ui.confirm = async () => false;
   await h.cmd(''); assert.equal(h.entries.length, mark); assert.equal(h.controller.snapshot().enabled, false);
-  h.ctx.ui.confirm = async () => true;
+  choices = ['开启自动重试', '退出菜单']; h.ctx.ui.confirm = async () => true;
   await h.cmd(''); assert.equal(h.controller.snapshot().enabled, true); assert.equal(h.controller.snapshot().intervals, '1s,2s'); assert.equal(h.wakes.length, 0);
   assert.equal(h.command.getArgumentCompletions('now'), null); assert.equal(h.command.getArgumentCompletions('when-error '), null);
-  assert.deepEqual(h.command.getArgumentCompletions('').map((item: any) => item.value), ['when-error', 'off', 'status']);
+  assert.deepEqual(h.command.getArgumentCompletions('').map((item: any) => item.value), ['when-error', 'off', 'status', 'models']);
 });

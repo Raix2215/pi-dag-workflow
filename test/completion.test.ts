@@ -159,10 +159,12 @@ test('registered /todos, /plan and /goal expose argument completions over live s
   const goal = commands.get('goal').getArgumentCompletions;
   assert.equal(typeof goal, 'function');
   // One spelling per operation: no alias candidates exist.
-  assert.deepEqual(values(await goal('')), ['new', 'list', 'enable', 'disable', 'complete', 'delete', 'edit', 'get', 'nopause', 'nolimit', 'config', 'reset', 'help']);
+  assert.deepEqual(values(await goal('')), ['new', 'list', 'enable', 'disable', 'complete', 'delete', 'edit', 'get', 'nopause', 'nolimit', 'autoresearch', 'config', 'reset', 'help']);
   assert.deepEqual(values(await goal('enable ')), ['enable #1']);
   assert.deepEqual(values(await goal('nopause ')), ['nopause #1']);
   assert.deepEqual(values(await goal('nolimit ')), ['nolimit #1']);
+  assert.deepEqual(values(await goal('autoresearch ')), ['autoresearch #1']);
+  assert.equal(await goal('nocomplete '), null, 'no nocomplete alias is registered');
   assert.equal(await goal('nopause #1'), null, 'a complete nopause command submits without a second Enter');
   assert.equal(await goal('policy '), null, 'policy is not retained as a command alias');
   assert.deepEqual(values(await goal('delete ')), ['delete #1', 'delete #2']);

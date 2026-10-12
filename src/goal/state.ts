@@ -12,19 +12,21 @@ export const GoalParamsSchema = Type.Object({
 }, { additionalProperties: false });
 export type GoalParams = Static<typeof GoalParamsSchema>;
 export type ModelPausePolicy = 'allow' | 'deny';
-export interface Goal { id: number; title: string; description?: string; status: 'active' | 'paused' | 'completed' | 'deleted'; maxTurns: number; createdAt: number; completedAt?: number; modelPause?: ModelPausePolicy; nolimit?: boolean }
+export interface Goal { id: number; title: string; description?: string; status: 'active' | 'paused' | 'completed' | 'deleted'; maxTurns: number; createdAt: number; completedAt?: number; modelPause?: ModelPausePolicy; nolimit?: boolean; autoresearch?: boolean }
 export interface GoalRun { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string; errorRetries?: number; pendingWake?: { id: string; goalId: number; usedBefore: number; nextStep?: string } }
 export interface GoalState { version: 1; goals: Goal[]; nextId: number; focusId?: number; run: GoalRun }
 export const GOAL_TYPE = 'pi-dag-workflow.goal';
 export const GOAL_DEFAULT_TURNS = 32;
 export const emptyGoalState = (): GoalState => ({ version: 1, goals: [], nextId: 1, run: { paused: true, used: 0, stalled: 0 } });
 export const focusedGoal = (state: GoalState): Goal | undefined => state.goals.find((goal) => goal.id === state.focusId && !['completed', 'deleted'].includes(goal.status));
-/** A Goal is unlimited only when its user-owned flag is exactly true; absent means finite. */
-export const goalNolimit = (goal: Pick<Goal, 'nolimit'>): boolean => goal.nolimit === true;
+/** User-owned continuous mode overlays the ordinary controls without replacing them. */
+export const goalAutoresearch = (goal: Pick<Goal, 'autoresearch'>): boolean => goal.autoresearch === true;
+export const goalModelPause = (goal: Pick<Goal, 'modelPause' | 'autoresearch'>): ModelPausePolicy => goalAutoresearch(goal) ? 'deny' : goal.modelPause ?? 'allow';
+export const goalNolimit = (goal: Pick<Goal, 'nolimit' | 'autoresearch'>): boolean => goal.autoresearch === true || goal.nolimit === true;
 /** Display label: unlimited Goals read as ∞, finite Goals keep their numeric cap. State never stores Infinity. */
-export const goalLimitLabel = (goal: Pick<Goal, 'nolimit' | 'maxTurns'>): string => goalNolimit(goal) ? '∞' : String(goal.maxTurns);
+export const goalLimitLabel = (goal: Pick<Goal, 'nolimit' | 'maxTurns' | 'autoresearch'>): string => goalNolimit(goal) ? '∞' : String(goal.maxTurns);
 /** Single budget gate shared by Goal wakes and child-report wakes; unlimited Goals always have allowance. */
-export const goalBudgetSpent = (state: Pick<GoalState, 'run'>, goal: Pick<Goal, 'nolimit' | 'maxTurns'>): boolean => !goalNolimit(goal) && state.run.used >= goal.maxTurns;
+export const goalBudgetSpent = (state: Pick<GoalState, 'run'>, goal: Pick<Goal, 'nolimit' | 'maxTurns' | 'autoresearch'>): boolean => !goalNolimit(goal) && state.run.used >= goal.maxTurns;
 export const activates = (action: GoalParams['action']): boolean => action === 'enable';
 export const stops = (action: GoalParams['action']): boolean => ['disable', 'complete', 'delete'].includes(action);
 function text(value: unknown, field: string, bytes: number, required = false, msg: Translator = chinese): asserts value is string {
@@ -42,6 +44,7 @@ export function validateGoalState(state: GoalState, msg: Translator = chinese): 
     if (!['active', 'paused', 'completed', 'deleted'].includes(goal.status) || !Number.isSafeInteger(goal.maxTurns) || goal.maxTurns < 1 || goal.maxTurns > 200 || !Number.isFinite(goal.createdAt)) throw new Error(msg('损坏的目标状态／预算'));
     if (goal.modelPause !== undefined && !['allow', 'deny'].includes(goal.modelPause)) throw new Error(msg('损坏的模型暂停策略'));
     if (goal.nolimit !== undefined && typeof goal.nolimit !== 'boolean') throw new Error(msg('损坏的续跑额度设置'));
+    if (goal.autoresearch !== undefined && typeof goal.autoresearch !== 'boolean') throw new Error(msg('损坏的持续研究设置'));
     if (goal.completedAt !== undefined && !Number.isFinite(goal.completedAt)) throw new Error(msg('损坏的完成时间'));
     if (goal.status === 'active') { active++; if (state.focusId !== goal.id) throw new Error(msg('只有 focus 目标可以启用')); }
   }
@@ -70,11 +73,11 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
   if (params.action === 'list') {
     const content = state.goals.filter((goal) => goal.status !== 'deleted').map((goal) => {
       const label = goal.id === state.focusId && state.run.paused ? '暂停' : { active: '活动', paused: '暂停', completed: '已完成', deleted: '已删除' }[goal.status];
-      return `#${goal.id}${goal.id === state.focusId ? ' 󰓾' : ''} [${msg(label)}] ${goal.title} · ${goalLimitLabel(goal)}`;
+      return `#${goal.id}${goal.id === state.focusId ? ' 󰓾' : ''} [${msg(label)}] ${goal.title}${goalAutoresearch(goal) ? msg(' · 持续研究') : ''} · ${goalLimitLabel(goal)}`;
     }).join('\n') || msg('暂无目标');
     return { state, text: content };
   }
-  if (params.action === 'get') return { state, text: JSON.stringify({ goal: current, ...(current!.id === state.focusId ? { run: state.run } : {}) }) };
+  if (params.action === 'get') return { state, text: JSON.stringify({ goal: current, controls: { autoresearch: goalAutoresearch(current!), nolimit: goalNolimit(current!), modelPause: goalModelPause(current!) }, ...(current!.id === state.focusId ? { run: state.run } : {}) }) };
   if (current?.status === 'deleted' && params.action !== 'create') throw new Error(msg('目标已删除'));
   const next = structuredClone(state);
   if (params.action === 'create') {
@@ -115,8 +118,9 @@ export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = G
   validateGoalState(next, msg);
   if (JSON.stringify(next) === JSON.stringify(state)) return { state, text: msg('Goal 无变化') };
   const goal = params.action === 'create' ? next.goals.at(-1)! : next.goals.find((item) => item.id === current!.id)!;
-  const waitHint = goal.modelPause === 'deny' ? msg('自主解决缺口并继续执行；禁止提问和模型停用') : msg('先尝试替代路径并继续独立工作；仅真实外部阻塞时请求用户');
-  const hint = activates(params.action) ? goalNolimit(goal)
+  const waitHint = goalModelPause(goal) === 'deny' ? msg('自主解决缺口并继续执行；禁止提问和模型停用') : msg('先尝试替代路径并继续独立工作；仅真实外部阻塞时请求用户');
+  const hint = activates(params.action) ? goalAutoresearch(goal)
+    ? msg('；持续研究：不限轮数、不自行完成，不提问或交还工作；核验阶段成果后继续原范围内的研究') : goalNolimit(goal)
     ? msg`；不限续跑轮数，仅重要新证据或执行方向变化时 update progress/nextStep，${waitHint}`
     : msg`；自动续跑上限 ${goal.maxTurns}，仅重要新证据或执行方向变化时 update progress/nextStep，${waitHint}` : '';
   return { state: next, text: msg`Goal #${goal.id} ${params.action}：${goal.title}${hint}` };
@@ -136,8 +140,18 @@ export function setGoalNolimit(state: GoalState, id: number, nolimit: boolean, m
   const goal = state.goals.find((item) => item.id === id);
   if (!goal || goal.status === 'deleted') throw new Error(msg('找不到目标；请给出 id'));
   if (typeof nolimit !== 'boolean') throw new Error(msg('损坏的续跑额度设置'));
-  if (goalNolimit(goal) === nolimit) return state;
+  if ((goal.nolimit === true) === nolimit) return state;
   const next = { ...state, goals: state.goals.map((item) => item.id === id ? { ...item, nolimit } : item) };
+  validateGoalState(next, msg);
+  return next;
+}
+/** User command only; changing mode never starts work, clears usage, or changes saved controls. */
+export function setGoalAutoresearch(state: GoalState, id: number, autoresearch: boolean, msg: Translator = chinese): GoalState {
+  const goal = state.goals.find((item) => item.id === id);
+  if (!goal || ['deleted', 'completed'].includes(goal.status)) throw new Error(msg('找不到未完成目标；请给出 id'));
+  if (typeof autoresearch !== 'boolean') throw new Error(msg('损坏的持续研究设置'));
+  if (goalAutoresearch(goal) === autoresearch) return state;
+  const next = { ...state, goals: state.goals.map((item) => item.id === id ? { ...item, autoresearch } : item) };
   validateGoalState(next, msg);
   return next;
 }

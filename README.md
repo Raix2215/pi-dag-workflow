@@ -52,8 +52,8 @@ Create a Goal only when you want continued work. Record important findings or de
 - **Todo dependencies.** `blockedBy` links tasks. Starting, completing, or dispatching a task requires its prerequisites to be completed.
 - **Read-only Plan.** Inspect, search, ask questions, and edit task definitions. Implementation and dispatch require `/plan off`.
 - **Parallel subagents.** Up to eight independent Pi processes, with explicit assignments, questions, reports, profiles, and same-task continuation.
-- **Goal continuation.** One active objective, a shared continuation allowance, and user-controlled pause policies.
-- **Error recovery.** User-controlled `/retry` works in Normal, Plan, and Goal modes, with looping intervals and optional per-error-streak limits.
+- **Goal continuation.** One active objective, user-controlled pause policies, and an optional continuous research mode.
+- **Error recovery.** User-controlled `/retry` works in Normal, Plan, and Goal modes, with looping intervals, per-error-streak limits, and optional ordered model replacements.
 - **Live progress.** Task tree or DAG previews, current child activity, pending delivery, and pending verification. Full views are scrollable.
 - **Session persistence.** Tasks, Goals, and job records follow the current Pi branch. Restore pauses autonomous work and leaves previous child processes stopped.
 
@@ -228,7 +228,7 @@ For delivery timing and interruption details, see [Agent communication](docs/COM
 
 ## Goals
 
-A Goal stores an objective and acceptance criteria. Creating one leaves it paused; `/goal enable` starts continued work. Complete it only after every original requirement has been verified.
+A Goal stores its objective, scope, and verification requirements. Creating one leaves it paused; `/goal enable` starts continued work. An ordinary Goal completes only after every original requirement has been verified.
 
 | Control | Behavior |
 |---|---|
@@ -236,13 +236,30 @@ A Goal stores an objective and acceptance criteria. Creating one leaves it pause
 | `/goal disable [#id]` | Pause the Goal. Running children remain independently controllable. |
 | `/goal nopause [#id]` | Choose whether the model may pause. Blocking requires autonomous decisions within existing permissions. |
 | `/goal nolimit [#id]` | Choose a finite or unlimited continuation-turn allowance, preserving the used count. |
-| `/goal complete #id` | Record verified completion. |
+| `/goal autoresearch [#id]` | Choose ordinary completion or continuous autonomous research. Settings do not start work. |
+| `/goal complete #id` | Record verified completion; only the user can complete a continuous Goal. |
 
 Automatic Goal turns and child-report wakes share a default allowance of **32**. This counts plugin-requested continuations, not every API request or tool-result follow-up. Regular mode replans after eight rounds without recorded work progress and pauses if the next round remains unproductive. `nopause` keeps trying while user stops, budget limits, and error safeguards remain effective.
 
 Update `progress` only for important verified results, reproducible findings, decisions, or changed blockers. Update `nextStep` when the next action materially changes. Work notes do not change the objective or its permissions.
 
 A settled Goal request error waits for `/retry` recovery when enabled; otherwise the Goal pauses. Goal recovery uses the remaining continuation allowance. `nolimit` controls that allowance, not `/retry` settings.
+
+### Continuous research
+
+```text
+/goal new Improve parser correctness and performance within src/parser
+/goal autoresearch #1
+/goal enable #1
+```
+
+Choose **Continuous research** in the menu. The model verifies each milestone, then chooses another useful hypothesis, experiment, or evidence check within the original scope. It cannot complete, pause, delete, or switch the Goal, ask questions, or hand work back. Individual Todos can still be verified and completed.
+
+While active, this mode supplies unlimited continuation turns and autonomous decisions. It preserves the Goal's saved `nolimit` and `nopause` choices; turning it off restores those choices without clearing used turns. `goal get` reports saved values and effective `controls`. Turning the mode off is not a stop command: use `/goal disable` to stop future continuations or interrupt Pi to abort current work.
+
+Research can be quantitative or qualitative, but results need evidence. No experiment tools, automatic Git commits, or additional permissions are enabled. Preserve user edits; reject only the experiment's own changes. User stops, Plan, unavailable resources, error recovery limits, and compaction safeguards remain effective. Changing policy or scope during an error wait can cancel that recovery and leave the Goal paused for explicit resumption. Restore always pauses it.
+
+Continuous work can consume tokens indefinitely; set provider spending limits before leaving it unattended.
 
 ## Error recovery
 
@@ -262,6 +279,25 @@ Recovery is **off by default** and applies to the main session in Normal, Plan, 
 - If Pi is busy at the deadline, recovery waits the same interval again without consuming an attempt or advancing the sequence.
 - User cancellation, changed mode or Goal scope, Goal completion, navigation, and compaction cancel obsolete work. Goal limits and Plan's read-only restrictions remain effective.
 - Reload restores settings with recovery **off**; explicitly enable it again. Children and shell tools are not retried.
+
+The menu has **Retry settings**, **Alternative models**, **Show status**, and **Exit menu**. Back or Esc in a child page returns one level; root Esc exits. Saving, status, and toggle actions return to the main menu. Editors retain invalid input for correction. Cancellation saves nothing. An unchanged value does not restart the countdown; editing only the total count preserves remaining time and used attempts.
+
+### Alternative models
+
+```text
+/retry models
+/retry models provider-b/model-b provider-c/model-c
+/retry models after 2
+/retry models off
+```
+
+Use actual registered names in place of the placeholders, or choose models from the menu. Candidate order is explicit, with at most eight distinct models. Setting candidates enables model replacement, not automatic retry itself; `/retry when-error` enables recovery. Candidate and per-model setting changes require interactive confirmation. `/retry models off` keeps ordinary retry available.
+
+Each error streak starts with the current model, then tries candidates in order, omitting duplicates. Each model gets at most two plugin attempts by default. The interval sequence and total `count` are shared across models: switching adds no extra delay and does not skip the next wait. Pi's native retries and the initial failure do not consume plugin attempts. Missing models, unconfigured authentication, or incompatible image input skip a candidate without a probe request.
+
+A successful replacement stays selected for this session, without changing global defaults. Candidate exhaustion stops automatic recovery even when total `count` is unlimited. Reload retains the candidate settings with retry off. Manual model selection cancels the old chain; a model-selection operation already in flight may finish, so check the selected model after cancellation. Recovery never revives a cancelled request.
+
+**Switching providers sends the current context to the selected service and may increase cost and cache overhead.** Confirm the services before saving the candidates. Pi owns context handling; the extension does not remove conversation history to fit a model.
 
 Pi 1.1+ distinguishes provider aborts from user cancellation at final settlement. Hosts without that signal do not automatically recover ambiguous provider-aborted requests. Retry settings belong to the user; model tools can query their state but cannot configure them.
 
@@ -283,9 +319,9 @@ These are model tools; JSON examples above show their arguments.
 | `/todos` | `add`, `start`, `done`, `pending`, `failed`, `cancelled`, `edit`, `delete`, `clear`, `paths`, `flat`, `view`, `show`, `hide`, `presets`, `apply`, `reset` |
 | `/dag` | `[full/pending/completed/failed/cancelled]` |
 | `/plan` | `start`, `off`, `status`, `tools name1,name2` |
-| `/goal` | `new`, `enable`, `disable`, `complete`, `delete`, `edit`, `get`, `list`, `nopause`, `nolimit`, `config`, `reset` |
+| `/goal` | `new`, `enable`, `disable`, `complete`, `delete`, `edit`, `get`, `list`, `nopause`, `nolimit`, `autoresearch`, `config`, `reset` |
 | `/agents` | `list`, `wait`, `send`, `reply`, `cancel`, `remove`, `pause`, `resume`, `profiles`, `profile`, `unprofile`, `reset` |
-| `/retry` | Menu, `when-error intervals [count N]`, `off`, `status` |
+| `/retry` | Menu, `when-error intervals [count N]`, `off`, `status`, `models` |
 
 Use `help` with `/todos`, `/plan`, `/goal`, or `/agents` for syntax; `/retry` opens its menu. `/agents wait a1` shows output to you; the model collects it through `subagent_inspect` with `output: true`.
 
@@ -313,7 +349,7 @@ Optional `pi-dag-workflow-config.json`:
 | `goalMaxTurns` | 1–200; default allowance for new Goals |
 | `goalNoProgressLimit` | 1–100; no-progress rounds before replanning |
 | `planTools` | Up to 16 trusted additional read-only tool names |
-| `goalNoPauseTools` | Up to 16 main-session tools blocked while a nopause Goal runs |
+| `goalNoPauseTools` | Up to 16 main-session tools blocked while a nopause or continuous research Goal runs |
 
 Trust extra Plan tools only when they are read-only. Editing, shell execution, and dispatch remain guarded. Apply settings with `/reload`.
 
@@ -414,7 +450,7 @@ See [Agent communication](docs/COMMUNICATION.md), [Contributing](CONTRIBUTING.md
 
 ## Acknowledgements
 
-Inspired by work in the Pi community, including [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo), [pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode), [Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents), and [pi-goal-x](https://github.com/tmonk/pi-goal-x).
+Inspired by work in the Pi community, including [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo), [pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode), [Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents), [pi-goal-x](https://github.com/tmonk/pi-goal-x), and [pi-autoresearch](https://github.com/davebcn87/pi-autoresearch).
 
 ## License
 

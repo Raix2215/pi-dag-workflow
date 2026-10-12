@@ -67,7 +67,7 @@ export function createWorkflow(pi: ExtensionAPI) {
   let lastPaint: { tasks: WorkflowState['tasks']; state: string; jobs: string; ui: ExtensionContext['ui']; theme: ExtensionContext['ui']['theme'] } | undefined;
   let goals: ReturnType<typeof registerGoal> | undefined;
   let retry: ReturnType<typeof registerRetry> | undefined;
-  const retryScope = () => { const goal = goals?.recoveryGoal(); return createHash('sha256').update(JSON.stringify([state.plan, goal ? [goal.id, goal.title, goal.description, goal.status, goal.modelPause] : null])).digest('hex'); };
+  const retryScope = () => { const goal = goals?.recoveryGoal(); return createHash('sha256').update(JSON.stringify([state.plan, goal ? [goal.id, goal.title, goal.description, goal.status, goal.modelPause, goal.autoresearch] : null])).digest('hex'); };
   let checkpoints: ReturnType<typeof registerCheckpoints> | undefined;
 
   function paint(ctx: ExtensionContext): void {
@@ -309,7 +309,7 @@ export function createWorkflow(pi: ExtensionAPI) {
       if (feature === 'goal') {
         const { registerGoal } = await import('../goal/register.ts');
         goals = registerGoal(owner, { msg, state: activeState, jobs, paint, protected: () => !!restoreError, branch: readBranch, loadConfig: readConfig,
-        pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: (ctx) => { retry?.refreshScope(); warnEphemeral(ctx); },
+        pauseAgents: () => agents?.pauseAutomatic(), resumeAgents: () => agents?.resumeAutomatic(), onSaved: (ctx) => { retry?.refreshScope(ctx); warnEphemeral(ctx); },
         retryEnabled: () => retry?.snapshot().enabled ?? false, cancelRecovery: () => retry?.cancel(), retryStatus: () => retry?.snapshot(),
         isUserPrompt: (title) => title !== undefined && (userPromptTitles.has(title) || retry?.isPrompt(title) === true),
         beforeWake: (ctx) => { checkpoints?.beforeWake(ctx); guidance.beforeWake(ctx, (message) => pi.sendMessage(message, { triggerTurn: false })); },

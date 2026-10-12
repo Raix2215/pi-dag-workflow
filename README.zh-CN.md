@@ -52,8 +52,8 @@ pi install https://github.com/Raix2215/pi-dag-workflow
 - **任务依赖**：`blockedBy` 关联前置任务。开始、完成或派发下游任务前，前置必须已完成。
 - **只读 Plan**：阅读、搜索、提问和编辑任务定义；实施与派发需先 `/plan off`。
 - **并行子 Agent**：最多八个独立 Pi 进程，支持明确派发、问题答复、报告、Profile 和原任务接续。
-- **Goal 续跑**：一次聚焦一个目标，共享续跑额度，支持用户控制的中断策略。
-- **错误恢复**：用户通过 `/retry` 控制 Normal、Plan 和 Goal 主会话重试；间隔循环，可限制每轮连续错误的实际次数。
+- **Goal 续跑**：一次聚焦一个目标，支持用户控制的中断策略和持续研究模式。
+- **错误恢复**：用户通过 `/retry` 控制 Normal、Plan 和 Goal 主会话重试；间隔循环，可限制次数并按指定顺序替换模型。
 - **实时进度**：任务树或 DAG 预览、子进程活动、待交付和待核验状态；完整视图可滚动。
 - **会话持久化**：任务、Goal 和 Job 记录跟随 Pi 当前分支。恢复时自动工作保持暂停，原有子进程保持停止。
 
@@ -228,7 +228,7 @@ resumeFrom 保留原 Todo 关联和派发说明。新 Job 可以选择其他 Pro
 
 ## Goal
 
-Goal 保存目标及验收条件。创建后保持暂停，`/goal enable` 开始续跑；原始要求全部核验通过后才完成。
+Goal 保存目标、范围和核验要求。创建后保持暂停，`/goal enable` 开始续跑；普通目标的原始要求全部核验通过后才完成。
 
 | 控制 | 行为 |
 |---|---|
@@ -236,13 +236,30 @@ Goal 保存目标及验收条件。创建后保持暂停，`/goal enable` 开始
 | `/goal disable [#id]` | 暂停 Goal，子进程仍可独立控制 |
 | `/goal nopause [#id]` | 选择是否允许模型暂停；禁止时要求在已有权限内自主决定 |
 | `/goal nolimit [#id]` | 选择有限或不限续跑轮数，保留已用计数 |
-| `/goal complete #id` | 记录已核验的完成结果 |
+| `/goal autoresearch [#id]` | 选择普通目标或持续自主研究，设置不启动工作 |
+| `/goal complete #id` | 记录已核验结果；持续研究目标只能由用户完成 |
 
 自动 Goal 回合和子报告唤醒共享默认 **32** 次额度，统计插件请求的续跑，不是全部 API 请求或工具结果 follow-up。常规模式八轮未记录工作进展时先重新规划，再一轮仍无进展才暂停。nopause 继续尝试，但用户停止、预算和错误保护仍有效。
 
 progress 只记录重要验收结果、可复现发现、决定或阻塞变化。nextStep 仅在下一步实质改变时更新。工作笔记不改变原目标或权限。
 
 Goal 请求错误收尾后，开启 /retry 时等待恢复，否则暂停。Goal 恢复使用剩余续跑额度；nolimit 控制该额度，不控制 /retry 设置。
+
+### 持续研究
+
+```text
+/goal new 在 src/parser 范围内持续改善解析器正确性和性能
+/goal autoresearch #1
+/goal enable #1
+```
+
+在菜单选择“持续研究”。模型核验阶段成果后，继续选择原范围内的下一个假设、实验或证据检查；不能完成、停用、删除或切换整个 Goal，不能提问或交还工作。独立 Todo 仍可核验后完成。
+
+该模式有效启用不限续跑和自主决定，但保留原 nolimit／nopause 设置；关闭后恢复原值，不清已用轮数。goal get 的 goal 保存原设置，controls 显示实际生效值。关闭模式不是停止命令；用 /goal disable 停止后续续跑，或中断 Pi 来中止当前工作。
+
+研究可以量化，也可以按事实和核验结果判断。不会新增实验工具、自动 Git 提交或额外权限；保留用户改动，只撤销本次实验自己的无效修改。用户停止、Plan、资源不可用、重试次数及压缩保护仍有效。错误等待期间改变策略或范围，会取消旧恢复并可能暂停 Goal，需明确恢复。重载后始终保持暂停。
+
+持续工作可能无限消耗模型用量；无人值守前先设置服务商费用上限。
 
 ## 错误恢复
 
@@ -262,6 +279,25 @@ Goal 请求错误收尾后，开启 /retry 时等待恢复，否则暂停。Goal
 - 到期时 Pi 仍忙，则再等同一间隔；不扣次数，也不推进序列。
 - 用户取消、模式或 Goal 范围改变、Goal 完成、导航和压缩会取消过期工作；Goal 额度与 Plan 只读限制仍有效。
 - 重载后设置保留、恢复保持关闭，需明确重新开启。不重试子 Agent 或 shell 工具。
+
+菜单包含“重试设置”“替代模型”“查看状态”和“退出菜单”。子页返回或 Esc 回上一级，主菜单 Esc 退出。保存、状态和开关操作后返回主菜单；非法输入保留供修改，取消不保存。无变化不重启倒计时；只改总次数保留剩余等待和已用次数。
+
+### 替代模型
+
+```text
+/retry models
+/retry models provider-b/model-b provider-c/model-c
+/retry models after 2
+/retry models off
+```
+
+示例占位符需替换为 Pi 已注册名称，也可在菜单中选择。候选顺序明确指定，最多八个不同模型。设置候选会启用模型替代，不会开启自动重试；恢复仍通过 /retry when-error 开启。候选和每模型次数的修改需要交互确认。/retry models off 关闭替代，保留普通重试。
+
+每轮连续错误先尝试当前模型，再按顺序使用候选并去重。每模型默认最多两次插件尝试；间隔序列和总 count 跨模型共用，切换不增加等待，也不跳过下一次等待。初始失败和 Pi 原生重试不扣插件次数。已不存在、未配置鉴权或不支持当前图像输入的候选会跳过，不发探测请求。
+
+成功的替代模型保留在当前会话，不修改全局默认。即使总 count 不限，候选耗尽也会停止恢复。重载保留候选设置，自动重试仍关闭。手动选择模型取消旧恢复；已发起的模型选择调用仍可能收尾，取消后应核对当前模型。不会自动恢复已取消的请求。
+
+**跨服务商会把当前上下文发送给所选服务，也可能增加费用和缓存开销。** 保存候选前先确认服务范围。上下文处理由 Pi 负责；插件不自行删除历史以适配模型。
 
 Pi 1.1+ 在最终收尾区分 provider 中止和用户取消；缺少该信号的宿主不自动恢复无法鉴别的 provider-aborted 请求。重试设置由用户控制，模型工具只能查询，不能配置。
 
@@ -283,9 +319,9 @@ Pi 1.1+ 在最终收尾区分 provider 中止和用户取消；缺少该信号�
 | `/todos` | `add`、`start`、`done`、`pending`、`failed`、`cancelled`、`edit`、`delete`、`clear`、`paths`、`flat`、`view`、`show`、`hide`、`presets`、`apply`、`reset` |
 | `/dag` | `[full/pending/completed/failed/cancelled]` |
 | `/plan` | `start`、`off`、`status`、`tools 名称1,名称2` |
-| `/goal` | `new`、`enable`、`disable`、`complete`、`delete`、`edit`、`get`、`list`、`nopause`、`nolimit`、`config`、`reset` |
+| `/goal` | `new`、`enable`、`disable`、`complete`、`delete`、`edit`、`get`、`list`、`nopause`、`nolimit`、`autoresearch`、`config`、`reset` |
 | `/agents` | `list`、`wait`、`send`、`reply`、`cancel`、`remove`、`pause`、`resume`、`profiles`、`profile`、`unprofile`、`reset` |
-| `/retry` | 菜单、`when-error 间隔 [count N]`、`off`、`status` |
+| `/retry` | 菜单、`when-error 间隔 [count N]`、`off`、`status`、`models` |
 
 /todos、/plan、/goal、/agents 的 help 显示具体语法；/retry 打开菜单。`/agents wait a1` 向用户展示输出；模型用 subagent_inspect 的 output:true 收集报告。
 
@@ -313,7 +349,7 @@ Pi 1.1+ 在最终收尾区分 provider 中止和用户取消；缺少该信号�
 | goalMaxTurns | 1–200，新 Goal 的默认额度 |
 | goalNoProgressLimit | 1–100，重新规划前允许的无进展轮数 |
 | planTools | 最多 16 个可信额外只读工具名 |
-| goalNoPauseTools | 最多 16 个 nopause 运行时禁用的主会话工具 |
+| goalNoPauseTools | 最多 16 个 nopause／持续研究运行时禁用的主会话工具 |
 
 确认额外 Plan 工具只读后再信任它们。编辑、shell 和派发仍受限制。修改设置后 `/reload` 生效。
 
@@ -414,7 +450,7 @@ Profile 可选 skills 指定本地 Markdown 文件：
 
 ## 致谢
 
-受到 Pi 社区项目的启发，包括 [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)、[pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode)、[Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents)和 [pi-goal-x](https://github.com/tmonk/pi-goal-x)。
+受到 Pi 社区项目的启发，包括 [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)、[pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode)、[Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents)、[pi-goal-x](https://github.com/tmonk/pi-goal-x)和 [pi-autoresearch](https://github.com/davebcn87/pi-autoresearch)。
 
 ## 许可证
 
