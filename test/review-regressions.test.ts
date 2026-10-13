@@ -7,6 +7,7 @@ import { registerGoal } from '../src/goal/register.ts';
 import { registerAgents, AGENTS_TYPE } from '../src/agents/register.ts';
 import { emptyGoalState, GOAL_TYPE } from '../src/goal/state.ts';
 import { ProfileStore } from '../src/agents/profiles.ts';
+import { AgentRuntime } from '../src/agents/runtime.ts';
 import { fragmentContext } from '../src/agents/context.ts';
 import { readConfigText, readConfigTextSync } from '../src/shared/config-file.ts';
 import { defaultConfig } from '../src/shared/config.ts';
@@ -68,13 +69,14 @@ test('old Agent reset confirmation cannot clear newly restored job records', asy
   h.ctx.ui.confirm = async () => true; await h.commands.get('agents').handler('reset', h.ctx); assert.deepEqual(controller.summaries(), []);
 });
 
-test('obsolete Profile loads cannot replace a newer Agent restoration', async (t) => {
+test('obsolete Agent journal imports cannot replace a newer Agent restoration', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dag-restore-guard-')); const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
-  const original = ProfileStore.prototype.load; let release!: () => void; let calls = 0;
-  ProfileStore.prototype.load = async function () { if (++calls === 1) await new Promise<void>((resolve) => { release = resolve; }); };
+  const original = AgentRuntime.prototype.importSummaries; let release!: () => void; let calls = 0;
+  AgentRuntime.prototype.importSummaries = async function (...args) { if (++calls === 1) await new Promise<void>((resolve) => { release = resolve; }); return original.apply(this, args); };
   const h = host(); h.ctx.cwd = root; let paints = 0; registerAgents(h.pi, { state: emptyState, mutate() {}, paint() { paints++; }, protected: () => false });
-  t.after(async () => { ProfileStore.prototype.load = original; await h.fire('session_shutdown'); if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(root, { recursive: true, force: true }); });
-  const old = h.fire('session_start'); while (!release) await Promise.resolve();
+  t.after(async () => { AgentRuntime.prototype.importSummaries = original; await h.fire('session_shutdown'); if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(root, { recursive: true, force: true }); });
+  const old = h.fire('session_start'); const deadline = Date.now() + 1000;
+  while (!release) { assert.ok(Date.now() < deadline, 'restore must reach journal import'); await new Promise((resolve) => setTimeout(resolve, 1)); }
   await h.fire('session_tree'); const paintsBefore = paints;
   release(); await old;
   assert.equal(paints, paintsBefore, 'an obsolete restore cannot paint or replace the current runtime');

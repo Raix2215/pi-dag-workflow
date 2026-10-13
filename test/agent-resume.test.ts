@@ -20,7 +20,7 @@ async function host() {
   return { runtime, profiles, root, close: async () => { await runtime.shutdown(); await rm(root, { recursive: true, force: true }); } };
 }
 
-test('resumeFrom uses a new job on the original Todo; switching profile keeps the old tool scope', async () => {
+test('resumeFrom uses a new job on the original Todo; an explicit profile overlays the saved configuration', async () => {
   const h = await host(); try {
     const old = await h.runtime.spawn({ task: 'HOLD', todoId: 7, taskDefinition: signature('scope') });
     await h.runtime.cancel(old.id);
@@ -29,7 +29,7 @@ test('resumeFrom uses a new job on the original Todo; switching profile keeps th
     const resumed = await h.runtime.spawn({ resumeFrom: old.id, todoId: 7, taskDefinition: signature('scope'), task: 'Check files before finishing', profile: 'fallback' });
     const result = await h.runtime.wait(resumed.id, { until: 'finish', timeout: 3 });
     assert.notEqual(resumed.id, old.id); assert.equal(resumed.todoId, 7); assert.equal(resumed.resumeFrom, old.id);
-    assert.equal(result.model.id, 'alternative'); assert.deepEqual(result.tools, ['read']);
+    assert.equal(result.model.id, 'alternative'); assert.deepEqual(result.tools, ['read', 'write']);
     assert.match(result.output, /Original assignment:\nHOLD/); assert.match(result.output, /Check files before finishing/);
     assert.doesNotMatch(JSON.stringify(h.runtime.inspect()), /Original assignment|Check files before finishing/);
     assert.equal(h.runtime.exportRecords().find((job) => job.id === resumed.id)!.assignment, 'HOLD');
@@ -163,7 +163,7 @@ test('actual offline Pi: cancel then switch profile and resume the same Todo wit
   const resumed = await call('subagent_spawn', { resumeFrom: old.jobId, profile: 'fallback', task: 'TEST CALL subagent_send {"message":"Partial files inspected; remaining requirements verified"}' });
   assert.equal(resumed.todoId, 1); assert.equal(resumed.resumeFrom, old.jobId); assert.notEqual(resumed.jobId, old.jobId);
   const result = await call('subagent_inspect', { jobId: resumed.jobId, output: true, until: 'finish', timeout: 10 });
-  assert.equal(result.status, 'completed'); assert.deepEqual(result.tools, ['read']); assert.equal(result.model.id, 'reasoned');
+  assert.equal(result.status, 'completed'); assert.deepEqual(result.tools, ['read', 'write']); assert.equal(result.model.id, 'reasoned');
   assert.match(result.output, /remaining requirements verified/);
   const entries = await client.entries() as any[];
   const taskState = entries.findLast((entry) => entry.customType === 'pi-dag-workflow.state').data;

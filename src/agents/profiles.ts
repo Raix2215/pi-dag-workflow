@@ -69,8 +69,9 @@ export class ProfileStore {
   validateTools(value: unknown): string[] {
     if (!Array.isArray(value) || value.length > 8 || value.some((tool) => typeof tool !== "string")) throw new Error("tools must be a list of supported tool names");
     const allowed = new Set<string>([...CORE_TOOLS, ...(this.options.trustedTools ?? [])]);
-    for (const tool of value as string[]) if (!allowed.has(tool)) throw new Error(`Child tool is not trusted or supported: ${tool}`);
-    return [...new Set(value as string[])];
+    const tools = (value as string[]).map((tool) => tool.trim());
+    for (const tool of tools) if (!allowed.has(tool)) throw new Error(`Child tool is not trusted or supported: ${tool}`);
+    return [...new Set(tools)];
   }
   /**
    * Free-form guidance for the children this profile dispatches. It travels to the child process
@@ -109,19 +110,39 @@ export class ProfileStore {
     this.profiles.set(value.name, value); return structuredClone(value);
   }
   delete(name: string): boolean { return this.profiles.delete(name); }
-  resolve(name?: string, inheritedModel?: ModelRef, toolsOverride?: string[], inherited?: { thinking?: ThinkingLevel | undefined; tools?: readonly string[] | undefined }): ResolvedProfile {
+  resolve(
+    name?: string,
+    inheritedModel?: ModelRef,
+    toolsOverride?: string[],
+    inherited?: { thinking?: ThinkingLevel | undefined; tools?: readonly string[] | undefined },
+    overrides?: { model?: ModelRef; thinking?: ThinkingLevel; skills?: string[] },
+    previous?: ResolvedProfile,
+  ): ResolvedProfile {
     const profile = name && name !== 'inherit' ? this.get(name) : undefined;
     if (name && name !== 'inherit' && !profile) throw new Error(`Unknown profile: ${name}`);
-    const selected = profile?.model ?? inheritedModel;
+    // An omitted profile resumes the snapshot; only explicit inherit resets it to the parent.
+    const base = name === 'inherit' ? undefined : previous;
+    const selected = overrides?.model ?? profile?.model ?? base?.model ?? inheritedModel;
     if (!selected) throw new Error("Select a parent model or configure a named profile model before spawning");
     const model = this.model(selected);
     const reasoning = (this.options.registry.find(model.provider, model.id) as { reasoning?: boolean } | undefined)?.reasoning;
-    const thinking = profile?.thinking ?? (reasoning === false ? 'off' : inherited?.thinking ?? 'off');
-    if (!THINKING_LEVELS.includes(thinking)) throw new Error('Invalid inherited thinking level');
-    if (thinking !== 'off' && reasoning === false) throw new Error('Selected model does not support thinking; use off');
+    const explicitThinking = overrides?.thinking ?? profile?.thinking;
+    let thinking = explicitThinking ?? base?.thinking ?? inherited?.thinking ?? 'off';
+    if (!THINKING_LEVELS.includes(thinking)) throw new Error('Invalid thinking level');
+    if (thinking !== 'off' && reasoning === false) {
+      if (explicitThinking !== undefined) throw new Error('Selected model does not support thinking; use off');
+      thinking = 'off';
+    }
     const allowed = new Set<string>([...CORE_TOOLS, ...(this.options.trustedTools ?? [])]);
     const inheritedTools = inherited?.tools === undefined ? [...CORE_TOOLS] : inherited.tools.filter((tool) => allowed.has(tool));
-    return { name: profile?.name ?? "inherit", model, thinking, tools: this.validateTools(toolsOverride ?? profile?.tools ?? [...new Set(inheritedTools)]), ...(profile?.skills === undefined ? {} : { skills: [...profile.skills] }), ...(profile?.instructions ? { instructions: profile.instructions } : {}) };
+    const skills = overrides?.skills ?? profile?.skills ?? base?.skills;
+    const instructions = profile?.instructions ?? base?.instructions;
+    return {
+      name: profile?.name ?? base?.name ?? 'inherit', model, thinking,
+      tools: this.validateTools(toolsOverride ?? profile?.tools ?? base?.tools ?? [...new Set(inheritedTools)]),
+      ...(skills === undefined ? {} : { skills: this.validateSkills(skills) }),
+      ...(instructions === undefined ? {} : { instructions }),
+    };
   }
   async load(): Promise<void> {
     if (!this.options.path) return;

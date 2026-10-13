@@ -68,7 +68,7 @@ test('a real child does not inherit unselected guidance or bootstrap environment
   assert.doesNotMatch(await readFile(log, 'utf8'), /UNSELECTED-PROFILE|UNSELECTED-BRIEF|UNSELECTED-SKILL|unselected-invalid-bootstrap/);
 });
 
-test('resumed work selects current Profile skills without expanding its previous tools', { timeout: 20000 }, async (t) => {
+test('resumed work selects current Profile skills with an explicit read-only tool override', { timeout: 20000 }, async (t) => {
   const root = await files(); t.after(() => rm(root, { recursive: true, force: true }));
   const model = { provider: 'dag-test', id: 'scripted' }; const profiles = new ProfileStore({ registry: { find: () => ({ reasoning: false }) }, trustedTools: ['write'] });
   profiles.set({ name: 'reader', tools: ['read'], skills: ['selected/SKILL.md'] });
@@ -79,7 +79,7 @@ test('resumed work selects current Profile skills without expanding its previous
   t.after(() => runtime.shutdown());
   const first = await runtime.spawn({ task: 'First skill probe', profile: 'reader', todoId: 1 });
   assert.equal((await runtime.wait(first.id, { until: 'finish', timeout: 8 })).status, 'completed');
-  const resumed = await runtime.spawn({ task: 'TEST SELECTED SKILL', profile: 'other', resumeFrom: first.id, todoId: 1 });
+  const resumed = await runtime.spawn({ task: 'TEST SELECTED SKILL', profile: 'other', tools: ['read'], resumeFrom: first.id, todoId: 1 });
   const result = await runtime.wait(resumed.id, { until: 'finish', timeout: 8 });
   assert.equal(result.status, 'completed'); assert.deepEqual(result.tools, ['read']); assert.match(result.output, /CURRENT-RESUME-SKILL/);
   const records = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));

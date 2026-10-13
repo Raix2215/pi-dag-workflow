@@ -2,6 +2,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { passiveMessage } from "../shared/passive-message.ts";
 import { takeSkillFiles } from './skills.ts';
+import { CORE_TOOLS } from './profiles.ts';
+
+export const CHILD_TOOLS_ENV = 'PI_DAG_AGENT_TOOLS';
+export const CHILD_CONTROL_ENV = 'PI_DAG_AGENT_CONTROL';
+export const CHILD_CONTROL_PREFIX = 'pi-dag-child-control:';
+export const CHILD_CONTROL_REPLY = 'pi-dag-child-tools:';
 
 /** Private RPC pipe markers, not a network endpoint. Loaded explicitly in children only. */
 export const CHILD_NOTICE_PREFIX = "pi-dag-child-message:";
@@ -43,6 +49,41 @@ export function takeChildContext(env: NodeJS.ProcessEnv = process.env): string |
 }
 
 export default function childCommunication(pi: ExtensionAPI): void {
+  const selectedTools = take(CHILD_TOOLS_ENV, process.env);
+  const controlToken = take(CHILD_CONTROL_ENV, process.env);
+  const supported = new Set<string>([...CORE_TOOLS, 'bash', 'edit', 'write', 'powershell']);
+  const parseTools = (value: unknown): string[] => {
+    if (!Array.isArray(value) || value.length > 8 || value.some((name) => typeof name !== 'string' || !supported.has(name))) throw new Error('Invalid child tools');
+    return [...new Set(value as string[])];
+  };
+  let allowedTools = selectedTools === undefined ? undefined : parseTools(JSON.parse(selectedTools));
+  const activate = (tools: string[]) => {
+    const available = new Set(pi.getAllTools().map((tool) => tool.name));
+    for (const name of tools) if (!available.has(name)) throw new Error(`Child tool is unavailable: ${name}`);
+    pi.setActiveTools([...tools, 'subagent_send']);
+    const actual = pi.getActiveTools().filter((name) => name !== 'subagent_send');
+    if (actual.length !== tools.length || tools.some((name) => !actual.includes(name))) throw new Error('Child tool update did not apply');
+    allowedTools = tools;
+    return actual;
+  };
+  pi.on('session_start', () => { if (allowedTools !== undefined) activate(allowedTools); });
+  pi.on('input', (event, ctx) => {
+    if (!event.text.startsWith(CHILD_CONTROL_PREFIX)) return;
+    try {
+      if (event.source !== 'rpc' || !controlToken || !ctx.isIdle()) throw new Error('Invalid child control source');
+      const payload = JSON.parse(event.text.slice(CHILD_CONTROL_PREFIX.length)) as { token?: string; nonce?: string; tools?: unknown };
+      if (payload.token !== controlToken || typeof payload.nonce !== 'string' || !payload.nonce) throw new Error('Invalid child control token');
+      const tools = activate(parseTools(payload.tools));
+      ctx.ui.notify(`${CHILD_CONTROL_REPLY}${JSON.stringify({ nonce: payload.nonce, tools })}`, 'info');
+    } catch {
+      // Pi input-handler exceptions pass through to the model. Consume rejected control records too.
+      ctx.ui.notify('Child tool update rejected', 'error');
+    }
+    return { action: 'handled' as const };
+  });
+  pi.on('tool_call', (event) => {
+    if (allowedTools !== undefined && event.toolName !== 'subagent_send' && !allowedTools.includes(event.toolName)) return { block: true, reason: `Child tool is not allowed: ${event.toolName}; ask the parent to evaluate user authorization.` };
+  });
   const profilePrompt = takeProfilePrompt();
   const childContext = takeChildContext();
   const skills = takeSkillFiles();

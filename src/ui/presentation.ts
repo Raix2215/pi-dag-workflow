@@ -208,7 +208,7 @@ function goalRunFrom(value: Record<string, unknown>): GoalRun {
 /** Structural view covering JobSummary, AgentView and their inspect/spawn projections. */
 export interface JobView {
   id?: string; todoId?: number; profile?: string; status?: string;
-  model?: { provider: string; id: string } | string; thinking?: string; tools?: readonly string[];
+  model?: { provider: string; id: string } | string; thinking?: string; tools?: readonly string[]; skills?: readonly string[];
   startedAt?: number; endedAt?: number; error?: string; pendingRequests?: number;
   label?: string; reportDelivery?: 'pending' | 'delivered'; taskReportStale?: boolean;
   dismissed?: boolean; resumeFrom?: string; todoStatus?: string;
@@ -246,6 +246,11 @@ export function jobSummary(job: JobSummary | AgentView | JobView, msg: Translato
   if (value.label?.trim()) lines.push(msg`任务：${plain(value.label)}`);
   const model = modelRefText(value.model);
   if (model) lines.push(msg`模型：${model}${value.thinking ? ` · thinking ${plain(value.thinking)}` : ''}`);
+  if (value.tools !== undefined) lines.push(msg`工具：${value.tools.length} 个（${value.tools.map(plain).join(', ')}）`);
+  if (value.skills !== undefined) {
+    lines.push(value.skills.length ? msg`技能：${value.skills.length} 项` : msg('技能：未配置'));
+    for (const skill of value.skills) lines.push(`  ${plain(skill)}`);
+  }
   if (active && value.activity) lines.push(msg`活动：${activityText(value.activity, msg)}`);
   if (value.pendingRequests && value.pendingRequests > 0) lines.push(msg`待答复问题：${value.pendingRequests} 个`);
   if (value.startedAt !== undefined && value.endedAt !== undefined) lines.push(msg`耗时：${durationText(value.endedAt - value.startedAt)}`);
@@ -265,8 +270,22 @@ export function jobSummary(job: JobSummary | AgentView | JobView, msg: Translato
 }
 
 // ---------------------------------------------------------------------------
-// Profiles
+// Models and profiles
 // ---------------------------------------------------------------------------
+
+export interface ModelView {
+  provider: string; id: string; name: string; reasoning: boolean;
+  contextWindow?: number; maxTokens?: number; input?: readonly string[];
+}
+
+/** Allowlisted model metadata only; never include registry credentials or endpoint settings. */
+export function modelSummary(model: ModelView, msg: Translator = chinese): string[] {
+  const lines = [msg`模型：${plain(model.name)}`, `provider: ${plain(model.provider)}`, `id: ${plain(model.id)}`, msg`推理：${model.reasoning ? msg('支持') : msg('不支持')}`];
+  if (model.contextWindow !== undefined) lines.push(msg`上下文窗口：${model.contextWindow}`);
+  if (model.maxTokens !== undefined) lines.push(msg`最大输出：${model.maxTokens}`);
+  if (model.input !== undefined) lines.push(msg`输入：${model.input.map(plain).join(', ')}`);
+  return lines;
+}
 
 function profileFrom(value: Record<string, unknown>): Profile {
   const model = record(value.model);
@@ -455,6 +474,13 @@ function goalStateLines(value: unknown, msg: Translator, targetId?: number): str
 function spawnLines(data: Record<string, unknown>, msg: Translator): string[] {
   const lines: string[] = [msg`已派发 Job ${plain(text(data.jobId) ?? '')}`];
   lines.push(msg`状态：${jobStatusText(text(data.status), msg)}`);
+  const model = modelRefText(data.model);
+  if (model) lines.push(msg`模型：${model}${text(data.thinking) ? ` · thinking ${plain(data.thinking)}` : ''}`);
+  if (Array.isArray(data.tools)) lines.push(msg`工具：${data.tools.length} 个（${strings(data.tools).map(plain).join(', ')}）`);
+  if (Array.isArray(data.skills)) {
+    lines.push(data.skills.length ? msg`技能：${data.skills.length} 项` : msg('技能：未配置'));
+    for (const skill of strings(data.skills)) lines.push(`  ${plain(skill)}`);
+  }
   const todoId = number(data.todoId);
   if (todoId !== undefined) lines.push(msg`Todo #${todoId} 验收：${todoStatusText(text(data.todoStatus) ?? 'pending', msg)}；报告不会自动完成任务`);
   const resumeFrom = text(data.resumeFrom);
@@ -478,6 +504,12 @@ function cancelLines(data: Record<string, unknown>, msg: Translator): string[] {
 
 function inspectLines(data: Record<string, unknown>, msg: Translator): string[] {
   const lines: string[] = [];
+  if (Array.isArray(data.models)) {
+    const models = objects(data.models);
+    lines.push(msg`模型目录：本页 ${models.length} / 共 ${number(data.total) ?? models.length} 项`);
+    for (const model of models) lines.push(...modelSummary(model as unknown as ModelView, msg));
+    if (number(data.nextOffset) !== undefined) lines.push(msg`下一页 offset：${number(data.nextOffset)}`);
+  }
   if ('jobs' in data) {
     if (data.paused === true) lines.push(msg('结果自动唤醒：已暂停'));
     const jobs = objects(data.jobs);
@@ -501,7 +533,7 @@ function inspectLines(data: Record<string, unknown>, msg: Translator): string[] 
 
 function toolLines(data: Record<string, unknown>, hint: ToolDisplayOptions, msg: Translator): string[] | undefined {
   if ('goalState' in data) return goalStateLines(data.goalState, msg, number(data.targetId));
-  if (Array.isArray(data.jobs) || Array.isArray(data.profiles) || (record(data.profile) !== undefined && typeof data.status !== 'string')) return inspectLines(data, msg);
+  if (Array.isArray(data.models) || Array.isArray(data.jobs) || Array.isArray(data.profiles) || (record(data.profile) !== undefined && typeof data.status !== 'string')) return inspectLines(data, msg);
   if (typeof data.id === 'string' && typeof data.status === 'string') return jobSummary(data as unknown as JobView, msg);
   if (typeof data.jobId === 'string' && data.stopped === true) return cancelLines(data, msg);
   if (typeof data.jobId === 'string' && typeof data.status === 'string') return spawnLines(data, msg);

@@ -16,6 +16,11 @@ process.stdin.on('data', chunk => {
     if (command.type === 'get_state') response({ isStreaming: active, pendingMessageCount: 0, isCompacting: false });
     else if (command.type === 'get_available_thinking_levels') response({ levels: ['off', 'low'] });
     else if (command.type === 'prompt') {
+      if (command.message.startsWith('pi-dag-child-control:')) {
+        const payload = JSON.parse(command.message.slice('pi-dag-child-control:'.length));
+        emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,tools:payload.tools})});
+        response({disposition:'handled'}); continue;
+      }
       active = true;
       emit({ type: 'agent_start' });
       response({ disposition: 'started' });

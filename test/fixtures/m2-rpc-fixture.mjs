@@ -3,6 +3,8 @@ const emit = record => process.stdout.write(`${JSON.stringify(record)}\n`);
 let buffer = '';
 let active = false;
 let queued = 0;
+let toolUpdates = 0;
+let stalledDirection;
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => {
   buffer += chunk;
@@ -17,6 +19,7 @@ process.stdin.on('data', chunk => {
     }
     if (command.type === process.env.PI_DAG_TEST_STALL_COMMAND || command.type === 'prompt' && command.message === 'STALL_DIRECTION') {
       emit({type:'tool_execution_start',toolCallId:'stall-command',toolName:`stall:${command.type}`});
+      if (command.message === 'STALL_DIRECTION') stalledDirection = command.id;
       continue;
     }
     if (command.type === 'get_state') response({isStreaming:active,pendingMessageCount:queued,isCompacting:false});
@@ -28,6 +31,16 @@ process.stdin.on('data', chunk => {
     }
     else if (command.type === 'clear_queue') { queued=0; response({}); }
     else if (command.type === 'prompt') {
+      if (command.message.startsWith('pi-dag-child-control:')) {
+        const payload = JSON.parse(command.message.slice('pi-dag-child-control:'.length));
+        const mode = ++toolUpdates > 1 ? process.env.PI_DAG_TEST_TOOL_UPDATE : undefined;
+        if (mode === 'stall') {
+          if (stalledDirection && process.env.PI_DAG_TEST_RELEASE_STALLED) emit({type:'response',id:stalledDirection,success:false,error:'fixture older direction released'});
+          emit({type:'tool_execution_start',toolCallId:'tool-update',toolName:'tools:update'}); continue;
+        }
+        if (mode !== 'ignore') emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,tools:mode === 'mismatch' ? [] : payload.tools})});
+        response({disposition:'handled'}); continue;
+      }
       if (command.message === 'LATE_REPORT_DIRECTION') {
         response({disposition:'queued'});
         setTimeout(() => {

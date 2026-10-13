@@ -58,7 +58,9 @@ function sameRecord(a: JobResult, b: JobResult): boolean {
   if (a.startedAt !== b.startedAt || a.endedAt !== b.endedAt || a.error !== b.error || a.pendingRequests !== b.pendingRequests) return false;
   if (a.label !== b.label || a.reportDelivery !== b.reportDelivery || a.taskReportStale !== b.taskReportStale) return false;
   if (a.reportVersion !== b.reportVersion || a.timedOut !== b.timedOut || a.outputStart !== b.outputStart) return false;
-  if (a.dismissed !== b.dismissed || a.resumeFrom !== b.resumeFrom || a.assignment !== b.assignment || a.taskDefinition !== b.taskDefinition) return false;
+  if (a.dismissed !== b.dismissed || a.resumeFrom !== b.resumeFrom || a.assignment !== b.assignment || a.taskDefinition !== b.taskDefinition || a.profileInstructions !== b.profileInstructions) return false;
+  if (a.skills === undefined || b.skills === undefined) { if (a.skills !== b.skills) return false; }
+  else if (!sameStrings(a.skills, b.skills)) return false;
   if (JSON.stringify(a.failure) !== JSON.stringify(b.failure)) return false;
   if (a.model.provider !== b.model.provider || a.model.id !== b.model.id) return false;
   return a.output === b.output && sameStrings(a.tools, b.tools) && sameRequests(a.requests, b.requests) && sameUsage(a.usage, b.usage);
@@ -72,6 +74,7 @@ function deltaOf(record: JobResult, previous: JobResult | undefined): AgentJobDe
   // Resume inputs are immutable for an attempt; do not serialize them on every output delta.
   if (record.assignment === previous.assignment) delete delta.assignment;
   if (record.taskDefinition === previous.taskDefinition) delete delta.taskDefinition;
+  if (record.profileInstructions === previous.profileInstructions) delete delta.profileInstructions;
   if (output === previous.output) return delta;
   if (output.length >= previous.output.length && output.startsWith(previous.output)) {
     delta.offset = previous.output.length;
@@ -87,7 +90,7 @@ function applyDelta(records: Map<string, JobResult>, raw: unknown): void {
   if (!isObject(raw) || typeof raw.id !== "string") throw corrupt();
   const { id, output, outputAppend, offset, observation: _observation, reason: _reason, ...meta } = raw;
   const previous = records.get(id);
-  const savedInputs = previous ? { ...(previous.assignment === undefined ? {} : { assignment: previous.assignment }), ...(previous.taskDefinition === undefined ? {} : { taskDefinition: previous.taskDefinition }) } : {};
+  const savedInputs = previous ? { ...(previous.assignment === undefined ? {} : { assignment: previous.assignment }), ...(previous.taskDefinition === undefined ? {} : { taskDefinition: previous.taskDefinition }), ...(previous.profileInstructions === undefined ? {} : { profileInstructions: previous.profileInstructions }) } : {};
   if (output !== undefined) {
     if (typeof output !== "string" || outputAppend !== undefined || offset !== undefined) throw corrupt();
     records.set(id, { ...savedInputs, ...meta, id, output } as unknown as JobResult);

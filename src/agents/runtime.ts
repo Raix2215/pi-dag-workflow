@@ -1,18 +1,19 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from '@earendil-works/pi-coding-agent';
-import { CHILD_NOTICE_PREFIX, CHILD_QUESTION_PREFIX } from "./child.ts";
-import { ProfileStore, THINKING_LEVELS, type ModelRef, type ThinkingLevel } from "./profiles.ts";
+import { CHILD_NOTICE_PREFIX, CHILD_QUESTION_PREFIX, CHILD_TOOLS_ENV, CHILD_CONTROL_ENV, CHILD_CONTROL_PREFIX, CHILD_CONTROL_REPLY } from "./child.ts";
+import { ProfileStore, THINKING_LEVELS, CORE_TOOLS, type ModelRef, type ThinkingLevel, type ResolvedProfile } from "./profiles.ts";
 import { agentFailure, safeDiagnostic, type AgentFailure } from './diagnostics.ts';
 import { CHILD_SKILLS_ENV, skillFiles } from './skills.ts';
 
 export type JobStatus = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface JobSummary {
   id: string; todoId?: number; profile: string; model: ModelRef; thinking: ThinkingLevel;
-  tools: string[]; status: JobStatus; startedAt: number; endedAt?: number; error?: string; pendingRequests: number;
+  tools: string[]; skills?: string[]; status: JobStatus; startedAt: number; endedAt?: number; error?: string; pendingRequests: number;
   /** Display-only one-line excerpt of the spawn task; never used for control flow. */
   label?: string;
   /** Terminal jobs stay "pending" until their report is delivered into the parent context. */
@@ -30,10 +31,10 @@ export interface AgentRequest { requestId: string; message: string }
 export interface AgentUsage { requests: number; input: number; output: number; estimatedCost: number }
 export interface JobObservation { phase: 'starting' | 'thinking' | 'tool' | 'output' | 'waiting' | 'settling' | 'running' | 'redirecting' | 'closed'; elapsedMs: number; lastEventAt: number; deadlineAt?: number; reportVersion: number; hasOutput: boolean; pendingMessages: number; activity?: JobActivity; activeTools: { tool: string; since: number }[]; questions: AgentRequest[] }
 export interface JobInspection extends JobSummary, JobObservation {}
-export interface JobResult extends JobSummary { assignment?: string; taskDefinition?: string; output: string; requests: AgentRequest[]; usage?: AgentUsage; timedOut?: boolean; reportVersion?: number; reason?: 'snapshot' | 'update' | 'question' | 'finished' | 'timeout'; observation?: JobObservation }
+export interface JobResult extends JobSummary { profileInstructions?: string; assignment?: string; taskDefinition?: string; output: string; requests: AgentRequest[]; usage?: AgentUsage; timedOut?: boolean; reportVersion?: number; reason?: 'snapshot' | 'update' | 'question' | 'finished' | 'timeout'; observation?: JobObservation }
 export interface AgentNotice { jobId: string; kind: "message" | "question" | "completed" | "failed"; message: string; requestId?: string; version?: number }
-export interface AgentSendResult { delivered: true; delivery: 'accepted' | 'queued' | 'answered'; interrupted: boolean; status: JobStatus }
-export interface SpawnOptions { task: string; todoId?: number; profile?: string; tools?: string[]; timeout?: number; context?: string; resumeFrom?: string; taskDefinition?: string; signal?: AbortSignal }
+export interface AgentSendResult { delivered: true; delivery: 'accepted' | 'queued' | 'answered'; interrupted: boolean; status: JobStatus; tools?: string[] }
+export interface SpawnOptions { task: string; todoId?: number; profile?: string; model?: ModelRef; thinking?: ThinkingLevel; skills?: string[]; tools?: string[]; timeout?: number; context?: string; resumeFrom?: string; taskDefinition?: string; signal?: AbortSignal }
 export interface AgentRuntimeOptions {
   cwd: string; profiles: ProfileStore; getInheritedModel: () => ModelRef | undefined;
   getInheritedThinking?: () => ThinkingLevel; getInheritedTools?: () => readonly string[];
@@ -164,7 +165,7 @@ class RpcPipe {
 }
 export interface JobActivity { kind: "thinking" | "tool" | "output"; tool?: string; since?: number }
 interface LiveJob {
-  summary: JobSummary; assignment?: string; taskDefinition?: string; output: string; requests: Map<string, string>; usage: AgentUsage;
+  summary: JobSummary; profileInstructions?: string; control?: { token: string; nonce?: string; tools?: string[] }; assignment?: string; taskDefinition?: string; output: string; requests: Map<string, string>; usage: AgentUsage;
   activity?: JobActivity; activeTools: Map<string, { tool: string; since: number }>; pipe?: RpcPipe; timer?: NodeJS.Timeout; listeners: Set<() => void>; finishing?: Promise<void>; startupAbort?: AbortController;
   sawEnd: boolean; lastStop?: string; lastError?: string; settling: boolean; settleAgain: boolean; generation: number; sends: number;
   /** Reports the child sent while it kept working; a bound task may be closed once it reported. */
@@ -240,7 +241,7 @@ export class AgentRuntime {
     }));
   }
   exportSummaries(): JobSummary[] { return structuredClone([...this.jobs.values()].map((job) => job.summary)); }
-  exportRecords(): JobResult[] { return [...this.jobs.values()].map((job) => ({ ...this.result(job), ...(job.assignment === undefined ? {} : { assignment: job.assignment }), ...(job.taskDefinition === undefined ? {} : { taskDefinition: job.taskDefinition }) })); }
+  exportRecords(): JobResult[] { return [...this.jobs.values()].map((job) => ({ ...this.result(job), ...(job.profileInstructions === undefined ? {} : { profileInstructions: job.profileInstructions }), ...(job.assignment === undefined ? {} : { assignment: job.assignment }), ...(job.taskDefinition === undefined ? {} : { taskDefinition: job.taskDefinition }) })); }
   /** Forget finished history only; this never aborts or stops a live process. */
   prune(jobIds: readonly string[]): number {
     const selected = jobIds.map((id) => this.job(id));
@@ -300,18 +301,17 @@ export class AgentRuntime {
     if (previous && (ACTIVE.has(previous.summary.status) || previous.pipe)) throw new Error('Resume requires a closed job; use send/interrupt for active work');
     if (previous && previous.summary.todoId !== input.todoId) throw new Error('resumeFrom must keep the original Todo binding');
     if (previous?.taskDefinition !== undefined && previous.taskDefinition !== input.taskDefinition) throw new Error('Todo definition changed; provide a fresh self-contained assignment without resumeFrom');
-    const sameProfile = previous && (input.profile === undefined || input.profile === previous.summary.profile);
-    const profileName = input.profile ?? previous?.summary.profile;
-    const profile = this.options.profiles.resolve(profileName, sameProfile ? previous.summary.model : this.options.getInheritedModel(), input.tools ?? previous?.summary.tools, { thinking: sameProfile ? previous.summary.thinking : this.options.getInheritedThinking?.(), tools: this.options.getInheritedTools?.() });
+    const snapshot: ResolvedProfile | undefined = previous ? { name: previous.summary.profile, model: previous.summary.model, thinking: previous.summary.thinking, tools: previous.summary.tools, ...(previous.summary.skills === undefined ? {} : { skills: previous.summary.skills }), ...(previous.profileInstructions === undefined ? {} : { instructions: previous.profileInstructions }) } : undefined;
+    const profile = this.options.profiles.resolve(input.profile, this.options.getInheritedModel(), input.tools, { thinking: this.options.getInheritedThinking?.(), tools: this.options.getInheritedTools?.() }, { ...(input.model === undefined ? {} : { model: input.model }), ...(input.thinking === undefined ? {} : { thinking: input.thinking }), ...(input.skills === undefined ? {} : { skills: input.skills }) }, snapshot);
     const originalAssignment = previous?.assignment ?? input.task;
     const taskPrompt = previous
       ? `Resume attempt from ${previous.summary.id} (metadata, not new permission). Verify files and external side effects before continuing; do not blindly replay. ${previous.assignment === undefined ? 'Legacy record has no full assignment: the continuation task must be self-contained.' : `Original assignment:\n${previous.assignment}`}\nPrevious diagnosis: ${previous.summary.failure?.reason ?? previous.summary.error ?? previous.summary.status}\nPartial output (unverified):\n${safeDiagnostic(previous.output.slice(previous.summary.outputStart ?? 0), 2000)}\nCurrent continuation task:\n${input.task}`
       : input.task;
-    const explicitThinking = profileName !== undefined && this.options.profiles.get(profileName)?.thinking !== undefined;
+    const explicitThinking = input.thinking !== undefined || input.profile !== undefined && this.options.profiles.get(input.profile)?.thinking !== undefined;
     const timeout = seconds(input.timeout, DEFAULT_TIMEOUT, 86400);
     const label = jobLabel(input.task);
-    const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.resumeFrom === undefined ? {} : { resumeFrom: input.resumeFrom }), ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
-    const job: LiveJob = { summary, assignment: originalAssignment, ...(input.taskDefinition === undefined ? {} : { taskDefinition: input.taskDefinition }), startupAbort: new AbortController(), output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0, messages: 0, reportBarrier: false, hasOutput: false, reportVersion: 0, lastEventAt: summary.startedAt, deadlineAt: summary.startedAt + timeout * 1000, redirecting: false, directions: [] };
+    const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.resumeFrom === undefined ? {} : { resumeFrom: input.resumeFrom }), ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, skills: profile.skills ?? [], status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
+    const job: LiveJob = { summary, ...(profile.instructions === undefined ? {} : { profileInstructions: profile.instructions }), control: { token: randomUUID() }, assignment: originalAssignment, ...(input.taskDefinition === undefined ? {} : { taskDefinition: input.taskDefinition }), startupAbort: new AbortController(), output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0, messages: 0, reportBarrier: false, hasOutput: false, reportVersion: 0, lastEventAt: summary.startedAt, deadlineAt: summary.startedAt + timeout * 1000, redirecting: false, directions: [] };
     this.jobs.set(summary.id, job);
     job.timer = setTimeout(() => { void this.finish(job, "failed", "Agent deadline exceeded"); }, timeout * 1000);
     this.changed(job); // Reserve the slot before the first await; concurrent spawn cannot exceed the limit.
@@ -319,6 +319,7 @@ export class AgentRuntime {
       if (job.finishing) { await job.finishing; return structuredClone(job.summary); }
       const startupSignal = input.signal ? AbortSignal.any([input.signal, job.startupAbort!.signal]) : job.startupAbort!.signal;
       const selectedSkills = await abortable(skillFiles(profile.skills, this.options.cwd, profile.tools, startupSignal), startupSignal);
+      job.summary.skills = selectedSkills;
       checkAbort(input.signal);
       if (job.finishing) { await job.finishing; return structuredClone(job.summary); }
       const cli = this.options.testCliPath ?? resolvePiCli();
@@ -331,14 +332,16 @@ export class AgentRuntime {
       }
       checkAbort(input.signal);
       const childExtension = fileURLToPath(new URL("./child.ts", import.meta.url));
-      const args = ["--mode", "rpc", "--no-session", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve", "--provider", profile.model.provider, "--model", profile.model.id, "--tools", [...profile.tools, "subagent_send"].join(","), "-e", childExtension, ...(this.options.testExtensions ?? []).flatMap((path) => ["-e", path])];
+      const args = ["--mode", "rpc", "--no-session", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve", "--provider", profile.model.provider, "--model", profile.model.id, "--tools", [...CORE_TOOLS, 'bash', 'edit', 'write', 'powershell', "subagent_send"].join(","), "-e", childExtension, ...(this.options.testExtensions ?? []).flatMap((path) => ["-e", path])];
       const childEnv = { ...process.env, ...this.options.childEnv, ...bootstrapEnv };
       // Selection-only guidance must not be inherited accidentally from the parent environment.
       delete childEnv.PI_DAG_AGENT_PROFILE_PROMPT; delete childEnv.PI_DAG_AGENT_CONTEXT; delete childEnv[CHILD_SKILLS_ENV];
+      delete childEnv[CHILD_TOOLS_ENV]; delete childEnv[CHILD_CONTROL_ENV];
       delete childEnv.PI_DAG_AGENT_MODEL_BOOTSTRAP;
       if (bootstrapEnv.PI_DAG_AGENT_MODEL_BOOTSTRAP !== undefined) childEnv.PI_DAG_AGENT_MODEL_BOOTSTRAP = bootstrapEnv.PI_DAG_AGENT_MODEL_BOOTSTRAP;
-      job.pipe = new RpcPipe(cli, args, this.options.cwd, { ...childEnv, ...(profile.instructions ? { PI_DAG_AGENT_PROFILE_PROMPT: profile.instructions } : {}), ...(input.context ? { PI_DAG_AGENT_CONTEXT: input.context } : {}), ...(selectedSkills.length ? { [CHILD_SKILLS_ENV]: JSON.stringify(selectedSkills) } : {}), PI_OFFLINE: "1", PI_DAG_CHILD: "1" }, (record) => this.record(job, record), (error) => { void this.finish(job, "failed", "Child process failed", error.message); });
+      job.pipe = new RpcPipe(cli, args, this.options.cwd, { ...childEnv, ...(profile.instructions ? { PI_DAG_AGENT_PROFILE_PROMPT: profile.instructions } : {}), ...(input.context ? { PI_DAG_AGENT_CONTEXT: input.context } : {}), ...(selectedSkills.length ? { [CHILD_SKILLS_ENV]: JSON.stringify(selectedSkills) } : {}), [CHILD_TOOLS_ENV]: JSON.stringify(profile.tools), [CHILD_CONTROL_ENV]: job.control!.token, PI_OFFLINE: "1", PI_DAG_CHILD: "1" }, (record) => this.record(job, record), (error) => { void this.finish(job, "failed", "Child process failed", error.message); });
       await job.pipe.command("get_state", {}, input.signal);
+      await this.setTools(job, profile.tools, input.signal);
       if (job.finishing) { await job.finishing; return structuredClone(job.summary); }
       // CLI model lookup permits fuzzy IDs. RPC set_model must resolve the exact registry ID.
       await job.pipe.command("set_model", { provider: profile.model.provider, modelId: profile.model.id }, input.signal);
@@ -364,6 +367,15 @@ export class AgentRuntime {
       await this.finish(job, "failed", "Child startup or prompt failed", `${String(error)}${job.pipe?.stderr ? `; stderr: ${job.pipe.stderr}` : ''}`);
     } finally { delete job.startupAbort; }
     return structuredClone(job.summary);
+  }
+  private async setTools(job: LiveJob, tools: string[], signal?: AbortSignal): Promise<void> {
+    if (!job.control || !job.pipe || job.finishing) throw new Error('Child does not support tool updates');
+    job.control.nonce = randomUUID(); delete job.control.tools;
+    await job.pipe.command('prompt', { message: CHILD_CONTROL_PREFIX + JSON.stringify({ token: job.control.token, nonce: job.control.nonce, tools }) }, signal);
+    if (job.finishing || !job.pipe) throw new Error('Agent ended while updating tools');
+    const actual = job.control.tools as string[] | undefined; // Filled by the RPC notification before its response.
+    if (!actual || actual.length !== tools.length || tools.some((name) => !actual.includes(name))) throw new Error('Child tool update was not confirmed');
+    job.summary.tools = [...actual]; delete job.control.nonce; delete job.control.tools;
   }
   private record(job: LiveJob, record: RpcRecord): void {
     if (job.finishing || this.jobs.get(job.summary.id) !== job) return;
@@ -408,7 +420,10 @@ export class AgentRuntime {
       void this.settled(job);
     } else if (record.type === "extension_ui_request") {
       const id = record.id;
-      if (record.method === "notify" && typeof record.message === "string" && record.message.startsWith(CHILD_NOTICE_PREFIX)) {
+      if (record.method === 'notify' && typeof record.message === 'string' && record.message.startsWith(CHILD_CONTROL_REPLY)) {
+        const reply = JSON.parse(record.message.slice(CHILD_CONTROL_REPLY.length)) as { nonce?: string; tools?: string[] };
+        if (job.control?.nonce && reply.nonce === job.control.nonce) job.control.tools = this.options.profiles.validateTools(reply.tools);
+      } else if (record.method === "notify" && typeof record.message === "string" && record.message.startsWith(CHILD_NOTICE_PREFIX)) {
         const text = record.message.slice(CHILD_NOTICE_PREFIX.length);
         if (job.reportBarrier) { this.append(job, `[Historical report] ${text}\n`); job.summary.outputStart = job.output.length; }
         else {
@@ -473,9 +488,11 @@ export class AgentRuntime {
     })();
     return job.finishing;
   }
-  async send(input: { recipient?: string; message: string; requestId?: string; interrupt?: boolean; signal?: AbortSignal }): Promise<AgentSendResult> {
+  async send(input: { recipient?: string; message: string; requestId?: string; interrupt?: boolean; tools?: string[]; signal?: AbortSignal }): Promise<AgentSendResult> {
     checkAbort(input.signal);
     const text = message(input.message);
+    if (input.tools !== undefined && (!input.recipient || input.requestId !== undefined || input.interrupt !== true)) throw new Error('tools requires recipient and interrupt:true, without requestId');
+    const tools = input.tools === undefined ? undefined : this.options.profiles.validateTools(input.tools);
     const matches = input.requestId ? [...this.jobs.values()].filter((item) => item.requests.has(input.requestId!)) : [];
     if (!input.recipient && matches.length !== 1) throw new Error("Specify recipient, or a unique pending child requestId");
     const job = input.recipient ? this.job(input.recipient) : matches[0]!;
@@ -511,6 +528,10 @@ export class AgentRuntime {
           // Keep the aborted outcome until a new response replaces it: a rejected direction
           // must not turn the interrupted assignment into a successful completion.
           delete job.lastError;
+          if (tools !== undefined) {
+            await this.setTools(job, tools, input.signal);
+            this.changed(job);
+          }
         }
         const state = await job.pipe.command("get_state", {}, input.signal);
         const queued = (state.data as { pendingMessageCount?: number } | undefined)?.pendingMessageCount ?? 0;
@@ -521,7 +542,7 @@ export class AgentRuntime {
         const accepted = await job.pipe.command("prompt", { message: text, streamingBehavior: "steer" }, input.signal);
         const disposition = (accepted.data as { disposition?: string } | undefined)?.disposition;
         if (disposition === 'handled') throw new Error('Child direction was handled without a model run');
-        return { delivered: true, delivery: disposition === 'queued' ? 'queued' : 'accepted', interrupted: input.interrupt ?? false, status: job.summary.status };
+        return { delivered: true, delivery: disposition === 'queued' ? 'queued' : 'accepted', interrupted: input.interrupt ?? false, status: job.summary.status, ...(tools === undefined ? {} : { tools: [...job.summary.tools] }) };
       } catch (cause) {
         if (job.generation === directionGeneration) job.sawEnd = previousEnd;
         if (queuedDirection) { const at = job.directions.indexOf(text); if (at >= 0) job.directions.splice(at, 1); }
@@ -531,7 +552,7 @@ export class AgentRuntime {
         else if (input.interrupt && mutated) await this.finish(job, 'failed', 'Child redirection failed', String(cause));
         throw cause;
       } finally {
-        job.sends--; job.redirecting = false; this.changed(job);
+        job.sends--; if (input.interrupt) job.redirecting = false; this.changed(job);
         if (job.sawEnd && !job.finishing) void this.settled(job);
       }
     }
@@ -591,6 +612,8 @@ export class AgentRuntime {
       if (item.dismissed !== undefined && typeof item.dismissed !== 'boolean') throw new Error('Invalid dismissed agent marker');
       if (item.resumeFrom !== undefined && (typeof item.resumeFrom !== 'string' || !/^a[1-9]\d{0,8}$/.test(item.resumeFrom))) throw new Error('Invalid resumeFrom');
       const saved = item as JobResult;
+      if (saved.profileInstructions !== undefined && (typeof saved.profileInstructions !== 'string' || !saved.profileInstructions.trim() || saved.profileInstructions.length > 2000)) throw new Error('Invalid saved profile instructions');
+      if (item.skills !== undefined) this.options.profiles.validateSkills(item.skills);
       if (saved.assignment !== undefined && (typeof saved.assignment !== 'string' || !saved.assignment.trim() || saved.assignment.length > 65536)) throw new Error('Invalid saved assignment');
       if (saved.taskDefinition !== undefined && (typeof saved.taskDefinition !== 'string' || !/^[0-9a-f]{64}$/.test(saved.taskDefinition))) throw new Error('Invalid task definition');
       if (item.failure !== undefined && (!item.failure || !['quota', 'auth', 'network', 'timeout', 'process', 'unknown'].includes(item.failure.kind) || typeof item.failure.reason !== 'string' || typeof item.failure.recovery !== 'string' || ![true, false, null].includes(item.failure.retryable))) throw new Error('Invalid failure diagnostic');
@@ -610,6 +633,7 @@ export class AgentRuntime {
         ...(item.resumeFrom ? { resumeFrom: item.resumeFrom } : {}),
         ...(item.failure ? { failure: agentFailure(String(item.failure.reason ?? item.error ?? 'Unknown failure')) } : {}),
         ...(item.outputStart !== undefined ? { outputStart: item.outputStart } : {}),
+        ...(item.skills === undefined ? {} : { skills: this.options.profiles.validateSkills(item.skills) }),
         thinking: item.thinking, tools: item.tools.filter((tool: unknown): tool is string => typeof tool === "string").slice(0, 8),
         status: ACTIVE.has(item.status) ? "interrupted" : item.status, startedAt: item.startedAt, pendingRequests: 0,
         ...(typeof item.endedAt === "number" ? { endedAt: item.endedAt } : {}),
@@ -633,7 +657,7 @@ export class AgentRuntime {
         this.sequence = Math.max(this.sequence, Number(summary.id.slice(1)));
         const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
         const usage = { requests: number(record.usage?.requests), input: number(record.usage?.input), output: number(record.usage?.output), estimatedCost: number(record.usage?.estimatedCost) };
-        this.jobs.set(summary.id, { summary, ...(record.assignment === undefined ? {} : { assignment: record.assignment }), ...(record.taskDefinition === undefined ? {} : { taskDefinition: record.taskDefinition }), usage, output, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, messages: 0, sends: 0, reportBarrier: false, hasOutput: /\S/.test(output), reportVersion: Number.isSafeInteger(record.reportVersion) && record.reportVersion! >= 0 ? record.reportVersion! : 0, lastEventAt: summary.endedAt ?? summary.startedAt, redirecting: false, directions: [] });
+        this.jobs.set(summary.id, { summary, ...(record.profileInstructions === undefined ? {} : { profileInstructions: record.profileInstructions }), ...(record.assignment === undefined ? {} : { assignment: record.assignment }), ...(record.taskDefinition === undefined ? {} : { taskDefinition: record.taskDefinition }), usage, output, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, messages: 0, sends: 0, reportBarrier: false, hasOutput: /\S/.test(output), reportVersion: Number.isSafeInteger(record.reportVersion) && record.reportVersion! >= 0 ? record.reportVersion! : 0, lastEventAt: summary.endedAt ?? summary.startedAt, redirecting: false, directions: [] });
       }
     } finally { this.unavailable = false; this.restoring = false; }
     this.changed();

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_TOOLS, ProfileStore } from "../src/agents/profiles.ts";
+import { CORE_TOOLS, ProfileStore, type ResolvedProfile, type ThinkingLevel } from "../src/agents/profiles.ts";
 
 const model = { provider: "local", id: "exact-model" };
 const registry = { find: (provider: string, id: string) => provider === model.provider && id === model.id ? { reasoning: true } : undefined };
@@ -63,6 +63,136 @@ test("profile getters and resolved objects cannot mutate stored configuration", 
   assert.equal(store.delete("reader"), true);
   assert.equal(store.get("reader"), undefined);
 });
+const alternateModel = { provider: "local", id: "alternate-model" };
+const plainModel = { provider: "local", id: "plain-model" };
+const dispatchRegistry = {
+  find: (provider: string, id: string) => provider === "local" && [model.id, alternateModel.id, plainModel.id].includes(id)
+    ? { reasoning: id !== plainModel.id } : undefined,
+};
+const snapshot = (): ResolvedProfile => ({
+  name: "old", model: { ...model }, thinking: "high", tools: ["read"],
+  skills: ["old.md"], instructions: "Preserve this guidance.",
+});
+
+test("dispatch overrides win over named profile and parent, including empty replacement lists", () => {
+  const store = new ProfileStore({ registry: dispatchRegistry, trustedTools: ["write"] });
+  store.set({ name: "writer", model: alternateModel, thinking: "low", tools: ["write"], skills: ["profile.md"], instructions: "Profile guidance." });
+  const parent = { thinking: "medium" as const, tools: ["read", "custom_search"] };
+  assert.deepEqual(store.resolve("writer", model, undefined, parent), {
+    name: "writer", model: alternateModel, thinking: "low", tools: ["write"], skills: ["profile.md"], instructions: "Profile guidance.",
+  });
+  assert.deepEqual(store.resolve("writer", model, [" read ", "read"], parent, {
+    model, thinking: "high", skills: [" override.md ", "override.md"],
+  }), { name: "writer", model, thinking: "high", tools: ["read"], skills: ["override.md"], instructions: "Profile guidance." });
+  assert.deepEqual(store.resolve("writer", model, [], parent, { thinking: "off", skills: [] }), {
+    name: "writer", model: alternateModel, thinking: "off", tools: [], skills: [], instructions: "Profile guidance.",
+  });
+});
+
+test("dispatch model override starts without a parent model and rejects misspellings", () => {
+  const store = new ProfileStore({ registry: dispatchRegistry });
+  assert.deepEqual(store.resolve(undefined, undefined, undefined, { thinking: "medium", tools: [] }, { model }), {
+    name: "inherit", model, thinking: "medium", tools: [],
+  });
+  assert.throws(() => store.resolve(undefined, model, undefined, undefined, { model: { ...model, id: "exact-modle" } }), /Unknown model/);
+  assert.throws(() => store.resolve(undefined, model, undefined, undefined, { model: { ...model, provider: "locla" } }), /Unknown model/);
+});
+
+test("resume uses the full snapshot without looking up modified or deleted old profiles", () => {
+  const store = new ProfileStore({ registry: dispatchRegistry, trustedTools: ["write"] });
+  const previous = snapshot();
+  store.set({ name: "old", model: alternateModel, thinking: "off", tools: ["write"], skills: ["changed.md"], instructions: "Changed." });
+  const parent = { thinking: "low" as const, tools: ["write"] };
+  assert.deepEqual(store.resolve(undefined, alternateModel, undefined, parent, undefined, previous), previous);
+  store.delete("old");
+  assert.deepEqual(store.resolve(undefined, undefined, undefined, undefined, undefined, previous), previous);
+  assert.throws(() => store.resolve("old", alternateModel, undefined, parent, undefined, previous), /Unknown profile/);
+  const resolved = store.resolve(undefined, alternateModel, undefined, parent, undefined, previous);
+  resolved.model.id = "mutated";
+  resolved.tools.push("write");
+  resolved.skills!.push("mutated.md");
+  assert.deepEqual(previous, snapshot());
+});
+
+test("resume applies only explicit fields of a named profile even when its name is unchanged", () => {
+  const store = new ProfileStore({ registry: dispatchRegistry, trustedTools: ["write"] });
+  const previous = snapshot();
+  store.set({ name: "old", thinking: "low" });
+  assert.deepEqual(store.resolve("old", alternateModel, undefined, { tools: ["write"] }, undefined, previous), { ...previous, thinking: "low" });
+  store.set({ name: "partial", tools: [], skills: [] });
+  assert.deepEqual(store.resolve("partial", alternateModel, undefined, undefined, undefined, previous), { ...previous, name: "partial", tools: [], skills: [] });
+  store.set({ name: "full", model: alternateModel, thinking: "low", tools: ["write"], skills: ["new.md"], instructions: "New guidance." });
+  assert.deepEqual(store.resolve("full", undefined, undefined, undefined, undefined, previous), {
+    name: "full", model: alternateModel, thinking: "low", tools: ["write"], skills: ["new.md"], instructions: "New guidance.",
+  });
+  assert.deepEqual(store.resolve("full", undefined, [], undefined, { model, thinking: "off", skills: [] }, previous), {
+    name: "full", model, thinking: "off", tools: [], skills: [], instructions: "New guidance.",
+  });
+});
+
+test("resume overrides replace snapshot fields while retaining its name and instructions", () => {
+  const store = new ProfileStore({ registry: dispatchRegistry, trustedTools: ["write"] });
+  const previous = snapshot();
+  assert.deepEqual(store.resolve(undefined, model, ["write"], undefined, {
+    model: alternateModel, thinking: "minimal", skills: ["new.md"],
+  }, previous), { ...previous, model: alternateModel, thinking: "minimal", tools: ["write"], skills: ["new.md"] });
+  assert.deepEqual(store.resolve(undefined, model, [], undefined, { skills: [] }, previous), { ...previous, tools: [], skills: [] });
+});
+
+test("explicit inherit discards the entire snapshot and resets to the current parent", () => {
+  const store = new ProfileStore({ registry: dispatchRegistry, trustedTools: ["write"] });
+  const previous = snapshot();
+  const parent = { thinking: "low" as const, tools: ["write", "custom_search"] };
+  assert.deepEqual(store.resolve("inherit", alternateModel, undefined, parent, undefined, previous), {
+    name: "inherit", model: alternateModel, thinking: "low", tools: ["write"],
+  });
+  assert.deepEqual(store.resolve("inherit", alternateModel, [], parent, { model, thinking: "off", skills: [] }, previous), {
+    name: "inherit", model, thinking: "off", tools: [], skills: [],
+  });
+  assert.throws(() => store.resolve("inherit", undefined, undefined, parent, undefined, previous), /parent model/);
+  assert.equal(store.resolve("inherit", undefined, undefined, parent, { model }, previous).model.id, model.id);
+});
+
+test("only inherited thinking falls back to off on a non-reasoning dispatch model", () => {
+  const store = new ProfileStore({ registry: dispatchRegistry });
+  store.set({ name: "model-only", model: plainModel });
+  store.set({ name: "explicit", thinking: "high" });
+  const parent = { thinking: "high" as const };
+  assert.equal(store.resolve("model-only", model, undefined, parent).thinking, "off");
+  assert.equal(store.resolve(undefined, model, undefined, parent, { model: plainModel }).thinking, "off");
+  assert.equal(store.resolve(undefined, undefined, undefined, undefined, { model: plainModel }, snapshot()).thinking, "off");
+  assert.equal(store.resolve("model-only", undefined, undefined, undefined, undefined, snapshot()).thinking, "off");
+  assert.throws(() => store.resolve(undefined, plainModel, undefined, parent, { thinking: "high" }), /does not support thinking/);
+  assert.throws(() => store.resolve(undefined, model, undefined, parent, { model: plainModel, thinking: "low" }, snapshot()), /does not support thinking/);
+  assert.throws(() => store.resolve("explicit", plainModel), /does not support thinking/);
+  assert.throws(() => store.resolve("explicit", model, undefined, undefined, { model: plainModel }, snapshot()), /does not support thinking/);
+  assert.equal(store.resolve("explicit", plainModel, undefined, undefined, { thinking: "off" }).thinking, "off");
+  assert.throws(() => store.set({ name: "invalid", model: plainModel, thinking: "high" }), /does not support thinking/);
+  assert.throws(() => store.resolve(undefined, model, undefined, undefined, { thinking: "typo" as ThinkingLevel }), /thinking/);
+});
+
+test("tool lists trim and deduplicate without granting unsupported or untrusted tools", () => {
+  const store = new ProfileStore({ registry, trustedTools: ["write"] });
+  store.set({ name: "trimmed", tools: [" read ", "read", " write "] });
+  assert.deepEqual(store.resolve("trimmed", model).tools, ["read", "write"]);
+  assert.deepEqual(store.resolve(undefined, model, [" read ", "read"]).tools, ["read"]);
+  assert.deepEqual(store.resolve(undefined, model, undefined, { tools: ["custom_search"] }).tools, []);
+  for (const tool of ["bash", "custom_search", "subagent_spawn", "", "   "]) {
+    assert.throws(() => store.resolve(undefined, model, [tool]), /not trusted or supported/);
+  }
+  assert.throws(() => store.resolve(undefined, model, [1] as unknown as string[]), /supported tool names/);
+  assert.throws(() => store.resolve(undefined, model, undefined, undefined, undefined, { ...snapshot(), tools: ["bash"] }), /not trusted or supported/);
+});
+
+test("dispatch skill overrides use the same bounded local-path validation as profiles", () => {
+  const store = new ProfileStore({ registry });
+  assert.deepEqual(store.resolve(undefined, model, undefined, undefined, { skills: [" a.md ", "a.md", "~/b.md"] }).skills, ["a.md", "~/b.md"]);
+  assert.equal("skills" in store.resolve(undefined, model), false);
+  for (const skills of [["https://example.com/a.md"], ["bad\n.md"], ["   "], Array(9).fill("a.md"), ["x".repeat(2049)]]) {
+    assert.throws(() => store.resolve(undefined, model, undefined, undefined, { skills }), /[Ss]kill/);
+  }
+});
+
 test("profile file contains only configuration, load/save validate and load is atomic", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-dag-m2-profile-"));
   try {
