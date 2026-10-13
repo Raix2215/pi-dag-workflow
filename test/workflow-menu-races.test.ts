@@ -61,21 +61,22 @@ test('protected Todo display commands cannot overwrite damaged records', async (
   } finally { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; }
 });
 
-test('native DAG reader keeps each padded task and its right-aligned status on one body row', async () => {
-  const previous = process.env.PI_CODING_AGENT_DIR, oldCols = process.stdout.columns, oldRows = process.stdout.rows;
-  process.env.PI_CODING_AGENT_DIR = join(tmpdir(), 'fixture-nonexistent-agent-directory'); process.stdout.columns = 80; process.stdout.rows = 42;
+for (const language of ['zh-CN', 'en']) test(`native DAG reader keeps each padded task and its right-aligned status on one body row (${language})`, async () => {
+  const previous = process.env.PI_CODING_AGENT_DIR, oldLanguage = process.env.LANGUAGE, oldCols = process.stdout.columns, oldRows = process.stdout.rows;
+  process.env.PI_CODING_AGENT_DIR = join(tmpdir(), 'fixture-nonexistent-agent-directory'); process.env.LANGUAGE = language; process.stdout.columns = 80; process.stdout.rows = 42;
   let h: ReturnType<typeof harness> | undefined;
   try {
     let state = emptyState(); for (let i = 0; i < 5; i++) state = applyTodo(state, { action: 'create', subject: `构建任务 ${i}` }).state;
     h = harness([{ type: 'custom', customType: STATE_TYPE, data: state }]); h.ctx.mode = 'tui';
     let body: string[] = [];
-    h.ctx.ui.select = async (_title: string, options: string[]) => { body = options.filter(value => value.startsWith('│ ')); return '返回'; };
+    h.ctx.ui.select = async (_title: string, options: string[]) => { body = options.filter(value => value.startsWith('│ ')); return undefined; };
     const workflow = createWorkflow(h.pi); await workflow.attach('todos', h.pi); await h.emit('session_start'); await h.commands.get('dag').handler('', h.ctx);
     const taskRows = body.filter(line => /#\d+/.test(line));
     assert.equal(taskRows.length, 5, 'every task is present');
-    for (const line of taskRows) assert.match(stripTerminalSequences(line), /\[主会话\].*\[待执行\]$/u, 'the right-hand status stays on its task row');
+    for (const line of taskRows) assert.match(stripTerminalSequences(line), language === 'zh-CN' ? /\[主会话\].*\[待执行\]$/u : /\[Main session\].*\[Pending\]$/u, 'the right-hand status stays on its task row');
   } finally {
     if (h) await h.emit('session_shutdown'); process.stdout.columns = oldCols; process.stdout.rows = oldRows;
+    if (oldLanguage === undefined) delete process.env.LANGUAGE; else process.env.LANGUAGE = oldLanguage;
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
   }
 });
