@@ -138,23 +138,22 @@ test('an un-enabled Goal stays asleep after switching back to finite and Plan/re
   await h.fire('session_shutdown');
 });
 
-test('nopause and nolimit share one menu guard; a stale menu writes nothing', async () => {
+test('nolimit shortcuts are idempotent, guarded, and branch restore keeps the newest state', async () => {
   const h = host(); await h.enable(2);
-  // Concurrency: keep the nolimit menu open, then a second menu must be rejected.
-  let release!: (value?: string) => void;
-  h.select(() => new Promise<string | undefined>((resolve) => { release = resolve; }));
-  const pending = h.command('nolimit #1');
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await h.command('nopause #1');
-  assert.ok(h.notices.some((notice) => notice.includes('菜单已打开')), h.notices.join(' | '));
-  release(undefined);
-  await pending;
-  assert.equal(h.controller.snapshot().goals[0]!.nolimit, undefined);
-  // Epoch: a menu that resolves after a branch restore cannot write into the new state.
-  h.select(async (_title, options) => { await h.fire('session_tree'); return options[1]; });
-  await h.command('nolimit #1');
-  assert.equal(h.controller.snapshot().goals[0]!.nolimit, undefined);
-  assert.equal(h.controller.snapshot().run.paused, true);
+  await h.command('nolimit #1 on');
+  assert.equal(h.controller.snapshot().goals[0]!.nolimit, true);
+  await h.command('nolimit #1 on');
+  assert.equal(h.controller.snapshot().goals[0]!.nolimit, true, 'repeating on is idempotent');
+  await h.command('nolimit #1 off');
+  assert.equal(h.controller.snapshot().goals[0]!.nolimit, false);
+  await h.command('nolimit #1 off');
+  assert.equal(h.controller.snapshot().goals[0]!.nolimit, false, 'repeating off is idempotent');
+  await h.command('nolimit #1 maybe');
+  assert.ok(h.notices.some((notice) => /on\|off/.test(notice)), h.notices.join(' | '));
+  await h.command('nolimit #1 on');
+  await h.fire('session_tree');
+  assert.equal(h.controller.snapshot().goals[0]!.nolimit, true, 'the user choice is restored from the branch');
+  assert.equal(h.controller.snapshot().run.paused, true, 'restore keeps the Goal paused');
   await h.fire('session_shutdown');
 });
 
@@ -199,26 +198,19 @@ test('unlimited Goals still obey the regular no-progress pause and a failed comp
 // Real offline Pi process: menu writes state without a model request
 // ---------------------------------------------------------------------------
 
-test('real Pi: the nolimit menu flips a Goal without starting it and reports ∞', { timeout: 30000 }, async (t) => {
+test('real Pi: the nolimit shortcut flips a Goal without starting it and reports ∞', { timeout: 30000 }, async (t) => {
   const client = await IsolatedClient.start(undefined, 'goal-nolimit');
   t.after(() => client.close());
   await client.prompt('TEST CALL goal {"action":"create","title":"无限额度","maxTurns":2}');
   const offset = client.records.length;
-  const configuring = client.prompt('/goal nolimit #1');
-  await client.until(() => client.records.slice(offset).some((event) => event.method === 'select'));
-  const menu = client.records.slice(offset).find((event) => event.method === 'select')!;
-  const options = menu.options as string[];
-  assert.equal(options.length, 3, 'two choices and explicit back');
-  assert.match(String(menu.title), /续跑轮数/);
-  assert.ok(options.some((option) => option.includes('不限')));
-  client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: options[1] })}\n`);
-  await configuring;
-  assert.equal(client.records.slice(offset).filter((event) => event.type === 'agent_start').length, 0, 'a passive menu starts no model request');
+  await client.prompt('/goal nolimit #1 on');
+  assert.equal(client.records.slice(offset).filter((event) => event.type === 'agent_start').length, 0, 'a passive shortcut starts no model request');
+  assert.ok(client.records.slice(offset).some((record) => record.method === 'notify' && String(record.message).includes('不限')), 'the shortcut reports the unlimited allowance');
   const saved = (await client.entries() as any[]).findLast((entry) => entry.customType === GOAL_TYPE).data;
   assert.equal(saved.goals[0].nolimit, true);
   assert.equal(saved.goals[0].maxTurns, 2);
   assert.equal(saved.run.used, 0);
   assert.equal(saved.run.paused, true);
   await client.prompt('/goal get #1');
-  assert.ok(client.records.some((record) => record.method === 'notify' && String(record.message).includes('∞')), 'the Goal list shows the unlimited allowance');
+  assert.ok(client.records.some((record) => record.method === 'notify' && String(record.message).includes('∞')), 'the Goal detail shows the unlimited allowance');
 });

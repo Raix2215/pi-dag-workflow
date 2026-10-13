@@ -60,6 +60,15 @@ test('native TUI preserves identity and semantic state colors, and never uses an
   assert.ok(plain(h.calls[0]!.options[0]!).startsWith('#12 [已完成]'), 'status remains before a long title');
 });
 
+test('setting values use dim separately from action labels and attention states', async () => {
+  const h = host('tui'); h.select(async () => undefined);
+  await choose(h.ctx, 'Settings', [{ id: 'research', label: 'Continuous research', value: 'Enabled', valueTone: 'dim' }, { id: 'failed', label: '#1 Failed task', value: '失败' }], { actions: [{ id: 'summary', label: 'Show summary', value: 'Disabled', valueTone: 'dim' }] });
+  assert.ok(h.styles.some(style => style.text === 'Enabled' && style.fg === 'dim' && !style.bold));
+  assert.ok(h.styles.some(style => style.text === 'Disabled' && style.fg === 'dim' && !style.bold));
+  assert.ok(h.styles.some(style => style.text === '[失败]' && style.fg === 'error' && style.bold));
+  assert.ok(!h.styles.some(style => style.text === 'Continuous research' && style.fg === 'dim'));
+});
+
 test('a directory never embeds long history, requirements or a preview of an unselected record', async () => {
   const h = host('tui'); h.select(async () => undefined);
   await choose(h.ctx, 'Goal', items(20), { searchable: true, lines: () => ['Scope\n' + 'DO NOT INLINE HISTORY '.repeat(200)] });

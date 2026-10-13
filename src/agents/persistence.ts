@@ -61,6 +61,8 @@ function sameRecord(a: JobResult, b: JobResult): boolean {
   if (a.dismissed !== b.dismissed || a.resumeFrom !== b.resumeFrom || a.assignment !== b.assignment || a.taskDefinition !== b.taskDefinition || a.profileInstructions !== b.profileInstructions) return false;
   if (a.skills === undefined || b.skills === undefined) { if (a.skills !== b.skills) return false; }
   else if (!sameStrings(a.skills, b.skills)) return false;
+  if (a.ignoredInheritedTools === undefined || b.ignoredInheritedTools === undefined) { if (a.ignoredInheritedTools !== b.ignoredInheritedTools) return false; }
+  else if (!sameStrings(a.ignoredInheritedTools, b.ignoredInheritedTools)) return false;
   if (JSON.stringify(a.failure) !== JSON.stringify(b.failure)) return false;
   if (a.model.provider !== b.model.provider || a.model.id !== b.model.id) return false;
   return a.output === b.output && sameStrings(a.tools, b.tools) && sameRequests(a.requests, b.requests) && sameUsage(a.usage, b.usage);

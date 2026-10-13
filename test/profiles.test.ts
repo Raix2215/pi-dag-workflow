@@ -18,7 +18,7 @@ test('inherit accepts its explicit name and captures thinking and only active su
   const store = new ProfileStore({ registry, trustedTools: ['bash', 'write', 'powershell'] });
   const parent = { thinking: 'high' as const, tools: ['read', 'bash', 'write', 'powershell', 'custom_search', 'subagent_spawn'] };
   const resolved = store.resolve(undefined, model, undefined, parent);
-  assert.deepEqual(resolved, { name: 'inherit', model, thinking: 'high', tools: ['read', 'bash', 'write', 'powershell'] });
+  assert.deepEqual(resolved, { name: 'inherit', model, thinking: 'high', tools: ['read', 'bash', 'write', 'powershell'], ignoredInheritedTools: ['custom_search', 'subagent_spawn'] });
   assert.deepEqual(store.resolve('inherit', model, undefined, parent), resolved);
   assert.deepEqual(store.resolve('inherit', model, [], parent).tools, []);
   assert.deepEqual(store.resolve(undefined, model, undefined, { tools: [] }).tools, []);
@@ -144,7 +144,7 @@ test("explicit inherit discards the entire snapshot and resets to the current pa
   const previous = snapshot();
   const parent = { thinking: "low" as const, tools: ["write", "custom_search"] };
   assert.deepEqual(store.resolve("inherit", alternateModel, undefined, parent, undefined, previous), {
-    name: "inherit", model: alternateModel, thinking: "low", tools: ["write"],
+    name: "inherit", model: alternateModel, thinking: "low", tools: ["write"], ignoredInheritedTools: ["custom_search"],
   });
   assert.deepEqual(store.resolve("inherit", alternateModel, [], parent, { model, thinking: "off", skills: [] }, previous), {
     name: "inherit", model, thinking: "off", tools: [], skills: [],

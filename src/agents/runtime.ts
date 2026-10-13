@@ -6,14 +6,14 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from '@earendil-works/pi-coding-agent';
 import { CHILD_NOTICE_PREFIX, CHILD_QUESTION_PREFIX, CHILD_TOOLS_ENV, CHILD_CONTROL_ENV, CHILD_CONTROL_PREFIX, CHILD_CONTROL_REPLY } from "./child.ts";
-import { ProfileStore, THINKING_LEVELS, CORE_TOOLS, type ModelRef, type ThinkingLevel, type ResolvedProfile } from "./profiles.ts";
+import { ProfileStore, THINKING_LEVELS, CHILD_TOOLS, type ModelRef, type ThinkingLevel, type ResolvedProfile } from "./profiles.ts";
 import { agentFailure, safeDiagnostic, type AgentFailure } from './diagnostics.ts';
 import { CHILD_SKILLS_ENV, skillFiles } from './skills.ts';
 
 export type JobStatus = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface JobSummary {
   id: string; todoId?: number; profile: string; model: ModelRef; thinking: ThinkingLevel;
-  tools: string[]; skills?: string[]; status: JobStatus; startedAt: number; endedAt?: number; error?: string; pendingRequests: number;
+  tools: string[]; skills?: string[]; ignoredInheritedTools?: string[]; status: JobStatus; startedAt: number; endedAt?: number; error?: string; pendingRequests: number;
   /** Display-only one-line excerpt of the spawn task; never used for control flow. */
   label?: string;
   /** Terminal jobs stay "pending" until their report is delivered into the parent context. */
@@ -34,6 +34,17 @@ export interface JobInspection extends JobSummary, JobObservation {}
 export interface JobResult extends JobSummary { profileInstructions?: string; assignment?: string; taskDefinition?: string; output: string; requests: AgentRequest[]; usage?: AgentUsage; timedOut?: boolean; reportVersion?: number; reason?: 'snapshot' | 'update' | 'question' | 'finished' | 'timeout'; observation?: JobObservation }
 export interface AgentNotice { jobId: string; kind: "message" | "question" | "completed" | "failed"; message: string; requestId?: string; version?: number }
 export interface AgentSendResult { delivered: true; delivery: 'accepted' | 'queued' | 'answered'; interrupted: boolean; status: JobStatus; tools?: string[] }
+export interface AgentSendFailure {
+  jobId: string; stage: 'preflight' | 'clear_queue' | 'interrupt' | 'apply_tools' | 'deliver_direction'; status: JobStatus;
+  interrupted?: boolean | null; queueCleared?: boolean | null; questionsCleared?: boolean | null; toolsApplied?: boolean | null;
+  directionDelivery: 'not_sent' | 'unknown'; currentTools: string[]; requestedTools?: string[]; error: string; recovery: string;
+}
+export class AgentSendError extends Error {
+  readonly details: AgentSendFailure;
+  constructor(reason: string, details: AgentSendFailure) { super(reason); this.name = 'AgentSendError'; this.details = details; }
+}
+interface ToolConfirmation { nonce: string; action: 'check' | 'apply'; ok: boolean; tools?: string[]; error?: string }
+interface ToolControl { token: string; pending?: { nonce: string; action: 'check' | 'apply'; resolve(reply: ToolConfirmation): void; reject(error: Error): void } }
 export interface SpawnOptions { task: string; todoId?: number; profile?: string; model?: ModelRef; thinking?: ThinkingLevel; skills?: string[]; tools?: string[]; timeout?: number; context?: string; resumeFrom?: string; taskDefinition?: string; signal?: AbortSignal }
 export interface AgentRuntimeOptions {
   cwd: string; profiles: ProfileStore; getInheritedModel: () => ModelRef | undefined;
@@ -165,7 +176,7 @@ class RpcPipe {
 }
 export interface JobActivity { kind: "thinking" | "tool" | "output"; tool?: string; since?: number }
 interface LiveJob {
-  summary: JobSummary; profileInstructions?: string; control?: { token: string; nonce?: string; tools?: string[] }; assignment?: string; taskDefinition?: string; output: string; requests: Map<string, string>; usage: AgentUsage;
+  summary: JobSummary; profileInstructions?: string; control?: ToolControl; assignment?: string; taskDefinition?: string; output: string; requests: Map<string, string>; usage: AgentUsage;
   activity?: JobActivity; activeTools: Map<string, { tool: string; since: number }>; pipe?: RpcPipe; timer?: NodeJS.Timeout; listeners: Set<() => void>; finishing?: Promise<void>; startupAbort?: AbortController;
   sawEnd: boolean; lastStop?: string; lastError?: string; settling: boolean; settleAgain: boolean; generation: number; sends: number;
   /** Reports the child sent while it kept working; a bound task may be closed once it reported. */
@@ -310,7 +321,7 @@ export class AgentRuntime {
     const explicitThinking = input.thinking !== undefined || input.profile !== undefined && this.options.profiles.get(input.profile)?.thinking !== undefined;
     const timeout = seconds(input.timeout, DEFAULT_TIMEOUT, 86400);
     const label = jobLabel(input.task);
-    const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.resumeFrom === undefined ? {} : { resumeFrom: input.resumeFrom }), ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, skills: profile.skills ?? [], status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
+    const summary: JobSummary = { id: `a${++this.sequence}`, ...(input.resumeFrom === undefined ? {} : { resumeFrom: input.resumeFrom }), ...(input.todoId === undefined ? {} : { todoId: input.todoId }), profile: profile.name, model: profile.model, thinking: profile.thinking, tools: profile.tools, skills: profile.skills ?? [], ...(profile.ignoredInheritedTools ? { ignoredInheritedTools: profile.ignoredInheritedTools } : {}), status: "starting", startedAt: Date.now(), pendingRequests: 0, ...(label ? { label } : {}) };
     const job: LiveJob = { summary, ...(profile.instructions === undefined ? {} : { profileInstructions: profile.instructions }), control: { token: randomUUID() }, assignment: originalAssignment, ...(input.taskDefinition === undefined ? {} : { taskDefinition: input.taskDefinition }), startupAbort: new AbortController(), output: "", usage: { requests: 0, input: 0, output: 0, estimatedCost: 0 }, requests: new Map(), activeTools: new Map(), listeners: new Set(), sawEnd: false, settling: false, settleAgain: false, generation: 0, sends: 0, messages: 0, reportBarrier: false, hasOutput: false, reportVersion: 0, lastEventAt: summary.startedAt, deadlineAt: summary.startedAt + timeout * 1000, redirecting: false, directions: [] };
     this.jobs.set(summary.id, job);
     job.timer = setTimeout(() => { void this.finish(job, "failed", "Agent deadline exceeded"); }, timeout * 1000);
@@ -332,7 +343,7 @@ export class AgentRuntime {
       }
       checkAbort(input.signal);
       const childExtension = fileURLToPath(new URL("./child.ts", import.meta.url));
-      const args = ["--mode", "rpc", "--no-session", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve", "--provider", profile.model.provider, "--model", profile.model.id, "--tools", [...CORE_TOOLS, 'bash', 'edit', 'write', 'powershell', "subagent_send"].join(","), "-e", childExtension, ...(this.options.testExtensions ?? []).flatMap((path) => ["-e", path])];
+      const args = ["--mode", "rpc", "--no-session", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve", "--provider", profile.model.provider, "--model", profile.model.id, "--tools", [...CHILD_TOOLS, "subagent_send"].join(","), "-e", childExtension, ...(this.options.testExtensions ?? []).flatMap((path) => ["-e", path])];
       const childEnv = { ...process.env, ...this.options.childEnv, ...bootstrapEnv };
       // Selection-only guidance must not be inherited accidentally from the parent environment.
       delete childEnv.PI_DAG_AGENT_PROFILE_PROMPT; delete childEnv.PI_DAG_AGENT_CONTEXT; delete childEnv[CHILD_SKILLS_ENV];
@@ -368,15 +379,30 @@ export class AgentRuntime {
     } finally { delete job.startupAbort; }
     return structuredClone(job.summary);
   }
-  private async setTools(job: LiveJob, tools: string[], signal?: AbortSignal): Promise<void> {
+  private async controlTools(job: LiveJob, tools: string[], action: 'check' | 'apply', signal?: AbortSignal): Promise<void> {
     if (!job.control || !job.pipe || job.finishing) throw new Error('Child does not support tool updates');
-    job.control.nonce = randomUUID(); delete job.control.tools;
-    await job.pipe.command('prompt', { message: CHILD_CONTROL_PREFIX + JSON.stringify({ token: job.control.token, nonce: job.control.nonce, tools }) }, signal);
-    if (job.finishing || !job.pipe) throw new Error('Agent ended while updating tools');
-    const actual = job.control.tools as string[] | undefined; // Filled by the RPC notification before its response.
-    if (!actual || actual.length !== tools.length || tools.some((name) => !actual.includes(name))) throw new Error('Child tool update was not confirmed');
-    job.summary.tools = [...actual]; delete job.control.nonce; delete job.control.tools;
+    if (job.control.pending) throw new Error('A child tool check is already pending');
+    const nonce = randomUUID(), controller = new AbortController();
+    const operationSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const confirmation = new Promise<ToolConfirmation>((resolve, reject) => {
+      job.control!.pending = { nonce, action, resolve, reject };
+      timer = setTimeout(() => { reject(new Error('Child tool update was not confirmed: confirmation timed out')); controller.abort(); }, 5000);
+    });
+    try {
+      const [reply, response] = await Promise.all([confirmation, job.pipe.command('prompt', { message: CHILD_CONTROL_PREFIX + JSON.stringify({ token: job.control.token, nonce, action, tools }) }, operationSignal)]);
+      if (job.finishing || !job.pipe) throw new Error('Agent ended while updating tools');
+      if ((response.data as { disposition?: string } | undefined)?.disposition !== 'handled') throw new Error('Private child tool command was not handled');
+      if (!reply.ok) throw new Error(reply.error!);
+      if (!Array.isArray(reply.tools) || reply.tools.length !== tools.length || new Set(reply.tools).size !== tools.length || tools.some((name) => !reply.tools!.includes(name))) throw new Error('Child tool update was not confirmed: unexpected tool set');
+      if (action === 'apply') job.summary.tools = [...reply.tools];
+    } finally {
+      if (timer) clearTimeout(timer);
+      delete job.control.pending;
+      controller.abort();
+    }
   }
+  private async setTools(job: LiveJob, tools: string[], signal?: AbortSignal): Promise<void> { await this.controlTools(job, tools, 'apply', signal); }
   private record(job: LiveJob, record: RpcRecord): void {
     if (job.finishing || this.jobs.get(job.summary.id) !== job) return;
     job.lastEventAt = Date.now();
@@ -421,8 +447,15 @@ export class AgentRuntime {
     } else if (record.type === "extension_ui_request") {
       const id = record.id;
       if (record.method === 'notify' && typeof record.message === 'string' && record.message.startsWith(CHILD_CONTROL_REPLY)) {
-        const reply = JSON.parse(record.message.slice(CHILD_CONTROL_REPLY.length)) as { nonce?: string; tools?: string[] };
-        if (job.control?.nonce && reply.nonce === job.control.nonce) job.control.tools = this.options.profiles.validateTools(reply.tools);
+        const pending = job.control?.pending;
+        if (pending) {
+          try {
+            const reply = JSON.parse(record.message.slice(CHILD_CONTROL_REPLY.length)) as ToolConfirmation;
+            if (reply?.nonce !== pending.nonce) return;
+            if (reply.action !== pending.action || typeof reply.ok !== 'boolean' || !reply.ok && (typeof reply.error !== 'string' || !reply.error.trim())) throw new Error('Malformed child tool confirmation');
+            pending.resolve({ ...reply, ...(reply.error ? { error: safeDiagnostic(reply.error) } : {}) });
+          } catch { pending.reject(new Error('Malformed child tool confirmation')); }
+        }
       } else if (record.method === "notify" && typeof record.message === "string" && record.message.startsWith(CHILD_NOTICE_PREFIX)) {
         const text = record.message.slice(CHILD_NOTICE_PREFIX.length);
         if (job.reportBarrier) { this.append(job, `[Historical report] ${text}\n`); job.summary.outputStart = job.output.length; }
@@ -471,6 +504,7 @@ export class AgentRuntime {
     if (!ACTIVE.has(job.summary.status) && !job.pipe) return Promise.resolve();
     job.finishing = (async () => {
       if (job.timer) clearTimeout(job.timer);
+      job.control?.pending?.reject(new Error('Agent ended while waiting for tool confirmation'));
       job.startupAbort?.abort();
       if (diagnostic) this.append(job, `[Error] ${safeDiagnostic(diagnostic)}\n`);
       await job.pipe?.stop();
@@ -514,14 +548,21 @@ export class AgentRuntime {
       let queuedDirection = false;
       let mutated = false;
       let previousEnd = job.sawEnd;
+      let stage: AgentSendFailure['stage'] = 'preflight';
+      let interrupted: boolean | null = false, queueCleared: boolean | null = false, questionsCleared: boolean | null = false, toolsApplied: boolean | null = false;
+      let directionDelivery: AgentSendFailure['directionDelivery'] = 'not_sent';
       const directionGeneration = job.generation;
       try {
         if (input.interrupt) {
-          // Mark the composite operation before abort: its old settled event is not a failure.
-          checkAbort(input.signal); mutated = true;
+          if (tools !== undefined) await this.controlTools(job, tools, 'check', input.signal);
+          checkAbort(input.signal);
+          if (job.finishing || !job.pipe) throw new Error('Agent ended before interruption');
+          // Only a successful non-mutating check may retire the old assignment.
+          mutated = true; stage = 'clear_queue'; queueCleared = null;
           this.invalidateReports(job.summary.id, true);
-          await job.pipe.command('clear_queue', {}, input.signal);
-          await job.pipe.command('abort', {}, input.signal);
+          await job.pipe.command('clear_queue', {}, input.signal); queueCleared = true;
+          stage = 'interrupt'; interrupted = null; questionsCleared = null;
+          await job.pipe.command('abort', {}, input.signal); interrupted = true; questionsCleared = true;
           if (job.finishing || !job.pipe) throw new Error('Agent ended while interrupting');
           await job.pipe.command('clear_queue', {}, input.signal);
           job.requests.clear(); job.directions.length = 0; job.summary.status = 'running';
@@ -529,19 +570,22 @@ export class AgentRuntime {
           // must not turn the interrupted assignment into a successful completion.
           delete job.lastError;
           if (tools !== undefined) {
-            await this.setTools(job, tools, input.signal);
+            stage = 'apply_tools'; toolsApplied = null;
+            await this.setTools(job, tools, input.signal); toolsApplied = true;
             this.changed(job);
           }
         }
+        stage = 'deliver_direction';
         const state = await job.pipe.command("get_state", {}, input.signal);
         const queued = (state.data as { pendingMessageCount?: number } | undefined)?.pendingMessageCount ?? 0;
         if (queued + job.sends > 16) throw new Error("Child message buffer is full; reply to questions or wait before sending more");
         job.directions.push(text); queuedDirection = true;
         previousEnd = job.sawEnd; job.sawEnd = false;
         checkAbort(input.signal); mutated = true;
+        directionDelivery = 'unknown';
         const accepted = await job.pipe.command("prompt", { message: text, streamingBehavior: "steer" }, input.signal);
         const disposition = (accepted.data as { disposition?: string } | undefined)?.disposition;
-        if (disposition === 'handled') throw new Error('Child direction was handled without a model run');
+        if (disposition === 'handled') { directionDelivery = 'not_sent'; throw new Error('Child direction was handled without a model run'); }
         return { delivered: true, delivery: disposition === 'queued' ? 'queued' : 'accepted', interrupted: input.interrupt ?? false, status: job.summary.status, ...(tools === undefined ? {} : { tools: [...job.summary.tools] }) };
       } catch (cause) {
         if (job.generation === directionGeneration) job.sawEnd = previousEnd;
@@ -549,8 +593,11 @@ export class AgentRuntime {
         // A mutating RPC may have reached the child before cancellation; stop it rather than
         // leave an unconfirmed new direction running. A cancelled observation leaves it alone.
         if (input.signal?.aborted && mutated) await this.finish(job, 'cancelled', 'Direction cancelled');
-        else if (input.interrupt && mutated) await this.finish(job, 'failed', 'Child redirection failed', String(cause));
-        throw cause;
+        else if (input.interrupt && mutated) await this.finish(job, 'failed', 'Child redirection failed', `${stage}: ${String(cause)}`);
+        if (job.finishing) await job.finishing;
+        const error = safeDiagnostic(String(cause));
+        throw new AgentSendError(error, { jobId: job.summary.id, stage, status: job.summary.status, ...(input.interrupt ? { interrupted, queueCleared, questionsCleared } : {}), directionDelivery, currentTools: [...job.summary.tools], ...(tools === undefined ? {} : { requestedTools: tools, toolsApplied }), error,
+          recovery: !ACTIVE.has(job.summary.status) ? 'The child stopped; inspect partial files and external effects before an explicitly authorized resumeFrom attempt. Queue/question waits are not restored automatically.' : mutated ? 'The child is still active without a confirmed new direction. Inspect its current output and pending messages before sending again; do not blindly replay.' : 'This request did not interrupt or change permissions. Correct the tool selection and retry, or answer the original question if the child is still waiting.' });
       } finally {
         job.sends--; if (input.interrupt) job.redirecting = false; this.changed(job);
         if (job.sawEnd && !job.finishing) void this.settled(job);
@@ -614,6 +661,7 @@ export class AgentRuntime {
       const saved = item as JobResult;
       if (saved.profileInstructions !== undefined && (typeof saved.profileInstructions !== 'string' || !saved.profileInstructions.trim() || saved.profileInstructions.length > 2000)) throw new Error('Invalid saved profile instructions');
       if (item.skills !== undefined) this.options.profiles.validateSkills(item.skills);
+      if (item.ignoredInheritedTools !== undefined && (!Array.isArray(item.ignoredInheritedTools) || item.ignoredInheritedTools.some((name: unknown) => typeof name !== 'string'))) throw new Error('Invalid inherited tool omissions');
       if (saved.assignment !== undefined && (typeof saved.assignment !== 'string' || !saved.assignment.trim() || saved.assignment.length > 65536)) throw new Error('Invalid saved assignment');
       if (saved.taskDefinition !== undefined && (typeof saved.taskDefinition !== 'string' || !/^[0-9a-f]{64}$/.test(saved.taskDefinition))) throw new Error('Invalid task definition');
       if (item.failure !== undefined && (!item.failure || !['quota', 'auth', 'network', 'timeout', 'process', 'unknown'].includes(item.failure.kind) || typeof item.failure.reason !== 'string' || typeof item.failure.recovery !== 'string' || ![true, false, null].includes(item.failure.retryable))) throw new Error('Invalid failure diagnostic');
@@ -634,6 +682,7 @@ export class AgentRuntime {
         ...(item.failure ? { failure: agentFailure(String(item.failure.reason ?? item.error ?? 'Unknown failure')) } : {}),
         ...(item.outputStart !== undefined ? { outputStart: item.outputStart } : {}),
         ...(item.skills === undefined ? {} : { skills: this.options.profiles.validateSkills(item.skills) }),
+        ...(item.ignoredInheritedTools === undefined ? {} : { ignoredInheritedTools: [...item.ignoredInheritedTools] }),
         thinking: item.thinking, tools: item.tools.filter((tool: unknown): tool is string => typeof tool === "string").slice(0, 8),
         status: ACTIVE.has(item.status) ? "interrupted" : item.status, startedAt: item.startedAt, pendingRequests: 0,
         ...(typeof item.endedAt === "number" ? { endedAt: item.endedAt } : {}),

@@ -41,6 +41,20 @@ function todoHost() {
   return { state, tool, writes: () => writes };
 }
 
+test('Todo fragments remain reachable inside the bare root menu while the shortcut stays text-only', async () => {
+  const commands = new Map<string, any>(); let selects = 0, reads = 0, mutations = 0;
+  const ctx: any = { mode: 'tui', hasUI: true, sessionManager: {}, ui: { theme: { style: (text: string) => text }, notify() {}, select: async (title: string, options: string[]) => {
+    selects++;
+    if (title.startsWith('任务清单')) return selects === 1 ? options.find((option) => option === 'Todo 片段') : undefined;
+    if (title.startsWith('Todo 片段')) return options.find((option) => option.includes('alpha'));
+    assert.ok(options.some((option) => option.includes('第一步'))); reads++; return undefined;
+  } } };
+  registerTodos({ on() {}, registerTool() {}, registerCommand(name: string, command: any) { commands.set(name, command); } } as any, { state: emptyState, protected: () => false, commit() { mutations++; }, reset() {}, async show() {}, mutate() { mutations++; return {} as any; }, presets: () => presetConfig.presets as any });
+  await commands.get('todos').handler('', ctx);
+  assert.equal(reads, 1); assert.equal(mutations, 0);
+  const before = selects; await commands.get('todos').handler('presets', ctx); assert.equal(selects, before, 'shortcut remains non-interactive');
+});
+
 /** The real agent tools; session_start builds the runtime and ProfileStore against the temp agent dir. */
 function agentsHost(state: WorkflowState, msg?: Translator) {
   const events = new Map<string, Function[]>();

@@ -211,7 +211,7 @@ export interface JobView {
   model?: { provider: string; id: string } | string; thinking?: string; tools?: readonly string[]; skills?: readonly string[];
   startedAt?: number; endedAt?: number; error?: string; pendingRequests?: number;
   label?: string; reportDelivery?: 'pending' | 'delivered'; taskReportStale?: boolean;
-  dismissed?: boolean; resumeFrom?: string; todoStatus?: string;
+  dismissed?: boolean; resumeFrom?: string; todoStatus?: string; ignoredInheritedTools?: readonly string[];
   activity?: { kind: string; tool?: string; since?: number };
   output?: string; requests?: readonly { requestId?: string; message?: string }[];
   timedOut?: boolean;
@@ -255,6 +255,7 @@ export function jobSummary(job: JobSummary | AgentView | JobView, msg: Translato
   if (value.pendingRequests && value.pendingRequests > 0) lines.push(msg`待答复问题：${value.pendingRequests} 个`);
   if (value.startedAt !== undefined && value.endedAt !== undefined) lines.push(msg`耗时：${durationText(value.endedAt - value.startedAt)}`);
   if (value.resumeFrom) lines.push(msg`接续自：${plain(value.resumeFrom)}`);
+  if (value.ignoredInheritedTools?.length) lines.push(msg`忽略的父工具：${value.ignoredInheritedTools.map(plain).join(', ')}`);
   if (value.dismissed) lines.push(msg('该尝试已停止；Todo 交由主会话处理'));
   if (value.error?.trim()) lines.push(msg`错误：${plain(value.error)}`);
   if (value.timedOut) lines.push(msg('等待超时：仅结束本次等待，子进程未停止'));
@@ -485,6 +486,8 @@ function spawnLines(data: Record<string, unknown>, msg: Translator): string[] {
   if (todoId !== undefined) lines.push(msg`Todo #${todoId} 验收：${todoStatusText(text(data.todoStatus) ?? 'pending', msg)}；报告不会自动完成任务`);
   const resumeFrom = text(data.resumeFrom);
   if (resumeFrom) lines.push(msg`接续自：${plain(resumeFrom)}`);
+  const ignored = strings(data.ignoredInheritedTools);
+  if (ignored.length) lines.push(msg`忽略的父工具：${ignored.map(plain).join(', ')}`);
   const error = text(data.error);
   if (error?.trim()) lines.push(msg`错误：${plain(error)}`);
   return lines;
@@ -531,7 +534,30 @@ function inspectLines(data: Record<string, unknown>, msg: Translator): string[] 
   return lines;
 }
 
+/** Structured direction failure: phase, actual status and what the failed send did or did not change. */
+const SEND_STAGE_LABELS: Record<string, string> = { preflight: '预检', clear_queue: '清空队列', interrupt: '中断当前运行', apply_tools: '应用工具', deliver_direction: '投递方向' };
+export function sendFailureLines(data: Record<string, unknown>, msg: Translator): string[] {
+  const stage = text(data.stage);
+  const lines: string[] = [`Job ${plain(text(data.jobId) ?? '')}`, msg`阶段：${stage && SEND_STAGE_LABELS[stage] ? msg(SEND_STAGE_LABELS[stage]) : plain(stage ?? '')}`];
+  const error = text(data.error);
+  if (error?.trim()) lines.push(msg`错误：${plain(error)}`);
+  const status = text(data.status);
+  if (status) lines.push(msg`状态：${jobStatusText(status, msg)}`);
+  const impact: string[] = [];
+  impact.push(msg(data.directionDelivery === 'not_sent' ? '方向未发送' : '方向投递未确认'));
+  if (data.interrupted !== undefined) impact.push(msg(data.interrupted === null ? '中断结果未确认' : data.interrupted ? '已中断当前运行' : '未中断当前运行'));
+  if (data.queueCleared !== undefined) impact.push(msg(data.queueCleared === null ? '队列清理未确认' : data.queueCleared ? '原队列已清除' : '原队列保留'));
+  if (data.questionsCleared !== undefined) impact.push(msg(data.questionsCleared === null ? '问题等待取消未确认' : data.questionsCleared ? '原问题等待已取消' : '待答复问题保留'));
+  if (data.toolsApplied !== undefined) impact.push(msg(data.toolsApplied === null ? '工具调整未确认' : data.toolsApplied ? '工具调整已确认' : '工具未调整'));
+  if (impact.length) lines.push(msg`影响：${impact.join('；')}`);
+  if (Array.isArray(data.currentTools)) lines.push(msg`最后确认的工具：${strings(data.currentTools).map(plain).join(', ')}`);
+  const recovery = text(data.recovery);
+  if (recovery?.trim()) lines.push(msg`说明：${plain(localizeSavedMessage(recovery, msg))}`);
+  return lines;
+}
+
 function toolLines(data: Record<string, unknown>, hint: ToolDisplayOptions, msg: Translator): string[] | undefined {
+  if (typeof data.jobId === 'string' && typeof data.stage === 'string' && typeof data.directionDelivery === 'string') return sendFailureLines(data, msg);
   if ('goalState' in data) return goalStateLines(data.goalState, msg, number(data.targetId));
   if (Array.isArray(data.models) || Array.isArray(data.jobs) || Array.isArray(data.profiles) || (record(data.profile) !== undefined && typeof data.status !== 'string')) return inspectLines(data, msg);
   if (typeof data.id === 'string' && typeof data.status === 'string') return jobSummary(data as unknown as JobView, msg);

@@ -22,16 +22,16 @@ Use one extension for each shared name, such as `todo`, `/plan`, `/goal`, `/retr
 
 ## Menus
 
-`/todos`, `/goal`, `/agents`, and `/retry` use Pi's native bordered menus. Directories show short status and up to eight entries, with smaller pages on short terminals. Complete requirements, findings, and reports open in a separate read-only paginated view.
+Bare `/todos`, `/goal`, `/agents`, and `/retry` use Pi's native management menus; bare `/dag` opens the paginated graph. Argument subcommands execute directly or print readable text. Root menus retain searchable directories, read-only details, editors, and necessary confirmations, with up to eight entries and smaller pages on short terminals.
 
 - ↑/↓ selects; Enter opens or confirms the selected item.
 - Select **Previous page**, **Next page**, or **Search…** to navigate a directory.
 - Esc returns one level; Esc at the root closes the menu. Cancelled search leaves the current filter unchanged.
 - While a menu or editor is open, this package's summaries are hidden. Leaving the complete menu flow restores them without changing saved visibility.
 
-Identifiers, important states, and warnings use restrained bold and semantic theme colors. Failures and destructive actions stand out; completed history is muted. Body text remains readable without whole paragraphs being bold.
+Identifiers, warnings, and important actions use restrained bold and semantic theme colors. Setting values use the theme's dim color, separate from action labels; failures stand out and completed history is muted. Body text is not bolded as whole paragraphs.
 
-Settings do not start work. Drafts change runtime settings only after saving; cancellation leaves them unchanged. `/plan` directly toggles read-only mode; `/plan settings` opens its menu without changing mode. Each feature has its own summary visibility, controlled in its menu or with `show`/`hide`.
+Goal switches update in place in the root menu. Settings do not start work; continuous-research controls and actual execution status are shown separately. Draft cancellation leaves settings unchanged. `/plan` directly toggles read-only mode; `/plan settings` prints settings. Each feature has its own summary visibility, controlled in its menu or with `show`/`hide`.
 
 ## Quick start
 
@@ -144,7 +144,7 @@ A dependency tree shows the current task and its worker:
           └───────────────────────────────┘
 ```
 
-`/todos` opens the task menu with requirement editing, status actions, and full selected details; `/dag` opens the scrollable dependency graph. Use `/todos list full` for the complete text list, `paths` for a dependency tree, or `flat` for a flat preview. The above-editor preview shrinks with terminal height, is capped at 12 lines, and prioritizes work needing attention. Graphs that do not fit use a dependency list. Hiding Todos leaves the other feature summaries visible.
+`/todos` opens task actions and full details, including fragment browsing; bare `/dag` opens the scrollable graph, while `/dag full` and other filtered shortcuts print it. Use `/todos list full` for the complete text list, `paths` for a dependency tree, or `flat` for a flat preview. The above-editor preview shrinks with terminal height, is capped at 12 lines, and prioritizes work needing attention. Graphs that do not fit use a dependency list. Hiding Todos leaves the other feature summaries visible.
 
 Filters: `full`, `pending`, `completed`, `failed`, `cancelled`.
 
@@ -168,6 +168,8 @@ Give each child an assignment with input paths, scope, and expected evidence:
 ```
 
 Use `subagent_spawn` for that call. A `todoId` is optional; linked tasks must be ready. Children work in the same directory with independent model context. They discover workspace rules and receive the selected assignment, profile guidance, and optional task brief.
+
+Per-call `model`, `thinking`, `tools`, and `skills` can select a temporary environment without saving a Profile. Discover exact models with `subagent_inspect models:true`. Tools and Skills replace their lists; `skills:[]` disables them and required `read` is never added implicitly. See [Agent communication](docs/COMMUNICATION.md) for precedence and parameters.
 
 ### Prerequisite briefs
 
@@ -207,7 +209,7 @@ With `subagent_send`:
 {"requestId":"request-id","message":"Use the documented CSV rules."}
 ```
 
-Normal direction is queued at a safe boundary. Add `interrupt: true` with a `recipient` to stop the current local turn, clear obsolete queued direction and questions, and continue in the same child context. Delivery confirmation does not prove the instruction was followed.
+Normal direction is queued at a safe boundary. Add `interrupt: true` with a `recipient` to stop the current local turn, clear obsolete directions/questions, and continue in the same child context. Tool replacement also requires those fields and cannot use `requestId`; availability is checked before interruption. Failures report their phase, status, and effects. Main-session decisions require user authorization; neither delivery nor tool selection guarantees execution or a sandbox.
 
 ### Continue an interrupted task
 
@@ -221,7 +223,7 @@ First inspect the failure and check any files or external actions already affect
 }
 ```
 
-`resumeFrom` keeps the original Todo binding and retained assignment. The new job can use another profile; its tools remain the previous attempt's tools unless explicitly overridden. A changed Todo definition requires a fresh self-contained assignment. Records without a saved full assignment require complete instructions in `task`.
+`resumeFrom` keeps the original Todo binding and assignment, using the last actual configuration without rereading the old Profile. Explicit Profiles and call-level fields overlay it; `profile:inherit` resets to the current parent configuration. A changed Todo definition requires a fresh assignment; records without a saved assignment require complete instructions in `task`.
 
 Explicit cancellation dismisses a failed or interrupted attempt from the current panel while preserving its history. The unfinished task shows **Ready to resume**. A main-session status update takes over the task; a new child attempt displays its own activity.
 
@@ -247,9 +249,9 @@ A Goal stores its objective, scope, and verification requirements. Creating one 
 |---|---|
 | `/goal enable [#id]` | Start or resume the selected Goal. An already active idle Goal continues with its remaining allowance. |
 | `/goal disable [#id]` | Pause the Goal. Running children remain independently controllable. |
-| `/goal nopause [#id]` | Choose whether the model may pause. Blocking requires autonomous decisions within existing permissions. |
-| `/goal nolimit [#id]` | Choose a finite or unlimited continuation-turn allowance, preserving the used count. |
-| `/goal autoresearch [#id]` | Choose ordinary completion or continuous autonomous research. Settings do not start work. |
+| `/goal nopause [#id] [on\|off]` | Toggle directly; on blocks model pause within existing permissions, off allows it. |
+| `/goal nolimit [#id] [on\|off]` | Toggle directly; on removes the continuation cap, off uses it, preserving used turns. |
+| `/goal autoresearch [#id] [on\|off]` | Toggle directly; on selects continuous research, off ordinary work. Settings do not start work. |
 | `/goal complete #id` | Record verified completion; only the user can complete a continuous Goal. |
 
 Automatic Goal turns and child-report wakes share a default allowance of **32**. This counts plugin-requested continuations, not every API request or tool-result follow-up. Regular mode replans after eight rounds without recorded work progress and pauses if the next round remains unproductive. `nopause` keeps trying while user stops, budget limits, and error safeguards remain effective.
@@ -262,11 +264,11 @@ A settled Goal request error waits for `/retry` recovery when enabled; otherwise
 
 ```text
 /goal new Improve parser correctness and performance within src/parser
-/goal autoresearch #1
+/goal autoresearch #1 on
 /goal enable #1
 ```
 
-Choose **Continuous research** in the menu. The model verifies each milestone, then chooses another useful hypothesis, experiment, or evidence check within the original scope. It cannot complete, pause, delete, or switch the Goal, ask questions, or hand work back. Individual Todos can still be verified and completed.
+You can also switch **Continuous research** in the Goal root menu. Omitted on/off toggles; explicit on/off is idempotent. An omitted ID selects the current Goal. The model verifies each milestone, then chooses another useful hypothesis, experiment, or evidence check within the original scope. It cannot complete, pause, delete, or switch the Goal, ask questions, or hand work back. Individual Todos can still be verified and completed.
 
 While active, this mode supplies unlimited continuation turns and autonomous decisions. It preserves the Goal's saved `nolimit` and `nopause` choices; turning it off restores those choices without clearing used turns. `goal get` reports saved values and effective `controls`. Turning the mode off is not a stop command: use `/goal disable` to stop future continuations or interrupt Pi to abort current work.
 
@@ -304,7 +306,7 @@ The menu shows current recovery state beside **Retry settings**, **Alternative m
 /retry models off
 ```
 
-Use actual registered names in place of the placeholders, or search and page through registered models in the menu. Edit candidate order in a draft: add, move up/down, remove, then save. Candidate order is explicit, with at most eight distinct models. Setting candidates enables model replacement, not automatic retry itself; `/retry when-error` enables recovery. Candidate and per-model setting changes require interactive confirmation. `/retry models off` keeps ordinary retry available.
+`/retry models` prints current settings. Use registered names in place of the placeholders, or open **Alternative models** from the `/retry` root menu to search and page through models. Edit candidate order in a draft: add, move up/down, remove, then save. Candidate order is explicit, with at most eight distinct models. Setting candidates enables model replacement, not automatic retry itself; `/retry when-error` enables recovery. Candidate and per-model setting changes require interactive confirmation. `/retry models off` keeps ordinary retry available.
 
 Each error streak starts with the current model, then tries candidates in order, omitting duplicates. Each model gets at most two plugin attempts by default. The interval sequence and total `count` are shared across models: switching adds no extra delay and does not skip the next wait. Pi's native retries and the initial failure do not consume plugin attempts. Missing models, unconfigured authentication, or incompatible image input skip a candidate without a probe request.
 
@@ -323,7 +325,7 @@ These are model tools; JSON examples above show their arguments.
 | `todo` | Tasks, paged queries, read-only status, dependency checks, fragments, and atomic definition batches |
 | `goal` | Objectives, important progress, continuation, and verified completion |
 | `subagent_spawn` | New child jobs and `resumeFrom` attempts |
-| `subagent_inspect` | Status, optional output/waiting, and profile discovery |
+| `subagent_inspect` | Status, optional output/waiting, and profile/model discovery |
 | `subagent_send` | Direction and answers to child questions |
 | `subagent_cancel` | Stop or explicitly remove a child record |
 
@@ -383,9 +385,9 @@ Optional `pi-dag-workflow-profile.json`:
 }
 ```
 
-Omitting `profile` or selecting `inherit` captures the parent's current model, thinking, and active supported built-in tools. Named profiles override the fields they specify; call-level `tools` replaces the tool list. Optional `model` is `{ "provider": "…", "id": "…" }` using an exact registered model name. Implicit thinking adapts to model capabilities; an explicitly unsupported level is rejected.
+For new jobs, omitted/inherit Profile captures the parent's model, thinking, and supported active built-ins. Named Profiles override their defined fields, then call-level model/thinking/tools/skills override them. Model references use exact registered provider/id values. Implicit thinking adapts to capabilities; explicitly unsupported levels fail.
 
-Supported child tools: `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`, and `powershell` when available. Children also receive their parent-communication tool. Select read-only tools explicitly for a read-only assignment.
+Supported child tools: `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`, `powershell`, up to eight. Omitted parent extension tools are reported in the dispatch receipt. Shell tools require their execution environment; children also receive parent communication. Select read-only tools explicitly for read-only work.
 
 Profile guidance is sent as task context. Discover profiles with `subagent_inspect`:
 
@@ -396,7 +398,7 @@ Profile guidance is sent as task context. Discover profiles with `subagent_inspe
 
 Summaries include settings without instructions. A named query returns that profile in full; `profiles: true` requests the full directory. Profiles allow 1–48 character names, up to 8 tools and 2,000 characters of instructions. The file holds up to 64 profiles within 64 KiB. `/agents profile` saves with owner-only file permissions and preserves selected skill entries.
 
-Add optional `skills` to a profile for explicit local Markdown files:
+Set optional `skills` in a Profile or individual dispatch for explicit local Markdown files:
 
 ```json
 {"name":"csv-review","tools":["read","grep"],"skills":["skills/csv-review/SKILL.md"]}
@@ -447,7 +449,7 @@ Select these resources with `pi config`:
 | `src/goal/index.ts` | Goal tracking, continuation, settings and summary |
 | `src/retry/index.ts` | `/retry`, error recovery, model selection and summary |
 
-Each feature works independently and includes its own menus and summary. Choose Todos + Plan for planning and execution, Goal for research, or Retry alone for error recovery. Task-linked jobs and task graphs require Todos; Agents also work without task bindings. Reload applies module selection.
+Each feature works independently and includes its own summary and user entry points; GUI management is concentrated in root commands. Choose Todos + Plan for planning and execution, Goal for research, or Retry alone for error recovery. Task-linked jobs and task graphs require Todos; Agents also work without task bindings. Reload applies module selection.
 
 ## Safety and persistence
 

@@ -33,12 +33,26 @@ process.stdin.on('data', chunk => {
     else if (command.type === 'prompt') {
       if (command.message.startsWith('pi-dag-child-control:')) {
         const payload = JSON.parse(command.message.slice('pi-dag-child-control:'.length));
+        if (payload.action === 'check') {
+          if (process.env.PI_DAG_TEST_TOOL_UPDATE === 'stall-check') continue;
+          const rejected = process.env.PI_DAG_TEST_TOOL_UPDATE === 'reject-check';
+          emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,action:'check',ok:!rejected,...rejected ? {error:'Child tool is unavailable: write'} : {tools:payload.tools}})});
+          response({disposition:'handled'}); continue;
+        }
         const mode = ++toolUpdates > 1 ? process.env.PI_DAG_TEST_TOOL_UPDATE : undefined;
+        if (mode === 'delayed-ack') {
+          response({disposition:'handled'});
+          setTimeout(() => emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,action:'apply',ok:true,tools:payload.tools})}), 30); continue;
+        }
+        if (mode === 'reject-apply') {
+          emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,action:'apply',ok:false,error:'Test child refused application: write'})});
+          response({disposition:'handled'}); continue;
+        }
         if (mode === 'stall') {
           if (stalledDirection && process.env.PI_DAG_TEST_RELEASE_STALLED) emit({type:'response',id:stalledDirection,success:false,error:'fixture older direction released'});
           emit({type:'tool_execution_start',toolCallId:'tool-update',toolName:'tools:update'}); continue;
         }
-        if (mode !== 'ignore') emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,tools:mode === 'mismatch' ? [] : payload.tools})});
+        if (mode !== 'ignore') emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,action:'apply',ok:true,tools:mode === 'mismatch' ? [] : payload.tools})});
         response({disposition:'handled'}); continue;
       }
       if (command.message === 'LATE_REPORT_DIRECTION') {

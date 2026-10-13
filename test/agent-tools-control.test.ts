@@ -48,6 +48,45 @@ test('an older ordinary send cannot release the lock of a concurrent tool update
   assert.equal(h.runtime.activeCount(), 0);
 });
 
+test('a confirmation may follow the command response without rejecting a successful update', async (t) => {
+  const h = await setup('delayed-ack'); t.after(h.close);
+  const result = await h.runtime.send({ recipient: h.job.id, message: 'finished', tools: ['read', 'write'], interrupt: true });
+  assert.deepEqual(result.tools, ['read', 'write']); assert.equal((await h.runtime.wait(h.job.id)).status, 'completed');
+});
+
+for (const mode of ['reject-check', 'stall-check']) test(`${mode} leaves the old child and permissions intact with an actionable preflight diagnosis`, async (t) => {
+  const h = await setup(mode); t.after(h.close);
+  await assert.rejects(h.runtime.send({ recipient: h.job.id, message: 'not delivered', tools: ['read', 'write'], interrupt: true }), (cause: any) => {
+    assert.equal(cause.details.stage, 'preflight'); assert.equal(cause.details.status, 'running');
+    assert.equal(cause.details.queueCleared, false); assert.equal(cause.details.interrupted, false);
+    assert.equal(cause.details.toolsApplied, false); assert.equal(cause.details.directionDelivery, 'not_sent');
+    assert.match(cause.message, mode === 'reject-check' ? /unavailable: write/ : /confirmation timed out/); return true;
+  });
+  assert.equal(h.runtime.activeCount(), 1); assert.deepEqual(h.runtime.inspect(h.job.id)[0]!.tools, ['read']);
+});
+
+test('post-interruption refusal reports stopped state, concrete cause and the undelivered direction', async (t) => {
+  const h = await setup('reject-apply'); t.after(h.close);
+  await assert.rejects(h.runtime.send({ recipient: h.job.id, message: 'not delivered', tools: ['read', 'write'], interrupt: true }), (cause: any) => {
+    assert.equal(cause.details.jobId, h.job.id); assert.equal(cause.details.stage, 'apply_tools');
+    assert.equal(cause.details.status, 'failed'); assert.equal(cause.details.interrupted, true);
+    assert.equal(cause.details.queueCleared, true); assert.equal(cause.details.questionsCleared, true);
+    assert.equal(cause.details.toolsApplied, null); assert.equal(cause.details.directionDelivery, 'not_sent');
+    assert.deepEqual(cause.details.currentTools, ['read']); assert.match(cause.message, /refused application: write/); return true;
+  });
+  assert.equal(h.runtime.activeCount(), 0);
+});
+
+test('an ordinary direction failure does not claim unrelated interruption or permission changes', async (t) => {
+  const h = await setup(); t.after(h.close);
+  await assert.rejects(h.runtime.send({ recipient: h.job.id, message: 'HANDLED' }), (cause: any) => {
+    assert.equal(cause.details.stage, 'deliver_direction'); assert.equal(cause.details.directionDelivery, 'not_sent');
+    for (const field of ['interrupted', 'queueCleared', 'questionsCleared', 'toolsApplied', 'requestedTools']) assert.equal(Object.hasOwn(cause.details, field), false, field);
+    return true;
+  });
+  assert.equal(h.runtime.activeCount(), 1);
+});
+
 test('invalid tools do not interrupt or invalidate current work, and empty tools can be confirmed', async (t) => {
   const h = await setup(); t.after(h.close);
   await assert.rejects(h.runtime.send({ recipient: h.job.id, message: 'bad', tools: ['unsupported'], interrupt: true }), /not trusted or supported/);

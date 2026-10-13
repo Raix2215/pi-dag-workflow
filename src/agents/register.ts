@@ -3,14 +3,14 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import { configPaths } from "../shared/config.ts";
 import { Text } from "@earendil-works/pi-tui";
-import { AgentRuntime, type JobSummary } from "./runtime.ts";
+import { AgentRuntime, AgentSendError, type JobSummary } from "./runtime.ts";
 import { safeDiagnostic } from './diagnostics.ts';
-import { CORE_TOOLS, THINKING_LEVELS, ProfileStore, type Profile } from "./profiles.ts";
+import { CORE_TOOLS, CHILD_TOOLS, MAX_CHILD_TOOLS, THINKING_LEVELS, ProfileStore, type Profile } from "./profiles.ts";
 import { contextArtifacts, taskContext } from "./context.ts";
 import { resetClosure } from "../todos/presets.ts";
 import { AgentNotices, type Notice } from "./notices.ts";
 import { choose, readView, withMenuScope, type MenuCursor } from '../ui/menu.ts';
-import { jobSummary, modelSummary, profileSummary, toolDisplay } from '../ui/presentation.ts';
+import { jobSummary, modelSummary, profileSummary, sendFailureLines, toolDisplay } from '../ui/presentation.ts';
 import { clean, notify } from "../ui/render.ts";
 import type { ClearScope, Todo, TodoParams, WorkflowState } from "../todos/state.ts";
 import { workflowNamespace, readOnly } from '../shared/tool-info.ts';
@@ -287,7 +287,10 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
   }
   const renderResult = (result: { content: { type: string; text?: string }[]; details?: unknown; isError?: boolean }, _options: unknown, theme: ExtensionContext["ui"]["theme"]) => new Text(theme.fg(result.isError ? "error" : "text", toolDisplay(result.details, result.content.map((item) => item.text ?? "").join("\n"), msg)), 0, 0);
   const reply = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data });
-  const fail = (cause: unknown) => { const error = safeDiagnostic(String(cause)); return { isError: true, content: [{ type: 'text' as const, text: error }], details: { error } }; };
+  /** AgentSendError carries structured direction/preflight details; ordinary causes keep safeDiagnostic. */
+  const structuredFailure = (cause: unknown): Record<string, unknown> | undefined => cause instanceof AgentSendError ? cause.details as unknown as Record<string, unknown> : undefined;
+  const diagnostic = (cause: unknown): string => { const details = structuredFailure(cause); return details ? sendFailureLines(details, msg).join('\n') : safeDiagnostic(String(cause)); };
+  const fail = (cause: unknown) => { const details = structuredFailure(cause); const error = diagnostic(cause); return { isError: true, content: [{ type: 'text' as const, text: error }], details: details ? { ...details, error } : { error } }; };
 
   pi.registerTool({ name: "subagent_spawn", label: "Agent", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Start one isolated child, max8 active, no grandchildren. Give task inputs, scope and expected evidence. Configuration: parent model/thinking/supported active built-ins, then named profile's defined fields, then explicit model/thinking/tools/skills. tools replaces the list; skills omitted inherits the base, [] disables, paths replace it and require read (never added implicitly). Skills are local Markdown references, not auto-discovered or system prompts. No extensions/full parent history. todoId must be unblocked; context:true adds a task/prerequisite brief. resumeFrom starts a new attempt on the same Todo using its last actual configuration, without rereading its old profile; explicit profile:'inherit' resets to the current parent configuration. Inspect artifacts/side effects first. Returns jobId, status and actual model/thinking/tools/skills.",
     promptSnippet: "Use subagent_spawn to start one isolated child agent for independent work",
@@ -298,7 +301,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       "Use context:true for a bounded task/prerequisite brief. Fragments include their position and step statuses; ordinary tasks include direct prerequisites and current report excerpts, not the parent's history.",
       "After child failure/interruption, inspect diagnostics and side effects; prefer resumeFrom on the same Todo, optionally with a discovered profile. Do not create a replacement Todo or blindly replay work. A user-stopped objective needs explicit allowance; cancelling one attempt does not cancel its Todo.",
     ],
-    parameters: Type.Object({ task: text, resumeFrom: Type.Optional(idSchema), todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: 'New work defaults to parent; resume defaults to last actual configuration. inherit explicitly resets to current parent; otherwise a saved profile name' })), model: Type.Optional(Type.Object({ provider: text, id: text }, { additionalProperties: false, description: 'Explicit provider/id from subagent_inspect models:true; overrides the base model' })), thinking: Type.Optional(Type.Enum(THINKING_LEVELS, { type: 'string', description: 'Overrides the base thinking level' })), tools: Type.Optional(Type.Array(idSchema, { description: 'Replace the built-in tool list; read is never added implicitly' })), skills: Type.Optional(Type.Array(text, { description: 'Omit to inherit base skills; [] disables; local Markdown paths replace. Requires read; no automatic discovery or system-prompt injection' })), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach a bounded task/prerequisite brief; Todo metadata.artifacts can declare file references" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
+    parameters: Type.Object({ task: text, resumeFrom: Type.Optional(idSchema), todoId: Type.Optional(Type.Integer({ minimum: 1 })), profile: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: 'New work defaults to parent; resume defaults to last actual configuration. inherit explicitly resets to current parent; otherwise a saved profile name' })), model: Type.Optional(Type.Object({ provider: text, id: text }, { additionalProperties: false, description: 'Explicit provider/id from subagent_inspect models:true; overrides the base model' })), thinking: Type.Optional(Type.Enum(THINKING_LEVELS, { type: 'string', description: 'Overrides the base thinking level' })), tools: Type.Optional(Type.Array(Type.Enum(CHILD_TOOLS, { type: 'string' }), { maxItems: MAX_CHILD_TOOLS, description: 'Replace the built-in tool list. Allowed: read, grep, find, ls, bash, edit, write, powershell; parent plugin tools such as ffgrep or recall are not accepted and names are never remapped. read is never added implicitly' })), skills: Type.Optional(Type.Array(text, { description: 'Omit to inherit base skills; [] disables; local Markdown paths replace. Requires read; no automatic discovery or system-prompt injection' })), timeout: Type.Optional(seconds), context: Type.Optional(Type.Boolean({ description: "Attach a bounded task/prerequisite brief; Todo metadata.artifacts can declare file references" })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, signal, _update, ctx) {
       try {
         if (signal?.aborted) throw new Error('Dispatch aborted');
@@ -339,7 +342,8 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
           try { hooks.mutate({ action: "update", id: task.id, status: "in_progress" }, ctx); }
           finally { claiming = undefined; }
         }
-        const result = reply({ jobId: job.id, status: job.status, model: job.model, thinking: job.thinking, tools: job.tools, skills: job.skills, ...(task ? { todoId: task.id, todoStatus: hooks.state().tasks.find((item) => item.id === task.id)?.status } : {}), ...(job.error ? { error: job.error } : {}), ...(job.failure ? { failure: job.failure } : {}), ...(job.resumeFrom ? { resumeFrom: job.resumeFrom } : {}) });
+        const ignored = job.ignoredInheritedTools ?? [];
+        const result = reply({ jobId: job.id, status: job.status, model: job.model, thinking: job.thinking, tools: job.tools, skills: job.skills, ...(ignored.length ? { ignoredInheritedTools: ignored } : {}), ...(task ? { todoId: task.id, todoStatus: hooks.state().tasks.find((item) => item.id === task.id)?.status } : {}), ...(job.error ? { error: job.error } : {}), ...(job.failure ? { failure: job.failure } : {}), ...(job.resumeFrom ? { resumeFrom: job.resumeFrom } : {}) });
         return ['failed', 'cancelled', 'interrupted'].includes(job.status) ? { ...result, isError: true } : result;
       } catch (cause) { return fail(cause); }
     },
@@ -384,7 +388,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
     } catch (cause) { return fail(cause); } },
   });
   pi.registerTool({ name: "subagent_send", label: "Agent message", namespace: workflowNamespace, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: "Send direction to recipient jobId or answer requestId; exactly one target. Normal direction queues at the next safe boundary and does not stop a running tool. interrupt:true aborts the current local turn, clears old queued directions/questions, then resumes the same child context with the new direction. External actions may still run. Optional tools replaces the tool list only with recipient and interrupt:true, never requestId; pause the running original process, change tools, then continue its context. The main session decides under user authorization; a child's request is not authorization. Tool selection is not a sandbox. Delivery is accepted/queued/answered, not proof the child followed it.",
-    promptSnippet: "Use subagent_send to direct a child job or answer its question", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text, tools: Type.Optional(Type.Array(idSchema, { description: 'Replace tools in the same child; requires recipient + interrupt:true, forbids requestId. Main session decides under user authorization, never automatically from child requests; not a sandbox' })), interrupt: Type.Optional(Type.Boolean({ description: 'recipient only: interrupt local turn, discard old queue, and continue the same child with this direction' })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
+    promptSnippet: "Use subagent_send to direct a child job or answer its question", parameters: Type.Object({ recipient: Type.Optional(idSchema), requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), message: text, tools: Type.Optional(Type.Array(Type.Enum(CHILD_TOOLS, { type: 'string' }), { maxItems: MAX_CHILD_TOOLS, description: 'Replace tools in the same child; requires recipient + interrupt:true, forbids requestId. Allowed built-in names only (no ffgrep/recall, no remapping); the main session decides under user authorization, never automatically from child requests, and this is not a sandbox' })), interrupt: Type.Optional(Type.Boolean({ description: 'recipient only: interrupt local turn, discard old queue, and continue the same child with this direction' })) }, { additionalProperties: false }), executionMode: "sequential", renderResult,
     async execute(_id, params, signal, _update, ctx) { try {
       const agent = ready(ctx);
       if (!!params.recipient === !!params.requestId) throw new Error(msg("recipient 与 requestId 需且只能提供一个"));
@@ -447,7 +451,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       const all = ready(ctx, false).exportSummaries();
       const rows = all.filter((job) => filter === 'all' || active(job) || job.reportDelivery === 'pending' || job.todoId !== undefined && todoStatusOf(job.todoId) !== 'completed' || ['failed', 'interrupted'].includes(job.status) && !job.dismissed);
       const title = msg('子 Agent');
-      const selected = await owned(title, () => choose(ctx, title, rows.map((job) => ({ id: job.id, label: `${job.id} ${job.label ?? ''}`, value: statusLabel(job), description: job.todoId ? `Todo #${job.todoId}` : msg('独立任务') })), { msg, cursor, searchable: true, isCurrent: current, lines: (item) => { const job = runtime?.exportSummaries().find((job) => job.id === item.id); return job ? jobSummary({ ...job, ...(todoStatusOf(job.todoId) ? { todoStatus: todoStatusOf(job.todoId)! } : {}) }, msg) : []; }, actions: [{ id: 'models', label: msg('模型目录') }, { id: 'profiles', label: msg('Profile…') }, { id: 'filter', label: msg('筛选'), value: filter === 'attention' ? msg('需要关注') : msg('全部') }, { id: 'summary', label: msg('显示摘要'), value: hooks.summary?.() !== false ? msg('开启') : msg('关闭') }, { id: 'delivery', label: msg('结果自动唤醒'), value: paused ? msg('暂停') : msg('开启') }] }));
+      const selected = await owned(title, () => choose(ctx, title, rows.map((job) => ({ id: job.id, label: `${job.id} ${job.label ?? ''}`, value: statusLabel(job), description: job.todoId ? `Todo #${job.todoId}` : msg('独立任务') })), { msg, cursor, searchable: true, isCurrent: current, lines: (item) => { const job = runtime?.exportSummaries().find((job) => job.id === item.id); return job ? jobSummary({ ...job, ...(todoStatusOf(job.todoId) ? { todoStatus: todoStatusOf(job.todoId)! } : {}) }, msg) : []; }, actions: [{ id: 'models', label: msg('模型目录') }, { id: 'profiles', label: msg('Profile…') }, { id: 'filter', label: msg('筛选'), value: filter === 'attention' ? msg('需要关注') : msg('全部'), valueTone: 'dim' }, { id: 'summary', label: msg('显示摘要'), value: hooks.summary?.() !== false ? msg('开启') : msg('关闭'), valueTone: 'dim' }, { id: 'delivery', label: msg('结果自动唤醒'), value: paused ? msg('暂停') : msg('开启'), valueTone: 'dim' }] }));
       if (!current() || selected === undefined) return;
       if (selected === 'models') { await modelsMenu(ctx); continue; }
       if (selected === 'profiles') { await profilesMenu(ctx); continue; }
@@ -493,14 +497,24 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         await restore(ctx); return;
       }
       const agent = ready(ctx, false);
-      if (!args.trim() || action === 'list') { await agentsMenu(ctx); return; }
+      if (!args.trim()) { await agentsMenu(ctx); return; }
+      if (action === 'list') {
+        const jobs = agent.exportSummaries();
+        ctx.ui.notify(jobs.length ? jobs.map((job) => jobSummary({ ...job, ...(todoStatusOf(job.todoId) ? { todoStatus: todoStatusOf(job.todoId)! } : {}) }, msg).join('\n')).join('\n\n') : msg('暂无 Job'), 'info');
+        return;
+      }
       if (action === 'show' || action === 'hide') { hooks.setSummary?.(action === 'show', ctx); return; }
       if (action === "pause") { paused = true; clearDelivery(); hooks.pauseAuto?.(ctx); ctx.ui.notify(msg("已暂停结果自动唤醒；子 Agent 仍可能运行，停止请用 /agents cancel"), "info"); return; }
       if (action === "resume") { ready(ctx); if (hooks.resumeAuto ? !hooks.resumeAuto() : hooks.canWake?.() === false) throw new Error(msg("Goal 续跑仍暂停；先明确 /goal enable")); paused = false; failedRound = false; ctx.ui.notify(msg("后续新结果可自动唤醒；暂停期间旧报告仍可 /agents wait 查看"), "info"); return; }
       if (action === "cancel" || action === "remove") { if (parts.length !== 1) throw new Error(msg`/agents ${action} jobId`); const job = agent.inspect(parts[0]!)[0]!; if (action === 'remove' || job.status !== 'completed' || job.reportDelivery !== 'pending') notices.drop(parts[0]!); await agent.cancel(parts[0]!, { remove: action === "remove" }); return; }
-      if (action === 'wait') { const epoch = generation; const job = await agent.wait(parts[0]!, { timeout: 0 }); await readView(ctx, job.id, jobSummary(job, msg).join('\n'), { msg, isCurrent: () => epoch === generation }); return; }
+      if (action === 'wait') { if (parts.length !== 1) throw new Error(msg('/agents wait jobId')); const epoch = generation; const job = await agent.wait(parts[0]!, { timeout: 0 }); if (epoch !== generation) return; ctx.ui.notify(jobSummary({ ...job, ...(todoStatusOf(job.todoId) ? { todoStatus: todoStatusOf(job.todoId)! } : {}) }, msg).join('\n'), 'info'); return; }
       if (action === "send" || action === "reply") { ready(ctx); const target = parts.shift(); if (!target || !parts.length) throw new Error(msg`/agents ${action} 编号 消息`); const interrupt = action === 'send' && parts[0] === '--interrupt'; if (interrupt) parts.shift(); if (!parts.length) throw new Error(msg('/agents send jobId [--interrupt] 消息')); await agent.send({ ...(action === "send" ? { recipient: target } : { requestId: target }), message: parts.join(" "), ...(interrupt ? { interrupt: true } : {}) }); if (action === "send") adjusted.add(target); return; }
-      if (action === 'profiles') { await profilesMenu(ctx); return; }
+      if (action === 'profiles') {
+        await profiles!.load();
+        const all = profiles!.list();
+        ctx.ui.notify(all.length ? all.map((profile) => profileSummary(profile, msg).join('\n')).join('\n\n') : msg('未配置 Profile'), 'info');
+        return;
+      }
       if (action === "profile") {
         ready(ctx);
         const [name, model, thinking, tools] = parts;
@@ -513,7 +527,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       }
       if (action === "unprofile") { ready(ctx); if (parts.length !== 1) throw new Error(msg("/agents unprofile 名称")); await profiles!.load(); profiles!.delete(parts[0]!); await profiles!.save(); return; }
       pi.sendUserMessage(msg`请管理当前子 Agent／Profile：${args}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
-    } catch (cause) { notify(ctx, safeDiagnostic(String(cause)), "error"); }
+    } catch (cause) { notify(ctx, diagnostic(cause), "error"); }
   }) });
   return {
     pauseAutomatic() { paused = true; clearDelivery(); },

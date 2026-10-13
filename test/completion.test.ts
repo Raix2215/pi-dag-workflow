@@ -166,6 +166,9 @@ test('registered /todos, /plan and /goal expose argument completions over live s
   assert.deepEqual(values(await goal('autoresearch ')), ['autoresearch #1']);
   assert.equal(await goal('nocomplete '), null, 'no nocomplete alias is registered');
   assert.equal(await goal('nopause #1'), null, 'a complete nopause command submits without a second Enter');
+  assert.deepEqual(values(await goal('nopause #1 ')), ['nopause #1 on', 'nopause #1 off']);
+  assert.deepEqual(values(await goal('nolimit #1 of')), ['nolimit #1 off']);
+  assert.equal(await goal('nopause #1 on'), null, 'a complete on/off setting submits');
   assert.equal(await goal('policy '), null, 'policy is not retained as a command alias');
   assert.deepEqual(values(await goal('delete ')), ['delete #1', 'delete #2']);
   assert.equal(await goal('new '), null);

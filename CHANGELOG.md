@@ -4,11 +4,33 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-13
+
+### Added
+
+- Per-dispatch child `model`, `thinking`, `tools`, and local Markdown `skills`, without requiring a saved Profile. Discover exact available model references through paginated `subagent_inspect models:true` queries.
+- Same-process child tool replacement through `subagent_send tools` with `recipient` and `interrupt:true`, controlled by the main session under user authorization.
+- Tool allowlists and limits in the parameter schemas, inherited-tool omission receipts, and structured direction failures with phase, status, operation effects, and recovery guidance.
+
+### Changed
+
+- Bare root commands provide native management menus. Argument subcommands execute directly or print readable text; bare `/plan` remains a quick toggle and `/plan settings` prints settings.
+- Goal controls switch in place in the root menu. `autoresearch`, `nopause`, and `nolimit` shortcuts accept idempotent `on/off`; changing settings does not start a Goal or reset its used allowance.
+- Menu values use the theme's dim color, with effective continuous-research controls shown separately from Goal execution. Todo fragments remain browsable from the root task menu.
+- Continued child attempts use the last actual configuration snapshot; explicit Profiles and call-level fields overlay it, and `profile:inherit` resets to the current parent configuration.
+
 ### Fixed
 
-- Use Pi's native bordered dialogs for menus and read-only paginated details. Keep selection pages short and temporarily hide this package's summaries throughout a menu flow.
-- Highlight important states, warnings, and destructive actions with semantic theme colors and restrained bold. Preserve full body text and reading position when resizing.
-- Keep native option labels unambiguous, including duplicate-name suffixes; preserve cancellation, stale-input guards, and menu-owned Goal behavior.
+- Check child tool availability before interruption so predictable refusals preserve running work, pending questions, and queued directions. Retain specific refusals and safely stop uncertain post-interruption updates.
+- Correlate bounded tool confirmations without depending on notification/response ordering. Keep rejected private control inputs out of model context and prevent ordinary sends from releasing another update's lock.
+- Preserve configuration snapshots when Profiles change or disappear; unrelated invalid Profile files do not block temporary dispatch or snapshot continuation. Ignore callbacks from superseded restored runtimes.
+- Use Pi's native bordered dialogs, isolate summaries during the entire menu flow, preserve body reading position across resize, and keep duplicate labels and DAG status rows unambiguous.
+- Reject duplicate Goal IDs before changing controls and localize recovery guidance without listing unrelated operation effects.
+
+### Verification
+
+- 800 offline and isolated-process regressions pass, including clean Node 22/24 runs and explicit Pi 1.2 integration/type checks; the default dependency remains Pi 1.0.
+- Bounded real-model TUI workflows cover tool grants/revocation, predictable and post-interruption refusals, child exits, queued directions, cancellation/reload continuation, Plan guards, temporary Skills, and native menus in both languages and themes. These checks do not establish a sandbox, rollback external effects, or exhaust all providers and concurrency cases.
 
 ## [0.5.0] - 2026-10-12
 

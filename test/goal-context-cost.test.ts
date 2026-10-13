@@ -9,11 +9,7 @@ for (const nopause of [false, true]) test(`real Pi: bounded ${nopause ? 'nopause
   t.after(() => client.close());
   await client.prompt('TEST CALL goal {"action":"create","title":"预算测试","maxTurns":6}');
   if (nopause) {
-    const configuring = client.prompt('/goal nopause #1');
-    await client.until(() => client.records.some((record) => record.type === 'extension_ui_request' && record.method === 'select'));
-    const menu = client.records.findLast((record) => record.type === 'extension_ui_request' && record.method === 'select')!;
-    client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: (menu.options as string[])[1] })}\n`);
-    await configuring;
+    await client.prompt('/goal nopause #1 on');
   }
   await client.prompt('/goal enable #1');
   await client.until(() => client.records.some((record) => (record.entry as any)?.customType === GOAL_TYPE && (record.entry as any).data.run.reason?.includes('轮上限')));

@@ -335,8 +335,10 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
     return true;
   }
   async function modelsCommand(parts: string[], ctx: ExtensionCommandContext) {
-    if (!parts.length) { await menu(ctx, true); return; }
+    if (!parts.length) { notify(ctx, retrySummary(snapshot(), msg).join('\n'), 'info'); return; }
     const before = state.models ?? defaultRetryModels();
+    if (parts[0] === 'after' && parts.length !== 2) throw new Error(msg('用法：/retry models after 次数'));
+    if (parts[0] === 'off' && parts.length !== 1) throw new Error(msg('用法：/retry models off'));
     if (parts[0] === 'off' && parts.length === 1) {
       if (error || hooks.protected()) throw new Error(error ?? msg('工作流状态受保护'));
       save({ ...state, models: { ...before, enabled: false } }); settingsRevision++;
@@ -355,7 +357,7 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
     while (active()) {
       const before = state.models ?? defaultRetryModels(), revision = settingsRevision;
       const toggle = msg(before.enabled ? '关闭模型替代' : '开启模型替代');
-      const choice = await prompt(title, () => choose(ctx, title, [{ id: toggle, label: toggle }, { id: editOrder, label: editOrder, value: msg`${before.candidates.length} 个候选` }, { id: editAfter, label: editAfter, value: String(before.after) }], { msg, isCurrent: active, lines: () => retrySummary(snapshot(), msg) }));
+      const choice = await prompt(title, () => choose(ctx, title, [{ id: toggle, label: toggle }, { id: editOrder, label: editOrder, value: msg`${before.candidates.length} 个候选`, valueTone: 'dim' }, { id: editAfter, label: editAfter, value: String(before.after), valueTone: 'dim' }], { msg, isCurrent: active, lines: () => retrySummary(snapshot(), msg) }));
       if (!active() || choice === undefined || choice === back) return;
       if (revision !== settingsRevision) continue;
       try {
@@ -442,7 +444,7 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
     }
     async function settingsMenu() {
       while (active()) {
-        const choice = await prompt(settings, () => choose(ctx, settings, [{ id: editIntervals, label: editIntervals, value: state.settings ? intervalText(state.settings) : msg('未设置间隔') }, { id: editCount, label: editCount, value: String(state.settings?.count ?? msg('不限')) }], { msg, isCurrent: active, lines: () => retrySummary(snapshot(), msg) }));
+        const choice = await prompt(settings, () => choose(ctx, settings, [{ id: editIntervals, label: editIntervals, value: state.settings ? intervalText(state.settings) : msg('未设置间隔'), valueTone: 'dim' }, { id: editCount, label: editCount, value: String(state.settings?.count ?? msg('不限')), valueTone: 'dim' }], { msg, isCurrent: active, lines: () => retrySummary(snapshot(), msg) }));
         if (!active() || choice === undefined || choice === back) return;
         if (choice === editIntervals || choice === editCount) { if (await edit(choice === editIntervals ? 'intervals' : 'count')) return; }
       }
@@ -453,7 +455,7 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
         const enabled = state.enabled, base = state.settings, revision = settingsRevision;
         const toggle = msg(enabled ? '关闭自动重试' : '开启自动重试');
         const title = msg`重试恢复 · ${enabled ? msg('开启') : msg('关闭')} · ${base ? intervalText(base) : msg('未设置间隔')} · ${base?.count ?? msg('不限')} 次`;
-        const choice = await prompt(title, () => choose(ctx, title, [{ id: toggle, label: toggle }, { id: settings, label: settings, value: base ? intervalText(base) : msg('未设置间隔') }, { id: models, label: models, value: state.models?.enabled ? msg('开启') : msg('关闭') }, { id: 'summary', label: msg('显示摘要'), value: hooks.summary?.() !== false ? msg('开启') : msg('关闭') }], { msg, isCurrent: active, lines: () => [...retrySummary(snapshot(), msg), msg('菜单打开期间不会发起重试')], actions: [{ id: 'stop', label: msg('停止本轮恢复'), ...(!failure ? { disabledReason: msg('当前没有待恢复请求') } : {}) }, { id: exit, label: exit }] }));
+        const choice = await prompt(title, () => choose(ctx, title, [{ id: toggle, label: toggle }, { id: settings, label: settings, value: base ? intervalText(base) : msg('未设置间隔'), valueTone: 'dim' }, { id: models, label: models, value: state.models?.enabled ? msg('开启') : msg('关闭'), valueTone: 'dim' }, { id: 'summary', label: msg('显示摘要'), value: hooks.summary?.() !== false ? msg('开启') : msg('关闭'), valueTone: 'dim' }], { msg, isCurrent: active, lines: () => [...retrySummary(snapshot(), msg), msg('菜单打开期间不会发起重试')], actions: [{ id: 'stop', label: msg('停止本轮恢复'), ...(!failure ? { disabledReason: msg('当前没有待恢复请求') } : {}) }, { id: exit, label: exit }] }));
         if (!active() || choice === undefined || choice === exit) return;
         try {
           if (choice === models) await modelsMenu(ctx, active);

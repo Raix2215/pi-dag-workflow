@@ -18,7 +18,7 @@ process.stdin.on('data', chunk => {
     else if (command.type === 'prompt') {
       if (command.message.startsWith('pi-dag-child-control:')) {
         const payload = JSON.parse(command.message.slice('pi-dag-child-control:'.length));
-        emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,tools:payload.tools})});
+        emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-tools:' + JSON.stringify({nonce:payload.nonce,action:payload.action,ok:true,tools:payload.tools})});
         response({disposition:'handled'}); continue;
       }
       active = true;

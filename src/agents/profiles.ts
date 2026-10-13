@@ -4,12 +4,22 @@ import { randomUUID } from "node:crypto";
 import { readConfigText } from '../shared/config-file.ts';
 
 export const CORE_TOOLS = ["read", "grep", "find", "ls"] as const;
-const OPTIONAL_TOOLS = new Set(["bash", "edit", "write", "powershell"]);
+export const CHILD_TOOLS = [...CORE_TOOLS, 'bash', 'edit', 'write', 'powershell'] as const;
+export const MAX_CHILD_TOOLS = CHILD_TOOLS.length;
+const OPTIONAL_TOOLS = new Set<string>(CHILD_TOOLS.filter((name) => !(CORE_TOOLS as readonly string[]).includes(name)));
+
+export function validateToolNames(value: unknown, allowed: readonly string[] = CHILD_TOOLS): string[] {
+  const boundary = `Allowed: ${allowed.join(', ')}; up to ${MAX_CHILD_TOOLS} entries`;
+  if (!Array.isArray(value) || value.length > MAX_CHILD_TOOLS || value.some((name) => typeof name !== 'string')) throw new Error(`tools must be a list of supported tool names. ${boundary}`);
+  const tools = (value as string[]).map((name) => name.trim());
+  for (const name of tools) if (!allowed.includes(name)) throw new Error(`Child tool is not trusted or supported: ${name}. ${boundary}`);
+  return [...new Set(tools)];
+}
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = typeof THINKING_LEVELS[number];
 export interface ModelRef { provider: string; id: string }
 export interface Profile { name: string; model?: ModelRef; thinking?: ThinkingLevel; tools?: string[]; skills?: string[]; instructions?: string }
-export interface ResolvedProfile { name: string; model: ModelRef; thinking: ThinkingLevel; tools: string[]; skills?: string[]; instructions?: string }
+export interface ResolvedProfile { name: string; model: ModelRef; thinking: ThinkingLevel; tools: string[]; skills?: string[]; instructions?: string; ignoredInheritedTools?: string[] }
 export interface ProfileRegistry { find(provider: string, id: string): unknown }
 export interface ProfileStoreOptions { path?: string; registry: ProfileRegistry; trustedTools?: readonly string[] }
 
@@ -67,11 +77,7 @@ export class ProfileStore {
     return [...new Set(value.map((skill) => this.skill(skill)))];
   }
   validateTools(value: unknown): string[] {
-    if (!Array.isArray(value) || value.length > 8 || value.some((tool) => typeof tool !== "string")) throw new Error("tools must be a list of supported tool names");
-    const allowed = new Set<string>([...CORE_TOOLS, ...(this.options.trustedTools ?? [])]);
-    const tools = (value as string[]).map((tool) => tool.trim());
-    for (const tool of tools) if (!allowed.has(tool)) throw new Error(`Child tool is not trusted or supported: ${tool}`);
-    return [...new Set(tools)];
+    return validateToolNames(value, [...CORE_TOOLS, ...(this.options.trustedTools ?? [])]);
   }
   /**
    * Free-form guidance for the children this profile dispatches. It travels to the child process
@@ -135,6 +141,7 @@ export class ProfileStore {
     }
     const allowed = new Set<string>([...CORE_TOOLS, ...(this.options.trustedTools ?? [])]);
     const inheritedTools = inherited?.tools === undefined ? [...CORE_TOOLS] : inherited.tools.filter((tool) => allowed.has(tool));
+    const ignored = toolsOverride === undefined && profile?.tools === undefined && base?.tools === undefined ? [...new Set((inherited?.tools ?? []).filter((name) => !allowed.has(name)))] : [];
     const skills = overrides?.skills ?? profile?.skills ?? base?.skills;
     const instructions = profile?.instructions ?? base?.instructions;
     return {
@@ -142,6 +149,7 @@ export class ProfileStore {
       tools: this.validateTools(toolsOverride ?? profile?.tools ?? base?.tools ?? [...new Set(inheritedTools)]),
       ...(skills === undefined ? {} : { skills: this.validateSkills(skills) }),
       ...(instructions === undefined ? {} : { instructions }),
+      ...(ignored.length ? { ignoredInheritedTools: ignored } : {}),
     };
   }
   async load(): Promise<void> {

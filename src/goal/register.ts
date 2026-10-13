@@ -90,14 +90,21 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
       { action: 'delete', description: msg('删除目标：delete #编号') },
       { action: 'edit', description: msg('修改标题：edit #编号 新标题') },
       { action: 'get', description: msg('查看目标详情：get #编号') },
-      { action: 'nopause', description: msg('切换运行中是否允许模型中断：nopause [ #编号]') },
-      { action: 'nolimit', description: msg('切换续跑轮数上限：nolimit [ #编号]（当前目标可省略编号）') },
-      { action: 'autoresearch', description: msg('切换持续研究：autoresearch [ #编号]（不自行完成、不限轮数、自主执行）') },
+      { action: 'nopause', description: msg('切换运行中是否允许模型中断：nopause [ #编号] [on|off]（省略为当前目标；默认切换）') },
+      { action: 'nolimit', description: msg('切换续跑轮数上限：nolimit [ #编号] [on|off]（省略为当前目标；默认切换）') },
+      { action: 'autoresearch', description: msg('切换持续研究：autoresearch [ #编号] [on|off]（省略为当前目标；默认切换；不自行完成、不限轮数、自主执行）') },
       { action: 'config', description: msg('查看配置路径与值') },
       { action: 'reset', description: msg('清除 Goal 状态') },
       { action: 'help', description: msg('查看命令帮助') },
     ],
     freeText: ['new'],
+    arguments: (tokens, trailing) => {
+      if (!['autoresearch', 'nopause', 'nolimit'].includes(tokens[0] ?? '') || tokens.length < 2 || tokens.length > 3 || tokens.length === 3 && trailing) return null;
+      if (!/^#?[1-9]\d*$/.test(tokens[1] ?? '')) return null;
+      if (tokens.length === 2 && !trailing) return null;
+      const typed = tokens.length === 3 ? tokens[2]! : '';
+      return ['on', 'off'].filter((name) => name.startsWith(typed)).map((name) => ({ token: `${tokens[0]} ${tokens[1]} ${name}`, label: name }));
+    },
     tokens: (action) => ['enable', 'disable', 'edit', 'complete', 'delete', 'get', 'nopause', 'nolimit', 'autoresearch'].includes(action) ? state.goals
       .filter((goal) => goal.status !== 'deleted' && (!activatable.has(action) || goal.status !== 'completed'))
       .map((goal) => ({ token: `#${goal.id}`, label: `#${goal.id} ${goal.title}`, description: msg(goalStatusLabel[goal.status]) })) : null,
@@ -193,58 +200,32 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   }
   const waitingInstruction = (goal = focusedGoal(state)) => goal && goalModelPause(goal) === 'deny'
     ? 'Resolve the decision autonomously within scope; do not ask the user.' : 'Try safe alternatives and independent work before asking about a verified external blocker.';
-  async function noPauseMenu(id: number, ctx: ExtensionContext) {
-    if (error || hooks.protected()) throw new Error(error ?? msg('工作流状态受保护'));
-    const goal = state.goals.find((item) => item.id === id && item.status !== 'deleted');
-    if (!goal) throw new Error(msg('找不到目标；请给出 id'));
-    if (!ctx.hasUI) throw new Error(msg('Goal 菜单需要交互界面'));
-    if (menuPrompt) throw new Error(msg('Goal 菜单已打开'));
-    const allow = msg('允许模型中断'); const deny = msg('禁止模型中断');
-    const prompt = { title: msg`Goal #${goal.id} · 运行中模型中断（当前：${goal.modelPause === 'deny' ? msg('禁止') : msg('允许')}）`, epoch: sessionEpoch };
-    menuPrompt = prompt;
-    let selected: string | undefined;
-    try { selected = await choose(ctx, prompt.title, (goal.modelPause === 'deny' ? [deny, allow] : [allow, deny]).map((label) => ({ id: label, label })), { msg, isCurrent: () => prompt.epoch === sessionEpoch }); }
-    finally { if (menuPrompt === prompt) menuPrompt = undefined; }
-    if (selected === undefined || prompt.epoch !== sessionEpoch) return;
-    const policy = selected === deny ? 'deny' : selected === allow ? 'allow' : undefined;
-    if (!policy) return;
-    commit(setModelPausePolicy(state, id, policy, msg), ctx);
-    notify(ctx, msg`Goal #${id}：${selected}`, 'info');
-  }
-  /** Passive user-owned switch. It never starts, pauses, clears `used`, or drops a pending wake. */
-  async function noLimitMenu(id: number, ctx: ExtensionContext) {
-    if (error || hooks.protected()) throw new Error(error ?? msg('工作流状态受保护'));
-    const goal = state.goals.find((item) => item.id === id && item.status !== 'deleted');
-    if (!goal) throw new Error(msg('找不到目标；请给出 id'));
-    if (!ctx.hasUI) throw new Error(msg('Goal 菜单需要交互界面'));
-    if (menuPrompt) throw new Error(msg('Goal 菜单已打开'));
-    const limited = msg`使用轮数上限（${goal.maxTurns} 轮）`; const unlimited = msg('不限续跑轮数');
-    const prompt = { title: msg`Goal #${goal.id} · 续跑轮数（当前：${goalLimitLabel(goal)}）`, epoch: sessionEpoch };
-    menuPrompt = prompt;
-    let selected: string | undefined;
-    try { selected = await choose(ctx, prompt.title, (goal.nolimit === true ? [unlimited, limited] : [limited, unlimited]).map((label) => ({ id: label, label })), { msg, isCurrent: () => prompt.epoch === sessionEpoch }); }
-    finally { if (menuPrompt === prompt) menuPrompt = undefined; }
-    if (selected === undefined || prompt.epoch !== sessionEpoch) return;
-    const nolimit = selected === unlimited ? true : selected === limited ? false : undefined;
-    if (nolimit === undefined) return;
-    commit(setGoalNolimit(state, id, nolimit, msg), ctx);
-    notify(ctx, msg`Goal #${id}：${selected}`, 'info');
-  }
-  async function autoresearchMenu(id: number, ctx: ExtensionContext) {
+  /** User-owned switches: direct, idempotent, and never a start, pause, budget reset or new Goal field. */
+  function setAutoresearchControl(id: number, value: boolean | undefined, ctx: ExtensionContext): void {
     if (error || hooks.protected()) throw new Error(error ?? msg('工作流状态受保护'));
     const goal = state.goals.find((item) => item.id === id && !['deleted', 'completed'].includes(item.status));
     if (!goal) throw new Error(msg('找不到未完成目标；请给出 id'));
-    if (!ctx.hasUI) throw new Error(msg('Goal 菜单需要交互界面'));
-    if (menuPrompt) throw new Error(msg('Goal 菜单已打开'));
-    const normal = msg('普通目标：达成后可完成'), research = msg('持续研究：自主执行、不限轮数、不自行完成');
-    const prompt = { title: msg`Goal #${id} · 执行方式`, epoch: sessionEpoch }; menuPrompt = prompt;
-    let selected: string | undefined;
-    try { selected = await choose(ctx, prompt.title, (goalAutoresearch(goal) ? [research, normal] : [normal, research]).map((label) => ({ id: label, label })), { msg, isCurrent: () => prompt.epoch === sessionEpoch }); }
-    finally { if (menuPrompt === prompt) menuPrompt = undefined; }
-    if (selected === undefined || prompt.epoch !== sessionEpoch || !sameGoal(goal, state.goals.find((item) => item.id === id))) return;
-    if (selected !== normal && selected !== research) return;
-    commit(setGoalAutoresearch(state, id, selected === research, msg), ctx);
-    notify(ctx, msg`Goal #${id}：${selected}`, 'info');
+    const next = value ?? !goalAutoresearch(goal);
+    commit(setGoalAutoresearch(state, id, next, msg), ctx);
+    notify(ctx, msg`Goal #${id}：${msg(next ? '持续研究' : '普通目标')}`, 'info');
+  }
+  function setPauseControl(id: number, value: boolean | undefined, ctx: ExtensionContext): void {
+    if (error || hooks.protected()) throw new Error(error ?? msg('工作流状态受保护'));
+    const goal = state.goals.find((item) => item.id === id && item.status !== 'deleted');
+    if (!goal) throw new Error(msg('找不到目标；请给出 id'));
+    const next = value ?? goal.modelPause !== 'deny';
+    commit(setModelPausePolicy(state, id, next ? 'deny' : 'allow', msg), ctx);
+    const forced = goalAutoresearch(goal) ? msg('；当前持续研究禁止模型中断；此设置在普通模式生效') : '';
+    notify(ctx, msg`Goal #${id}：${msg(next ? '禁止模型中断' : '允许模型中断')}` + forced, 'info');
+  }
+  function setLimitControl(id: number, value: boolean | undefined, ctx: ExtensionContext): void {
+    if (error || hooks.protected()) throw new Error(error ?? msg('工作流状态受保护'));
+    const goal = state.goals.find((item) => item.id === id && item.status !== 'deleted');
+    if (!goal) throw new Error(msg('找不到目标；请给出 id'));
+    const next = value ?? goal.nolimit !== true;
+    commit(setGoalNolimit(state, id, next, msg), ctx);
+    const forced = goalAutoresearch(goal) ? msg('；当前持续研究不限轮数；此设置在普通模式生效') : '';
+    notify(ctx, msg`Goal #${id}：${msg(next ? '不限续跑轮数' : msg`使用轮数上限（${goal.maxTurns} 轮）`)}` + forced, 'info');
   }
   async function goalMenu(ctx: ExtensionContext, selectedId?: number) {
     if (menuPrompt) throw new Error(msg('Goal 菜单已打开'));
@@ -266,29 +247,25 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
         const pageTitle = `Goal #${goal.id} · ${goal.title}`; root.title = pageTitle;
         const detail = goalSummary(goal, goal.id === state.focusId ? state.run : undefined, msg);
         const short = detail.slice(1, goal.id === state.focusId ? 4 : 3);
+        const research = goalAutoresearch(goal);
+        const row = (rowId: string, label: string, value: string, disabledReason?: string) => ({ id: rowId, label, value, valueTone: 'dim' as const, ...(disabledReason ? { disabledReason } : {}) });
         const item = await choose(ctx, pageTitle, [
           { id: 'read', label: msg('查看范围与进展') },
           { id: 'edit', label: msg('编辑标题与范围') },
           { id: 'toggle', label: running ? msg('暂停 Goal') : msg('启动或恢复 Goal'), ...(goal.status === 'completed' || hooks.state().plan ? { disabledReason: goal.status === 'completed' ? msg('已完成目标不能重启；新建目标记录返工') : msg('先退出 Plan 才能恢复 Goal') } : {}) },
-          { id: 'settings', label: msg('其他设置…') },
+          row('autoresearch', msg('持续研究'), msg(research ? '开启' : '关闭'), goal.status === 'completed' ? msg('目标已完成') : undefined),
+          row('nopause', msg('运行中模型中断'), research ? msg('禁止（持续研究）') : msg(goal.modelPause === 'deny' ? '禁止' : '允许'), research ? msg('持续研究强制禁止模型中断') : undefined),
+          row('nolimit', msg('续跑轮数上限'), research ? msg('不限（持续研究）') : (goal.nolimit ? msg('不限') : String(goal.maxTurns)), research ? msg('持续研究强制不限轮数') : undefined),
           { id: 'complete', label: msg('标记目标完成'), ...(goal.status === 'completed' ? { disabledReason: msg('目标已完成') } : {}) },
           { id: 'delete', label: msg('删除目标'), tone: 'error' },
         ], { msg, isCurrent: current, lines: short });
         if (!current()) return;
         if (item === undefined) { selectedId = undefined; root.title = title; continue; }
-        if (item === 'read') await readView(ctx, pageTitle, goalSummary(goal, goal.id === state.focusId ? state.run : undefined, msg).join('\n'), { msg, isCurrent: current });
-        if (item === 'toggle') mutate({ action: running ? 'disable' : 'enable', id: goal.id }, ctx, true);
-        let policy = item;
-        if (item === 'settings') policy = await choose(ctx, pageTitle, [
-          { id: 'mode', label: msg('运行方式'), value: goalAutoresearch(goal) ? msg('持续研究') : msg('普通目标') },
-          { id: 'pause', label: msg('普通模式中断设置'), value: goal.modelPause === 'deny' ? msg('禁止') : msg('允许') },
-          { id: 'limit', label: msg('普通模式轮数设置'), value: goal.nolimit ? msg('不限') : String(goal.maxTurns) },
-        ], { msg, isCurrent: current, lines: short }) ?? '';
-        if (['mode', 'pause', 'limit'].includes(policy)) {
-          menuPrompt = undefined;
-          try { if (policy === 'mode') await autoresearchMenu(goal.id, ctx); else if (policy === 'pause') await noPauseMenu(goal.id, ctx); else await noLimitMenu(goal.id, ctx); }
-          finally { if (current()) menuPrompt = root; }
-        }
+        if (item === 'read') { await readView(ctx, pageTitle, goalSummary(goal, goal.id === state.focusId ? state.run : undefined, msg).join('\n'), { msg, isCurrent: current }); continue; }
+        if (item === 'toggle') { mutate({ action: running ? 'disable' : 'enable', id: goal.id }, ctx, true); continue; }
+        if (item === 'autoresearch') { setAutoresearchControl(goal.id, undefined, ctx); continue; }
+        if (item === 'nopause') { setPauseControl(goal.id, undefined, ctx); continue; }
+        if (item === 'nolimit') { setLimitControl(goal.id, undefined, ctx); continue; }
         if (item === 'edit') {
           const input = await ownedMenuPrompt(ctx, msg('目标标题'), () => ctx.ui.editor(msg('目标标题'), goal.title));
           if (!current() || input === undefined) continue;
@@ -619,31 +596,30 @@ export function registerGoal(pi: ExtensionAPI, hooks: Hooks) {
   pi.registerCommand('goal', { description: msg('目标 new/list/enable/disable/complete/delete/edit/get/nopause/nolimit/autoresearch/config/reset，或自然语言'), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => withMenuScope(ctx, async () => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
-      if (action === 'help') { ctx.ui.notify(msg('/goal new 标题 · list · enable [ #编号]（省略为当前目标） · disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号 · nopause [ #编号] · nolimit [ #编号] · autoresearch [ #编号] · config · reset；创建不启动，查看不重置预算，停用后需明确 enable 恢复。'), 'info'); return; }
+      if (action === 'help') { ctx.ui.notify(msg('/goal new 标题 · list（文字） · enable/disable [ #编号] · complete/delete #编号 · edit #编号 标题 · get #编号（文字） · nopause/nolimit/autoresearch [ #编号] [on|off] · config（文字） · reset；裸 /goal 打开管理页；创建不启动，查看不重置预算，停用后需明确 enable 恢复。'), 'info'); return; }
       const id = (value?: string) => { if (value === undefined && state.focusId !== undefined) return state.focusId; if (!value || !/^#?[1-9]\d*$/.test(value)) throw new Error(msg('请给出目标编号')); return Number(value.replace(/^#/, '')); };
-      if (!args.trim() || action === 'list') {
-        if (ctx.hasUI) await goalMenu(ctx);
-        else notify(ctx, applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text);
-        return;
-      }
+      if (!args.trim()) { if (ctx.hasUI) await goalMenu(ctx); else notify(ctx, applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text, 'info'); return; }
       if (action === 'show' || action === 'hide') { hooks.setSummary?.(action === 'show', ctx); return; }
+      if (action === 'list') { notify(ctx, applyGoal(state, { action: 'list' }, config.goalMaxTurns, msg).text, 'info'); return; }
       if (action === 'get') {
         const goal = state.goals.find((value) => value.id === id(parts[0])); if (!goal) throw new Error(msg('找不到目标；请给出 id'));
-        await readView(ctx, `Goal #${goal.id}`, goalSummary(goal, goal.id === state.focusId ? state.run : undefined, msg).join('\n'), { msg, isCurrent: () => sameGoal(goal, state.goals.find((value) => value.id === goal.id)) }); return;
+        notify(ctx, goalSummary(goal, goal.id === state.focusId ? state.run : undefined, msg).join('\n'), 'info'); return;
       }
-      if (action === 'nopause') {
-        if (parts.length > 1) throw new Error(msg('此命令只接受一个编号'));
-        await noPauseMenu(id(parts[0]), ctx); return;
+      if (action === 'config') { notify(ctx, [configPaths().config, msg`默认续跑轮数：${config.goalMaxTurns}`, msg`无进展规划阈值：${config.goalNoProgressLimit}`, msg`自主模式禁止工具：${config.goalNoPauseTools.join(', ')}`, msg('配置文件保存后重载生效；运行设置由各目标控制')].join('\n'), 'info'); return; }
+      if (action === 'nopause' || action === 'nolimit' || action === 'autoresearch') {
+        if (parts.length > 2) throw new Error(msg('此命令最多接受编号和 on/off'));
+        if (parts.filter((part) => /^#?[1-9]\d*$/.test(part)).length > 1) throw new Error(msg('此命令只接受一个编号'));
+        let value: boolean | undefined;
+        for (const part of parts) {
+          if (part === 'on' || part === 'off') { if (value !== undefined) throw new Error(msg('此命令最多接受一个 on/off')); value = part === 'on'; }
+          else if (!/^#?[1-9]\d*$/.test(part)) throw new Error(msg('用法：[ #编号] [on|off]'));
+        }
+        const target = id(parts.find((part) => part !== 'on' && part !== 'off'));
+        if (action === 'autoresearch') setAutoresearchControl(target, value, ctx);
+        else if (action === 'nopause') setPauseControl(target, value, ctx);
+        else setLimitControl(target, value, ctx);
+        return;
       }
-      if (action === 'nolimit') {
-        if (parts.length > 1) throw new Error(msg('此命令只接受一个编号'));
-        await noLimitMenu(id(parts[0]), ctx); return;
-      }
-      if (action === 'autoresearch') {
-        if (parts.length > 1) throw new Error(msg('此命令只接受一个编号'));
-        await autoresearchMenu(id(parts[0]), ctx); return;
-      }
-      if (action === 'config') { await readView(ctx, msg('Goal 配置'), [configPaths().config, msg`默认续跑轮数：${config.goalMaxTurns}`, msg`无进展规划阈值：${config.goalNoProgressLimit}`, msg`自主模式禁止工具：${config.goalNoPauseTools.join(', ')}`, msg('配置文件保存后重载生效；运行设置由各目标控制')].join('\n'), { msg }); return; }
       if (action === 'reset') {
         const ownEpoch = sessionEpoch;
         if (!ctx.hasUI || !await ctx.ui.confirm(msg('清除 Goal 状态？'), msg('保留历史、Todos、Job 和项目文件；自动续跑停止。'))) return;

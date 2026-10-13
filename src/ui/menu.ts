@@ -3,7 +3,7 @@ import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi, visibleWidth
 import { chinese, type Translator } from '../shared/i18n.ts';
 
 export type MenuTone = 'accent' | 'success' | 'warning' | 'error' | 'muted';
-export interface MenuItem { id: string; label: string; value?: string; description?: string; disabledReason?: string; tone?: MenuTone }
+export interface MenuItem { id: string; label: string; value?: string; description?: string; disabledReason?: string; tone?: MenuTone; valueTone?: MenuTone | 'dim' }
 export interface MenuCursor { query?: string; selectedId?: string; page?: number }
 export interface MenuOptions {
   /** Short, explicitly selected state only. Complete requirements belong in readView. */
@@ -47,7 +47,7 @@ function block(text: string): string[] {
 }
 function available(ctx: ExtensionContext): boolean { return ctx.hasUI && !['print', 'json'].includes(ctx.mode as string); }
 function current(options: ReadViewOptions): boolean { return !options.signal?.aborted && options.isCurrent?.() !== false; }
-function styled(ctx: ExtensionContext, text: string, tone: MenuTone | 'text', bold = false): string {
+function styled(ctx: ExtensionContext, text: string, tone: MenuTone | 'dim' | 'text', bold = false): string {
   return ctx.mode === 'tui' ? ctx.ui.theme.style(text, { fg: tone, bold }) : text;
 }
 export function statusTone(value: string, msg: Translator = chinese): MenuTone {
@@ -127,26 +127,26 @@ export async function choose(ctx: ExtensionContext, title: string, items: readon
       const short = [...alerts, ...summary.filter(line => !alerts.includes(line))].slice(0, 3).map(line => truncateToWidth(clean(line), width, '…'));
       const size = ctx.mode === 'tui' ? Math.max(1, Math.min(PAGE_SIZE, rows - 17 - short.length - (options.actions?.length ?? 0) - (options.searchable ? 1 : 0))) : PAGE_SIZE;
       const pages = Math.max(1, Math.ceil(filtered.length / size)); page = Math.min(page, pages - 1);
-      const entries: { label: string; tone?: MenuTone; pick: () => Promise<string | undefined> | string | undefined; done: boolean }[] = [];
+      const entries: { label: string; tone?: MenuTone; valueTone?: MenuTone | 'dim'; pick: () => Promise<string | undefined> | string | undefined; done: boolean }[] = [];
       for (const item of filtered.slice(page * size, page * size + size)) {
         const id = /^(#\d+|a\d+)\s/.exec(item.label)?.[1];
         const prefix = id ? `${id} [${item.value}] ` : '', suffix = !id && item.value ? `  ${item.value}` : '';
         const room = Math.max(1, width - visibleWidth(prefix || suffix));
         const label = prefix ? prefix + truncateToWidth(item.label.slice(id!.length).trim(), room, '…') : truncateToWidth(item.label, room, '…') + suffix;
-        entries.push({ label: item.disabledReason ? msg`${label}（不可用：${clean(item.disabledReason)}）` : label, tone: item.disabledReason ? 'muted' : item.tone ?? statusTone(item.value, msg), done: !item.disabledReason, pick: () => { if (item.disabledReason) return undefined; cursor.selectedId = item.id; return item.id; } });
+        entries.push({ label: item.disabledReason ? msg`${label}（不可用：${clean(item.disabledReason)}）` : label, tone: item.disabledReason ? 'muted' : item.tone ?? statusTone(item.value, msg), ...(item.valueTone ? { valueTone: item.valueTone } : {}), done: !item.disabledReason, pick: () => { if (item.disabledReason) return undefined; cursor.selectedId = item.id; return item.id; } });
       }
       if (page > 0) entries.push({ label: msg('上一页'), done: false, pick: () => { page--; cursor.page = page; return undefined; } });
       if (page < pages - 1) entries.push({ label: msg('下一页'), done: false, pick: () => { page++; cursor.page = page; return undefined; } });
       if (options.searchable) entries.push({ label: msg('搜索…'), done: false, pick: async () => { const next = await menuPrompt(ctx, msg('搜索：'), () => ctx.ui.input(msg('搜索：'), query || msg('筛选…'), { signal })); if (next !== undefined && current(options)) { query = next; cursor.query = next; page = 0; cursor.page = 0; } return undefined; } });
-      for (const action of options.actions ?? []) entries.push({ label: clean(action.label) + (action.value ? `  ${clean(action.value)}` : '') + (action.disabledReason ? msg`（不可用：${clean(action.disabledReason)}）` : ''), ...(action.disabledReason ? { tone: 'muted' as const } : action.tone ? { tone: action.tone } : {}), done: !action.disabledReason, pick: () => action.disabledReason ? undefined : action.id });
+      for (const action of options.actions ?? []) entries.push({ label: clean(action.label) + (action.value ? `  ${clean(action.value)}` : '') + (action.disabledReason ? msg`（不可用：${clean(action.disabledReason)}）` : ''), ...(action.disabledReason ? { tone: 'muted' as const } : action.tone ? { tone: action.tone } : {}), ...(action.valueTone ? { valueTone: action.valueTone } : {}), done: !action.disabledReason, pick: () => action.disabledReason ? undefined : action.id });
       entries.push({ label: msg('返回'), done: true, pick: () => undefined });
       if (!filtered.length) entries.unshift({ label: msg('无匹配项'), tone: 'muted', done: false, pick: () => undefined });
       const plain = unique(entries.map(item => item.label));
       const labels = plain.map((label, index) => {
         const entry = entries[index]!, match = /^(#\d+|a\d+) (\[[^\]]*\]) (.*)$/.exec(label);
-        if (match) return styled(ctx, match[1]!, 'text', true) + ' ' + styled(ctx, match[2]!, entry.tone ?? 'text', true) + ' ' + match[3];
-        const split = label.lastIndexOf('  ');
-        if (split >= 0 && entry.tone) return label.slice(0, split) + '  ' + styled(ctx, label.slice(split + 2), entry.tone, entry.tone === 'warning' || entry.tone === 'error');
+        if (match) return styled(ctx, match[1]!, 'text', true) + ' ' + styled(ctx, match[2]!, entry.valueTone ?? entry.tone ?? 'text', entry.valueTone !== 'dim') + ' ' + match[3];
+        const split = label.lastIndexOf('  '), valueTone = entry.valueTone ?? entry.tone;
+        if (split >= 0 && valueTone) return label.slice(0, split) + '  ' + styled(ctx, label.slice(split + 2), valueTone, valueTone === 'warning' || valueTone === 'error');
         return entry.tone === 'warning' || entry.tone === 'error' ? styled(ctx, label, entry.tone, true) : label;
       });
       const heading = [styled(ctx, truncateToWidth(clean(title), width, '…'), 'accent', true), styled(ctx, msg`第 ${page + 1}/${pages} 页 · 共 ${filtered.length} 项`, 'muted'), ...short.map(line => infoLine(ctx, line, msg))].join('\n');

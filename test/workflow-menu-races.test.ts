@@ -61,7 +61,7 @@ test('protected Todo display commands cannot overwrite damaged records', async (
   } finally { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; }
 });
 
-for (const language of ['zh-CN', 'en']) test(`native DAG reader keeps each padded task and its right-aligned status on one body row (${language})`, async () => {
+for (const language of ['zh-CN', 'en']) for (const argument of ['', 'full']) test(`DAG ${argument ? 'shortcut output' : 'native reader'} keeps each padded task and its right-aligned status on one body row (${language})`, async () => {
   const previous = process.env.PI_CODING_AGENT_DIR, oldLocale = process.env.LC_ALL, oldCols = process.stdout.columns, oldRows = process.stdout.rows;
   process.env.PI_CODING_AGENT_DIR = join(tmpdir(), 'fixture-nonexistent-agent-directory'); process.env.LC_ALL = language; process.stdout.columns = 80; process.stdout.rows = 42;
   let h: ReturnType<typeof harness> | undefined;
@@ -69,8 +69,9 @@ for (const language of ['zh-CN', 'en']) test(`native DAG reader keeps each padde
     let state = emptyState(); for (let i = 0; i < 5; i++) state = applyTodo(state, { action: 'create', subject: `构建任务 ${i}` }).state;
     h = harness([{ type: 'custom', customType: STATE_TYPE, data: state }]); h.ctx.mode = 'tui';
     let body: string[] = [];
-    h.ctx.ui.select = async (_title: string, options: string[]) => { body = options.filter(value => value.startsWith('│ ')); return undefined; };
-    const workflow = createWorkflow(h.pi); await workflow.attach('todos', h.pi); await h.emit('session_start'); await h.commands.get('dag').handler('', h.ctx);
+    h.ctx.ui.notify = (message: string) => { body.push(...message.split('\n')); };
+    h.ctx.ui.select = async (_title: string, options: string[]) => { body.push(...options); return undefined; };
+    const workflow = createWorkflow(h.pi); await workflow.attach('todos', h.pi); await h.emit('session_start'); await h.commands.get('dag').handler(argument, h.ctx);
     const taskRows = body.filter(line => /#\d+/.test(line));
     assert.equal(taskRows.length, 5, 'every task is present');
     for (const line of taskRows) assert.match(stripTerminalSequences(line), language === 'zh-CN' ? /\[主会话\].*\[待执行\]$/u : /\[Main session\].*\[Pending\]$/u, 'the right-hand status stays on its task row');
@@ -103,19 +104,20 @@ test('old Todo completion confirmation cannot accept a concurrently changed requ
   assert.equal(settled, 'done', 'the tasks menu returns after native selection completes');
 });
 
-for (const modeChange of [true, false]) test(`stale Plan tool menu preserves ${modeChange ? 'active protection' : 'newer tool choices'}`, async () => {
-  const h = harness(); let state = emptyState(); let step = 0;
-  h.ctx.ui.select = async (_title: string, labels: string[]) => {
-    step++;
-    if (step === 1) return labels.find(label => label.startsWith('额外只读工具'));
-    if (step === 2) {
-      await h.commands.get('plan').handler(modeChange ? 'start' : 'tools other_search', h.ctx);
-      return labels.find(label => label.startsWith('web_search'));
-    }
-    return labels.find(label => label === '返回');
-  };
+for (const active of [true, false]) test(`Plan settings is read-only text and ${active ? 'active Plan keeps tool protection' : 'normal mode allows explicit tool choices'}`, async () => {
+  const h = harness(); let state = { ...emptyState(), ...(active ? { plan: true } : {}) };
+  const notices: string[] = []; h.ctx.ui.notify = (message: string) => notices.push(message);
   registerPlan(h.pi, { state: () => state, protected: () => false, commit: next => { state = next; }, assertCanEnter() {}, onEnter() {}, loadConfig: async () => ({ planTools: [] }) as any });
   await h.emit('session_start');
   await h.commands.get('plan').handler('settings', h.ctx);
-  assert.equal(state.plan, modeChange); assert.deepEqual(state.planTools, modeChange ? [] : ['other_search']);
+  assert.equal(state.plan, active, 'settings neither enters nor leaves Plan');
+  assert.deepEqual(state.planTools, [], 'settings never edits tools');
+  assert.ok(notices.some((message) => message.includes('Plan 设置')), notices.join(' | '));
+  if (active) {
+    await h.commands.get('plan').handler('tools other_search', h.ctx);
+    assert.deepEqual(state.planTools, [], 'Plan refuses tool changes');
+  } else {
+    await h.commands.get('plan').handler('tools other_search', h.ctx);
+    assert.deepEqual(state.planTools, ['other_search']);
+  }
 });

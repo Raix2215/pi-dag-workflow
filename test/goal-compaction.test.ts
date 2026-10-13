@@ -41,12 +41,7 @@ async function create(client: IsolatedClient) {
   await client.prompt(`TEST CALL goal ${JSON.stringify({ action: 'create', title: '预算测试', maxTurns: 2, description: `${'Complete every original requirement. '.repeat(160)}FINAL-REQUIREMENT` })}`);
 }
 async function denyPolicy(client: IsolatedClient) {
-  const offset = client.records.length;
-  const configuring = client.prompt('/goal nopause #1');
-  await client.until(() => client.records.slice(offset).some((record) => record.type === 'extension_ui_request' && record.method === 'select'));
-  const menu = client.records.slice(offset).find((record) => record.type === 'extension_ui_request' && record.method === 'select')!;
-  client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: (menu.options as string[])[1] })}\n`);
-  await configuring;
+  await client.prompt('/goal nopause #1 on');
 }
 async function ended(client: IsolatedClient) {
   await client.until(() => client.records.some((record) => record.method === 'notify' && String(record.message).includes('轮上限')));

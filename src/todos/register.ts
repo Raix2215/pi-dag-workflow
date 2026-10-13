@@ -6,7 +6,7 @@ import type { Preset } from './presets.ts';
 import { choose, readView, withMenuScope, type MenuCursor } from '../ui/menu.ts';
 import { todoSummary, toolDisplay } from '../ui/presentation.ts';
 import { filteredView } from '../ui/filter.ts';
-import { clean, notify, type AgentView } from '../ui/render.ts';
+import { clean, notify, renderDag, renderTasks, type AgentView } from '../ui/render.ts';
 import { workflowNamespace, sessionMutation } from '../shared/tool-info.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
@@ -84,10 +84,19 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
       const title = msg('任务清单');
       const state = hooks.state();
       const list = filteredView(state.tasks, selectedFilter, hooks.jobs?.() ?? []).tasks;
-      const selected = await owned(title, () => choose(ctx, title, list.map((task) => ({ id: String(task.id), label: `#${task.id} ${task.subject}`, value: msg(statusLabel[task.status]), description: task.blockedBy.length ? msg`依赖：#${task.blockedBy.join(', #')}` : '' })), { msg, cursor, searchable: true, isCurrent: current, lines: (item) => { const task = hooks.state().tasks.find((value) => String(value.id) === item.id); return task ? todoSummary(task, msg) : []; }, actions: [{ id: 'filter', label: msg('筛选'), value: selectedFilter }, { id: 'graph', label: msg('查看依赖图') }, { id: 'summary', label: msg('显示摘要'), value: state.visible ? msg('开启') : msg('关闭') }] }));
+      const selected = await owned(title, () => choose(ctx, title, list.map((task) => ({ id: String(task.id), label: `#${task.id} ${task.subject}`, value: msg(statusLabel[task.status]), description: task.blockedBy.length ? msg`依赖：#${task.blockedBy.join(', #')}` : '' })), { msg, cursor, searchable: true, isCurrent: current, lines: (item) => { const task = hooks.state().tasks.find((value) => String(value.id) === item.id); return task ? todoSummary(task, msg) : []; }, actions: [{ id: 'filter', label: msg('筛选'), value: selectedFilter, valueTone: 'dim' }, { id: 'graph', label: msg('查看依赖图') }, { id: 'presets', label: msg('Todo 片段') }, { id: 'summary', label: msg('显示摘要'), value: state.visible ? msg('开启') : msg('关闭'), valueTone: 'dim' }] }));
       if (!current() || selected === undefined) return;
       if (selected === 'summary') { commit({ ...hooks.state(), visible: !hooks.state().visible }, ctx); continue; }
       if (selected === 'graph') { await show(ctx, 'dag', selectedFilter); continue; }
+      if (selected === 'presets') {
+        await hooks.refreshPresets?.(); if (!current()) return;
+        const presets = hooks.presets?.() ?? [], title = msg('Todo 片段');
+        const choice = await owned(title, () => choose(ctx, title, presets.map((preset) => ({ id: preset.name, label: preset.name, description: preset.description ?? '', value: msg`${preset.steps.length} 步`, valueTone: 'dim' })), { msg, isCurrent: current, searchable: true }));
+        if (!current()) return;
+        const preset = presets.find((value) => value.name === choice);
+        if (preset) await owned(title, () => readView(ctx, preset.name, toolDisplay({ version: 2, preset }, '', msg), { msg, isCurrent: current }));
+        continue;
+      }
       if (selected === 'filter') {
         const value = await owned(msg('筛选'), () => choose(ctx, msg('筛选'), TODO_FILTERS.map((id) => ({ id, label: id })), { msg, isCurrent: current }));
         if (value) { selectedFilter = value as TodoFilter; cursor.page = 0; } continue;
@@ -163,14 +172,8 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
         if (action === 'help') { ctx.ui.notify(msg('/todos · add 标题 [--after 1,2] · start/done/pending/failed/cancelled/delete #编号 · edit #编号 标题 · clear [completed/closed/all] · paths/flat · show/hide · view list/dag [full/pending/completed/failed/cancelled] · list [筛选] · presets · apply 名称 [键=值] · reset 名称 [步骤键]；/dag [筛选] 查看完整图'), 'info'); return; }
         if (action === 'presets') {
           await hooks.refreshPresets?.();
-          const epoch = sessionEpoch, cursor: MenuCursor = {};
-          while (epoch === sessionEpoch) {
-            const list = hooks.presets?.() ?? [];
-            const selected = await choose(ctx, msg('任务片段'), list.map((preset) => ({ id: preset.name, label: preset.name, value: msg`${preset.steps.length} 步`, ...(preset.description ? { description: preset.description } : {}) })), { msg, cursor, searchable: true, isCurrent: () => epoch === sessionEpoch });
-            if (selected === undefined || epoch !== sessionEpoch) return;
-            const preset = list.find((value) => value.name === selected); if (!preset) continue;
-            await readView(ctx, preset.name, toolDisplay({ version: 2, preset }, '', msg), { msg, isCurrent: () => epoch === sessionEpoch });
-          }
+          const list = hooks.presets?.() ?? [];
+          notify(ctx, list.length ? toolDisplay({ version: 2, presets: list.map((preset) => ({ name: preset.name, description: preset.description, steps: preset.steps.length })) }, '', msg) : msg('未配置 Todo 片段'), 'info');
           return;
         }
         if (action === 'apply' || action === 'reset') {
@@ -198,10 +201,16 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
           if (!TODO_FILTERS.includes(value as TodoFilter)) throw new Error(msg('筛选只支持 full/pending/completed/failed/cancelled'));
           return value as TodoFilter;
         };
-        if (!trimmed || action === "list") {
+        if (!trimmed) {
+          if (ctx.mode === 'tui') { await tasksMenu(ctx); return; }
+          return await show(ctx, "list", filter());
+        }
+        if (action === "list") {
           if (parts.length > 1) throw new Error(msg('用法：/todos list [筛选]'));
-          if (ctx.mode === 'tui' && !parts[0]) { await tasksMenu(ctx); return; }
-          return await show(ctx, "list", filter(parts[0]));
+          const width = Math.max(16, (process.stdout.columns ?? 80) - 4) - 2;
+          const lines = renderTasks(hooks.state(), width, { maxRows: Infinity, theme: ctx.ui.theme, jobs: hooks.jobs?.() ?? [], msg, filter: filter(parts[0]) });
+          notify(ctx, lines.join('\n') || msg('暂无任务'), 'info');
+          return;
         }
         if (action === "view") {
           if (!["list", "dag"].includes(parts[0] ?? "") || parts.length < 1 || parts.length > 2) throw new Error(msg('用法：/todos view list|dag [筛选]'));
@@ -262,6 +271,9 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
   }, handler: async (args, ctx) => {
     const parts = args.trim() ? args.trim().split(/\s+/) : [];
     if (parts.length > 1 || parts[0] !== undefined && !TODO_FILTERS.includes(parts[0] as TodoFilter)) { notify(ctx, msg('用法：/dag [full/pending/completed/failed/cancelled]'), 'error'); return; }
-    await show(ctx, 'dag', parts[0] as TodoFilter | undefined);
+    if (!parts.length) { await withMenuScope(ctx, () => show(ctx, 'dag')); return; }
+    const width = Math.max(16, (process.stdout.columns ?? 80) - 4) - 2;
+    const lines = renderDag(hooks.state(), width, ctx.ui.theme, undefined, hooks.jobs?.() ?? [], { msg, ...(parts[0] ? { filter: parts[0] as TodoFilter } : {}) });
+    notify(ctx, lines.join('\n') || msg('暂无任务'), 'info');
   } });
 }

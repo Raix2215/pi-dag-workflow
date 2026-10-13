@@ -111,8 +111,8 @@ test('policy editors preserve actual usage and countdown; cancelled/stale dialog
 });
 
 test('candidate and per-model menus return to root, preserve invalid text and allow clearing without enabling', async () => {
-  const h = host(); h.answers.push('修改候选顺序', '添加候选…', 'B', '保存候选顺序', true, '退出菜单'); await h.cmd('models'); assert.equal(h.controller.snapshot().models!.enabled, false); assert.equal(h.controller.snapshot().enabled, false); assert.deepEqual(h.controller.snapshot().models!.candidates, [{ provider: 'test', id: 'B' }]);
-  h.answers.push('修改每模型次数', 'bad', '3', true, '退出菜单'); await h.cmd('models'); assert.ok(h.dialogs.some((dialog) => dialog.prefill === 'bad')); assert.equal(h.controller.snapshot().models!.after, 3);
-  h.answers.push('开启模型替代', true, '退出菜单'); await h.cmd('models'); assert.equal(h.controller.snapshot().models!.enabled, true); assert.equal(h.controller.snapshot().enabled, false);
-  h.answers.push('修改候选顺序', '清空候选', '保存候选顺序', true, '退出菜单'); await h.cmd('models'); assert.deepEqual(h.controller.snapshot().models!.candidates, []); assert.equal(h.controller.snapshot().models!.enabled, false);
+  const h = host(); h.answers.push('替代模型', '修改候选顺序', '添加候选…', 'B', '保存候选顺序', true, '退出菜单'); await h.cmd(''); assert.equal(h.controller.snapshot().models!.enabled, false); assert.equal(h.controller.snapshot().enabled, false); assert.deepEqual(h.controller.snapshot().models!.candidates, [{ provider: 'test', id: 'B' }]);
+  h.answers.push('替代模型', '修改每模型次数', 'bad', '3', true, '退出菜单'); await h.cmd(''); assert.ok(h.dialogs.some((dialog) => dialog.prefill === 'bad')); assert.equal(h.controller.snapshot().models!.after, 3);
+  h.answers.push('替代模型', '开启模型替代', true, '退出菜单'); await h.cmd(''); assert.equal(h.controller.snapshot().models!.enabled, true); assert.equal(h.controller.snapshot().enabled, false);
+  h.answers.push('替代模型', '修改候选顺序', '清空候选', '保存候选顺序', true, '退出菜单'); await h.cmd(''); assert.deepEqual(h.controller.snapshot().models!.candidates, []); assert.equal(h.controller.snapshot().models!.enabled, false);
 });

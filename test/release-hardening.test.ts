@@ -89,12 +89,11 @@ test('actual Pi: saving a profile preserves external file edits and safely displ
   const saved = JSON.parse(await readFile(path, 'utf8'));
   assert.deepEqual(saved.profiles.map((profile: any) => profile.name), ['original', 'external', 'added']);
   const mark = client.records.length;
-  const opening = client.prompt('/agents profiles');
-  await client.until(() => client.records.slice(mark).some((record) => record.method === 'select'));
-  const menu = client.records.slice(mark).find((record) => record.method === 'select')!;
-  assert.doesNotMatch(String(menu.title) + JSON.stringify(menu.options), /\u202e/);
-  assert.ok((menu.options as string[]).some((label) => label.startsWith('external')));
-  client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, cancelled: true })}\n`); await opening;
+  await client.prompt('/agents profiles');
+  const note = client.records.slice(mark).find((record) => record.method === 'notify')!;
+  assert.ok(note, 'profile listing is a readable notification, not a management menu');
+  assert.doesNotMatch(String(note.message), /\u202e/);
+  assert.match(String(note.message), /external/);
 });
 
 test('notifications strip terminal controls while keeping intended lines and stored user content', { timeout: 30000 }, async (t) => {

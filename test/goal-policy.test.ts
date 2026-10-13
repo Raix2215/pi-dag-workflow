@@ -23,7 +23,7 @@ function host(language: 'zh-CN' | 'en' = 'zh-CN') {
   return { controller, ctx, call, command, fire, enable, entries, notices, wakes, activeTools: () => [...activeTools], setActiveTools: (names: string[]) => { activeTools = [...names]; }, select(fn: typeof selection) { selection = fn; }, plan(value: boolean) { workflow = { ...workflow, plan: value }; } };
 }
 
-test('nopause is the only menu command; policy is not kept as an alias', async () => {
+test('nopause is the only policy command; policy is not kept as an alias and needs no menu', async () => {
   const h = host(); await h.call({ action: 'create', title: 'first' });
   let menus = 0;
   h.select(async (_title, options) => { menus++; return options[1]; });
@@ -32,8 +32,12 @@ test('nopause is the only menu command; policy is not kept as an alias', async (
   assert.equal(menus, 0);
   assert.deepEqual(h.controller.snapshot(), before);
   await h.command('nopause #1');
-  assert.equal(menus, 1);
+  assert.equal(menus, 0, 'the shortcut toggles without a GUI');
   assert.equal(h.controller.snapshot().goals[0]!.modelPause, 'deny');
+  await h.command('nopause #1 on');
+  assert.equal(h.controller.snapshot().goals[0]!.modelPause, 'deny', 'explicit on is idempotent');
+  await h.command('nopause #1 off');
+  assert.equal(h.controller.snapshot().goals[0]!.modelPause, 'allow');
   await h.fire('session_shutdown');
 });
 
@@ -54,19 +58,17 @@ test('per-Goal policy survives enable, validates, and never changes run or anoth
 });
 
 for (const language of ['zh-CN', 'en'] as const) {
-  test(`policy menu is passive and model stop attempts are rejected atomically (${language})`, async () => {
+  test(`policy shortcut is passive and model stop attempts are rejected atomically (${language})`, async () => {
     const h = host(language);
     await h.call({ action: 'create', title: 'bounded objective', maxTurns: 6 });
     await h.enable(); h.controller.reserveWake(h.ctx);
     await h.call({ action: 'update', progress: 'verified progress', nextStep: 'saved action' });
     const before = h.controller.snapshot();
-    h.select(async (title, options) => {
-      assert.match(title, language === 'en' ? /interruption while running/ : /运行中模型中断/);
-      if (language === 'en') { assert.doesNotMatch(title, /\p{Script=Han}/u); options.forEach((item) => assert.doesNotMatch(item, /\p{Script=Han}/u)); }
-      assert.equal(h.controller.snapshot().run.paused, false, 'its own menu is not a user-wait pause');
-      return options[1];
-    });
     await h.command('nopause #1');
+    const notice = h.notices[0]!;
+    assert.match(notice, language === 'en' ? /interruption/ : /模型中断/);
+    assert.equal(h.controller.snapshot().run.paused, false, 'the shortcut is not a user-wait pause');
+    if (language === 'en') assert.doesNotMatch(notice, /\p{Script=Han}/u);
     const after = h.controller.snapshot();
     assert.equal(after.goals[0]!.modelPause, 'deny'); assert.deepEqual(after.run, before.run); assert.equal(after.focusId, before.focusId);
     assert.equal(h.wakes.length, 0); assert.equal(h.notices.length, 1);
@@ -88,15 +90,14 @@ for (const language of ['zh-CN', 'en'] as const) {
   });
 }
 
-test('cancelled policy menu keeps state untouched; a real user dialog still pauses even during that menu', async () => {
+test('nopause writes immediately without a menu and never pauses the run', async () => {
   const h = host(); await h.call({ action: 'create', title: 'first' }); await h.enable();
   const before = h.controller.snapshot(); const entries = h.entries.length;
-  h.select(async () => undefined); await h.command('nopause');
-  assert.deepEqual(h.controller.snapshot(), before); assert.equal(h.entries.length, entries);
-  h.select(async (_title, options) => { await h.fire('ui_prompt_start', { kind: 'select', title: 'a different model question' }); return options[1]; });
-  await h.command('nopause');
-  assert.equal(h.controller.snapshot().run.paused, true);
+  h.select(async () => { throw new Error('nopause must not open a GUI'); });
+  await h.command('nopause #1');
   assert.equal(h.controller.snapshot().goals[0]!.modelPause, 'deny');
+  assert.equal(h.entries.length, entries + 1, 'one atomic state commit');
+  assert.deepEqual(h.controller.snapshot().run, before.run, 'the switch never pauses or consumes budget');
   await h.fire('session_shutdown');
 });
 
@@ -112,15 +113,12 @@ test('allow remains the default and can be selected again; manual deletion alway
   await h.fire('session_shutdown');
 });
 
-test('policy is preserved on branch restore, and a stale menu cannot write into the restored branch', async () => {
-  const h = host(); await h.call({ action: 'create', title: 'first' }); await h.enable(); await h.command('nopause');
+test('policy is preserved on branch restore and restore keeps the Goal paused', async () => {
+  const h = host(); await h.call({ action: 'create', title: 'first' }); await h.enable(); await h.command('nopause #1');
   await h.fire('session_tree'); assert.equal(h.controller.snapshot().goals[0]!.modelPause, 'deny');
+  assert.equal(h.controller.snapshot().run.paused, true, 'restore keeps the Goal paused');
   await h.enable();
-  const saved = h.controller.snapshot();
-  h.select(async (_title, options) => { await h.fire('session_tree'); return options[1]; });
-  await h.command('nopause');
-  assert.equal(h.controller.snapshot().goals[0]!.modelPause, saved.goals[0]!.modelPause);
-  assert.equal(h.controller.snapshot().run.paused, true);
+  assert.equal((await h.call({ action: 'disable' })).isError, true, 'the restored deny still blocks model disable');
   await h.fire('session_shutdown');
 });
 
@@ -188,11 +186,7 @@ test('real Pi: selecting deny on an active Goal preserves its budget and blocks 
   const before = (await client.entries() as any[]).findLast((entry) => entry.customType === GOAL_TYPE).data;
   assert.equal(before.run.paused, false); assert.equal(before.run.used, 1);
   const offset = client.records.length;
-  const configured = client.prompt('/goal nopause');
-  await client.until(() => client.records.slice(offset).some((event) => event.method === 'select'));
-  const menu = client.records.slice(offset).find((event) => event.method === 'select')!;
-  client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: (menu.options as string[])[1] })}\n`);
-  await configured;
+  await client.prompt('/goal nopause #1 on');
   const after = (await client.entries() as any[]).findLast((entry) => entry.customType === GOAL_TYPE).data;
   assert.deepEqual(after.run, before.run);
   assert.equal(after.goals[0].modelPause, 'deny');
@@ -212,14 +206,11 @@ for (const language of ['zh-CN', 'en']) {
     t.after(() => client.close());
     await client.prompt('TEST CALL goal {"action":"create","title":"first objective","maxTurns":6}');
     const offset = client.records.length;
-    const configuring = client.prompt('/goal nopause #1');
-    await client.until(() => client.records.slice(offset).some((event) => event.method === 'select'));
-    const menu = client.records.slice(offset).find((event) => event.method === 'select')!;
-    const options = menu.options as string[];
-    assert.equal(options.length, 3, 'two policies and explicit back'); assert.match(String(menu.title), /运行中模型中断|Model interruption while running/); if (language === 'en') assert.doesNotMatch(String(menu.title), /\p{Script=Han}/u);
-    client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: options[1] })}\n`);
-    await configuring;
+    await client.prompt('/goal nopause #1 on');
     assert.equal(client.records.slice(offset).filter((event) => event.type === 'agent_start').length, 0);
+    const notice = client.records.slice(offset).find((event) => event.method === 'notify' && String(event.message).includes(language === 'en' ? 'Block model interruption' : '禁止模型中断'));
+    assert.ok(notice, 'the shortcut reports the saved policy');
+    if (language === 'en') assert.doesNotMatch(String(notice!.message), /\p{Script=Han}/u);
     const saved = (await client.entries() as any[]).findLast((entry) => entry.customType === GOAL_TYPE).data;
     assert.equal(saved.goals[0].modelPause, 'deny'); assert.equal(saved.run.used, 0); assert.equal(saved.run.paused, true);
     const records = await client.prompt('TEST CALL goal {"action":"delete","id":1}');

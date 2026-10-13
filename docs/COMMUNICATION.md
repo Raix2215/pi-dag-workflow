@@ -6,11 +6,15 @@ Reference for child jobs, report delivery, task acceptance, and continuation. Fo
 
 `subagent_spawn` starts one child Pi process. The assignment should include the objective, input paths, scope, and expected verification evidence. A linked `todoId` must be ready.
 
-Omitting `profile`, or selecting `inherit`, captures the parent's model, thinking level, and active supported built-in tools at dispatch time. A named profile overrides its declared fields; call-level `tools` replaces the list. Implicit thinking can adapt down to a supported level. An explicitly unsupported profile level fails.
+For a new job, configuration resolves in order: the parent's model, thinking level, and active supported built-in tools; a named profile's declared fields; then explicit call-level `model`, `thinking`, `tools`, and `skills`. `profile: "inherit"` explicitly resets to the current parent state. Implicit thinking can adapt down to a supported level. An explicitly unsupported level fails.
+
+Explicit `model` takes an exact registered `{ provider, id }`. Discover one with `subagent_inspect({ models: true, query, limit, offset })`; the catalog returns provider, id, name, reasoning, context limits, and input modes, with `limit` defaulting to 20 and capped at 100 and no endpoints or credentials. Model discovery cannot be combined with job, profile, output, or wait fields.
+
+Supported child tools are `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`, and `powershell` when available, up to eight, replacing the inherited list. A registered shell tool does not make the program it runs executable, and tool selection is not an operating-system sandbox. When unsupported inherited tools are filtered out, the spawn result reports them as `ignoredInheritedTools`.
 
 A child works in the same directory, discovers workspace rules, and has independent conversation history. Selected profile instructions and `context: true` guidance arrive as task context. Ordinary task briefs contain the current requirements excerpt, direct prerequisite states, current valid report excerpts, and declared `metadata.artifacts` references. Fragment briefs include position and state from the same fragment instance. Briefs are bounded to 2,000 characters and never use stale reports as current evidence. Ordinary task briefs mark omitted input. Supply all required input in the assignment; references are unverified, and full output remains available through inspection.
 
-A profile may select up to eight local Markdown skill files with `skills`. Paths resolve from the dispatch working directory, `~/`, or an absolute path. Dispatch requires readable, nonempty files no larger than 64 KiB and an already selected `read` tool. Entries arrive as task references; bodies are read on demand. Skill text does not change tools or permissions, activate extensions/MCP, or override later direction.
+`skills` selects up to eight local Markdown files; paths resolve from the dispatch working directory, `~/`, or an absolute path. Omitted `skills` inherits the base, `[]` disables skills, and a list replaces it. Dispatch requires readable, nonempty files no larger than 64 KiB and an already selected `read` tool; `read` is never added implicitly, and skills are not auto-discovered or turned into system prompts. Entries arrive as task references; bodies are read on demand. Skill text does not change tools or permissions, activate extensions/MCP, or override later direction.
 
 The child has `subagent_send` for parent communication. It cannot delegate children, and it does not run the parent's Goal. Its model auto-retry is disabled.
 
@@ -22,11 +26,11 @@ The child has `subagent_send` for parent communication. It cannot delegate child
 | Child success | Finalized retained output and completion report | Automatic report channel |
 | Child failure | Bounded diagnostic and recovery guidance | Automatic report channel; full output is retained |
 | Parent `subagent_spawn` | New job ID, startup status, linked Todo status, and optional continuation origin | Current tool result |
-| Parent `subagent_inspect` | Short job status/activity/questions or explicit profile query | Immediate tool result |
+| Parent `subagent_inspect` | Short job status/activity/questions, or explicit profile/model catalog query | Immediate tool result |
 | Parent `subagent_inspect`, `output: true` | Retained output, questions, usage, observation, and linked Todo status | Snapshot or bounded wait result |
 | Parent `subagent_send` | Delivery confirmation | Current tool result; subsequent child replies use the report channel |
 | Parent `subagent_cancel` | Stop/removal confirmation | Current tool result |
-| `/agents wait` | User-visible report and diagnosis | Readable detail view |
+| `/agents wait` | User-visible report and diagnosis | Readable text notification |
 
 A tool result is available to the following model request. Reports enter at `turn_end` or `agent_before_settle`, after the current tool batch; an idle report wake uses a follow-up message. Reports do not interrupt a tool batch already in progress.
 
@@ -34,7 +38,7 @@ A tool result is available to the following model request. Reports enter at `tur
 
 `/agents` opens a searchable, paginated job directory with attention and history filters. Selected details distinguish process status, report delivery, and linked Todo acceptance. Read reports, answer pending questions, send direction, or stop/remove a job from its action page. Cancellation and removal require confirmation and do not undo files.
 
-`/agents profiles` searches saved profiles and opens their model, tool, skill, and instruction details. The instruction and skill editors save only the confirmed current profile; cancellation and expired input leave it unchanged.
+The root `/agents` menu also opens the profile and model directories. Argument commands such as `/agents profiles`, `/agents list`, and `/agents wait` print readable text instead of opening those views. The instruction and skill editors save only the confirmed current profile; cancellation and expired input leave it unchanged.
 
 Opening a menu or changing summary visibility does not start model requests or stop a job. `/agents show` and `/agents hide` affect only the Agent summary. The Agents feature can run independently; `todoId` bindings require the Todos feature.
 
@@ -81,7 +85,7 @@ All task filters use the latest attempt. A stale latest attempt retires its outc
 
 Child `subagent_send({ message, question: true })` waits for an answer. The parent uses `subagent_send({ requestId, message })` to answer that input request.
 
-Parent direction uses `subagent_send({ recipient, message })`. Normal direction enters at a safe steering boundary. `interrupt: true` clears obsolete queued work, aborts the current local turn, cleans the idle queue, and sends a new direction in the same child context. Confirmation is `accepted`, `queued`, or `answered`; inspect evidence to determine whether work followed the direction.
+Parent direction uses `subagent_send({ recipient, message })`. Normal direction enters at a safe steering boundary. `interrupt: true` clears obsolete queued work, aborts the current local turn, cleans the idle queue, and sends a new direction in the same child context. Adding `tools` requires `recipient` and `interrupt: true` and forbids `requestId`. The child first checks the requested set without changing state, under a bounded 5-second confirmation; only after that preflight passes does it clear queued work, interrupt the current turn and questions, apply and confirm the tools, and deliver the direction. The main session decides this change under user authorization — a child's request is not authorization, and tool selection is not a sandbox. A preflight failure leaves the child, queue, and questions unchanged. If a mutating step fails after a change, the attempt stops and the structured result reports the stage, job status, `interrupted`/`queueCleared`/`questionsCleared`/`toolsApplied` as `true`, `false`, or `null`, `directionDelivery`, last confirmed tools (`currentTools`), and recovery guidance; it never implies that questions or external side effects were rolled back. Confirmation is `accepted`, `queued`, or `answered`; inspect evidence to determine whether work followed the direction.
 
 Changing the task definition, declared artifact references, or fragment identity invalidates earlier acceptance evidence. Interrupting the child starts a new report scope. Old output remains queryable, with `outputStart` separating historical text from the current assignment. Late reports from an old tool batch remain historical until the new direction is consumed.
 
@@ -94,8 +98,8 @@ The default execution deadline is 600 seconds; spawn `timeout` can set up to 86,
 `resumeFrom` creates a new attempt:
 
 - Keep the original Todo binding and saved assignment.
-- Supply the current continuation task; select another known profile when needed.
-- Keep the previous tool scope unless call-level `tools` explicitly overrides it; selected skill entries come from the current chosen profile.
+- Supply the current continuation task.
+- Start from the previous attempt's actual model, thinking, tools, skills, and instructions without rereading its old profile; an explicit `profile` overrides its declared fields, explicit `tools`/`skills` replace those lists, and `profile: "inherit"` resets to the current parent.
 - Reject changed Todo definitions; use a fresh self-contained assignment for the current scope.
 - Supply full instructions when the retained record has no saved original assignment.
 - Retain the old execution record and report history.
@@ -112,7 +116,7 @@ Automatic child-report wakes and Goal continuations share the active Goal's allo
 
 Workflow checkpoints carry bounded Todo/Job summaries. Goal checkpoints retain original requirements and execution policy. Normal changes append at safe boundaries; a current active Goal contract missing after ordinary context transforms is appended through Pi's public final-context event. System messages, prior messages, reports, and memory-owned summaries remain intact. A later owner of that final event can still transform its result.
 
-`/goal autoresearch` selects continuous autonomous research for one Goal without starting it or replacing saved `nolimit`/`nopause` controls. While selected, it supplies unlimited continuation and model-pause denial, and rejects model completion or Goal switching. Stages and Todos remain individually verifiable. User stops, Plan, error limits, and compaction protections still pause work; restore requires explicit enable. Mode or scope changes during pending error recovery can retire the old request and pause the Goal without clearing used turns.
+`/goal autoresearch [#id] [on|off]` toggles continuous autonomous research for one Goal without starting it or replacing its saved `nolimit`/`nopause` controls. While selected, it forces unlimited continuation and model-pause denial; those forced values are separate from the saved ordinary-mode settings and the Goal's actual running state, and they do not change `/retry`. It rejects model completion or Goal switching. Stages and Todos remain individually verifiable. User stops, Plan, error limits, and compaction protections still pause work; restore requires explicit enable. Mode or scope changes during pending error recovery can retire the old request and pause the Goal without clearing used turns.
 
 Short continuation messages refer to the current Goal contract. Ordinary Goals verify every requirement before completion; continuous Goals verify milestones and proceed to another useful step without completing the whole Goal. These messages do not authorize a smaller objective or additional permissions. Only important new evidence or a changed execution decision calls for `goal update`.
 

@@ -20,7 +20,7 @@ npm run test:performance
 
 `check:release` verifies metadata, package contents, and machine-trace hygiene. It rejects personal home paths, private model literals, personal emails, real credential formats, `.env` files, session records, or a tracked `AGENTS.md`. Findings show only the file and rule, never the matched secret.
 
-The default test suite requires no credentials or network model. Its integration tests execute and reload all 32 selections of Todos, Plan, Agents, Goal, and Retry, as well as scripted failures, native and user-enabled retry coexistence, ordered model replacement, late model-selection cancellation, continuous Goal control, read-only status, ordinary prerequisite briefs, and explicit profile skill files. Menu regressions cover paging, search, cancellation, protected reads, and stale task/Plan dialogs. The packed-install test loads all five feature entry points and launches a child using the host's Pi dependencies. To validate another installed host, run `PI_DAG_TEST_CLI="<host dist/bundle/cli.js>" npm test` and record that host version separately.
+The default test suite requires no credentials or network model and runs on Pi 1.0. Its roughly 800 tests execute and reload all 32 selections of Todos, Plan, Agents, Goal, and Retry, as well as scripted failures, native and user-enabled retry coexistence, ordered model replacement, late model-selection cancellation, continuous Goal control, read-only status, ordinary prerequisite briefs, explicit profile skill files, and single-shot child configuration. Menu and command-view regressions cover paging, search, cancellation, protected reads, stale task/Plan dialogs, and bare-root versus argument-command output. The packed-install test loads all five feature entry points and launches a child using the host's Pi dependencies. A Pi 1.2 host was also checked through the explicit override; run `PI_DAG_TEST_CLI="<host dist/bundle/cli.js>" npm test` and record that host version separately.
 
 With a caller-selected registered model, also run the bounded opt-in acceptance scripts:
 
@@ -35,7 +35,7 @@ These exercise Goal startup and verification, two separately budgeted automatic 
 
 Review every result; opt-in scripts never run in default CI. Their generated artifacts must remain outside the release package.
 
-For terminal changes, obtain approval for bounded real TUI tests. Exercise keyboard navigation, search, paging, details, draft save/cancel, resize, and user interruption with a caller-selected model. Record the enabled plugins, theme, thinking level, and known untested cases. An isolated fixture run and a full configured extension environment are separate checks. Use a separate test session, preserve personal configuration and Profile/preset files, and keep private model names, paths, captures, and test records out of Git and the package.
+For terminal changes, obtain approval for bounded real TUI tests. Exercise keyboard navigation, search, paging, details, draft save/cancel, resize, and user interruption with a caller-selected model. Record the enabled plugins, theme, thinking level, and known untested cases. An isolated fixture run, an isolated real TUI session, and a full configured extension environment are separate checks; an isolated real TUI run verifies only that boundary and does not stand in for the configured environment. Use a separate test session, preserve personal configuration and Profile/preset files, and keep private model names, paths, captures, and test records out of Git and the package.
 
 ## 3. Publish with maintainer approval
 

@@ -2,7 +2,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { passiveMessage } from "../shared/passive-message.ts";
 import { takeSkillFiles } from './skills.ts';
-import { CORE_TOOLS } from './profiles.ts';
+import { validateToolNames } from './profiles.ts';
+import { safeDiagnostic } from './diagnostics.ts';
 
 export const CHILD_TOOLS_ENV = 'PI_DAG_AGENT_TOOLS';
 export const CHILD_CONTROL_ENV = 'PI_DAG_AGENT_CONTROL';
@@ -51,15 +52,15 @@ export function takeChildContext(env: NodeJS.ProcessEnv = process.env): string |
 export default function childCommunication(pi: ExtensionAPI): void {
   const selectedTools = take(CHILD_TOOLS_ENV, process.env);
   const controlToken = take(CHILD_CONTROL_ENV, process.env);
-  const supported = new Set<string>([...CORE_TOOLS, 'bash', 'edit', 'write', 'powershell']);
-  const parseTools = (value: unknown): string[] => {
-    if (!Array.isArray(value) || value.length > 8 || value.some((name) => typeof name !== 'string' || !supported.has(name))) throw new Error('Invalid child tools');
-    return [...new Set(value as string[])];
+  let allowedTools = selectedTools === undefined ? undefined : validateToolNames(JSON.parse(selectedTools));
+  const availableTools = (value: unknown) => {
+    const tools = validateToolNames(value);
+    const available = new Set(pi.getAllTools().filter((tool) => tool.exposure !== 'hidden').map((tool) => tool.name));
+    for (const name of tools) if (!available.has(name)) throw new Error(`Child tool is unavailable: ${name}; registered tools: ${[...available].filter((name) => name !== 'subagent_send').join(', ')}`);
+    return tools;
   };
-  let allowedTools = selectedTools === undefined ? undefined : parseTools(JSON.parse(selectedTools));
   const activate = (tools: string[]) => {
-    const available = new Set(pi.getAllTools().map((tool) => tool.name));
-    for (const name of tools) if (!available.has(name)) throw new Error(`Child tool is unavailable: ${name}`);
+    availableTools(tools);
     pi.setActiveTools([...tools, 'subagent_send']);
     const actual = pi.getActiveTools().filter((name) => name !== 'subagent_send');
     if (actual.length !== tools.length || tools.some((name) => !actual.includes(name))) throw new Error('Child tool update did not apply');
@@ -69,15 +70,20 @@ export default function childCommunication(pi: ExtensionAPI): void {
   pi.on('session_start', () => { if (allowedTools !== undefined) activate(allowedTools); });
   pi.on('input', (event, ctx) => {
     if (!event.text.startsWith(CHILD_CONTROL_PREFIX)) return;
+    let request: { nonce: string; action: 'check' | 'apply' } | undefined;
     try {
-      if (event.source !== 'rpc' || !controlToken || !ctx.isIdle()) throw new Error('Invalid child control source');
-      const payload = JSON.parse(event.text.slice(CHILD_CONTROL_PREFIX.length)) as { token?: string; nonce?: string; tools?: unknown };
-      if (payload.token !== controlToken || typeof payload.nonce !== 'string' || !payload.nonce) throw new Error('Invalid child control token');
-      const tools = activate(parseTools(payload.tools));
-      ctx.ui.notify(`${CHILD_CONTROL_REPLY}${JSON.stringify({ nonce: payload.nonce, tools })}`, 'info');
-    } catch {
-      // Pi input-handler exceptions pass through to the model. Consume rejected control records too.
-      ctx.ui.notify('Child tool update rejected', 'error');
+      if (event.source !== 'rpc' || !controlToken) throw new Error('Invalid child control source');
+      const payload = JSON.parse(event.text.slice(CHILD_CONTROL_PREFIX.length)) as { token?: string; nonce?: string; action?: string; tools?: unknown };
+      if (payload.token !== controlToken || typeof payload.nonce !== 'string' || !payload.nonce || !['check', 'apply'].includes(payload.action ?? '')) throw new Error('Invalid child control request');
+      request = { nonce: payload.nonce, action: payload.action as 'check' | 'apply' };
+      const tools = availableTools(payload.tools);
+      if (request.action === 'apply' && !ctx.isIdle()) throw new Error('Tool application requires an idle child');
+      const actual = request.action === 'check' ? tools : activate(tools);
+      ctx.ui.notify(`${CHILD_CONTROL_REPLY}${JSON.stringify({ ...request, ok: true, tools: actual })}`, 'info');
+    } catch (cause) {
+      // Input-handler exceptions pass through to the model. Never echo unauthenticated control data.
+      if (request) ctx.ui.notify(`${CHILD_CONTROL_REPLY}${JSON.stringify({ ...request, ok: false, error: safeDiagnostic(String(cause)) })}`, 'error');
+      else ctx.ui.notify('Child tool update rejected', 'error');
     }
     return { action: 'handled' as const };
   });

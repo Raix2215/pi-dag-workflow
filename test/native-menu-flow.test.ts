@@ -41,10 +41,12 @@ test('native Goal menu withdraws all own preview across nested pages and restore
   assert.equal(client.records.filter(record => record.type === 'agent_start').length, requests + 1, 'only explicit final tool verification ran the scripted provider');
 });
 
-test('native standard settings protect Plan state and restore preview after Escape', async t => {
+test('Plan settings is read-only text and keeps Plan state and preview', async t => {
   const client = await IsolatedClient.start(); t.after(() => client.close());
-  await call(client, 'todo', { action: 'create', subject: 'Preview after native Plan settings' });
-  const choose = driver(client), opening = client.prompt('/plan settings'); const menu = await choose(); await opening;
-  assert.match(String(menu.title), /Plan 设置/); assert.ok(JSON.stringify(latestWidget(client)?.widgetLines).includes('Preview after native Plan settings'));
+  await call(client, 'todo', { action: 'create', subject: 'Preview after Plan settings text' });
+  const records = await client.prompt('/plan settings');
+  assert.ok(records.some(record => record.method === 'notify' && String(record.message).includes('Plan 设置')), 'settings reports as text');
+  assert.equal(records.some(record => record.method === 'select'), false, 'settings opens no dialog');
+  assert.ok(JSON.stringify(latestWidget(client)?.widgetLines).includes('Preview after Plan settings text'));
   assert.equal((await call(client, 'todo', { action: 'status' })).status.mode, 'normal');
 });

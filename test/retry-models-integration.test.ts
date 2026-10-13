@@ -32,8 +32,7 @@ for (const language of ['zh-CN', 'en']) test(`actual Pi: fallback switches the s
 
 test('actual Pi: autoresearch does not override candidate exhaustion or restart the failed chain', { timeout: 30000 }, async (t) => {
   const client = await clientFor(); t.after(() => client.close()); await client.prompt('TEST CALL goal {"action":"create","title":"出错暂停测试","maxTurns":1}');
-  const mark = client.records.length, configuring = client.prompt('/goal autoresearch #1'); await client.until(() => client.records.slice(mark).some((record) => record.method === 'select'));
-  const menu = client.records.slice(mark).find((record) => record.method === 'select')!; client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: (menu.options as string[])[1] })}\n`); await configuring;
+  await client.prompt('/goal autoresearch #1 on');
   await configure(client); await client.prompt('/goal enable #1'); await client.until(() => client.records.some((record) => record.method === 'notify' && String(record.message).includes('候选已用完')));
   const entries = await client.entries() as any[], goal = entries.findLast((entry) => entry.customType === GOAL_TYPE).data;
   assert.equal(goal.goals[0].autoresearch, true); assert.notEqual(goal.goals[0].status, 'completed'); assert.equal(goal.run.paused, true); assert.equal(goal.run.used, 3); assert.equal(retryState(client).attempts, 2); assert.equal(await selected(client), 'reasoned');
@@ -44,8 +43,7 @@ test('actual Pi: changing Goal mode during an error wait cancels recovery and le
   const client = await clientFor(); t.after(() => client.close()); await client.prompt('TEST CALL goal {"action":"create","title":"出错暂停测试","maxTurns":6}'); await configure(client);
   await client.prompt('/goal enable #1'); await client.until(() => retryState(client)?.failure !== undefined);
   const before = (await client.entries() as any[]).findLast((entry) => entry.customType === GOAL_TYPE).data;
-  const mark = client.records.length, configuring = client.prompt('/goal autoresearch #1'); await client.until(() => client.records.slice(mark).some((record) => record.method === 'select'));
-  const menu = client.records.slice(mark).find((record) => record.method === 'select')!; client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: (menu.options as string[])[1] })}\n`); await configuring;
+  await client.prompt('/goal autoresearch #1 on');
   const entries = await client.entries() as any[], after = entries.findLast((entry) => entry.customType === GOAL_TYPE).data;
   assert.equal(after.goals[0].autoresearch, true); assert.equal(after.run.used, before.run.used); assert.equal(after.run.paused, true, 'scope invalidation must not leave a running Goal with a stranded error hold');
   assert.equal(entries.filter((entry) => entry.customType === RETRY_MESSAGE).length, 0); await client.prompt('/retry off');

@@ -45,12 +45,7 @@ test('actual Pi: progress updates do not repeat full Goal rules; definition and 
   await client.prompt('TEST CALL goal {"action":"update","description":"NEW-ORIGINAL-TAIL"}');
   assert.equal((await contracts()).length, 2);
   assert.match((await contracts()).at(-1).content, /NEW-ORIGINAL-TAIL/);
-  const offset = client.records.length;
-  const configured = client.prompt('/goal nopause #1');
-  await client.until(() => client.records.slice(offset).some((record) => record.type === 'extension_ui_request' && record.method === 'select'));
-  const menu = client.records.slice(offset).find((record) => record.type === 'extension_ui_request' && record.method === 'select')!;
-  client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: menu.id, value: (menu.options as string[])[1] })}\n`);
-  await configured;
+  await client.prompt('/goal nopause #1 on');
   assert.equal((await contracts()).length, 2, 'policy command alone does not request a provider turn');
   await client.prompt('inspect current evidence');
   assert.equal((await contracts()).length, 3);

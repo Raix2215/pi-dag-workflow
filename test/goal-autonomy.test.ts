@@ -17,12 +17,7 @@ test('real Pi: configurable nopause bans direct and nested question tools; a use
   const client = await IsolatedClient.start(root, 'autonomy', [probes], ['--dag-workflow-test-child-provider', offline]);
   t.after(() => client.close());
   await client.prompt('TEST CALL goal {"action":"create","title":"空闲续跑测试","maxTurns":6}');
-  const offset = client.records.length;
-  const menu = client.prompt('/goal nopause #1');
-  await client.until(() => client.records.slice(offset).some((record) => record.method === 'select'));
-  const question = client.records.slice(offset).find((record) => record.method === 'select')!;
-  client.child.stdin.write(`${JSON.stringify({ type: 'extension_ui_response', id: question.id, value: (question.options as string[])[1] })}\n`);
-  await menu;
+  await client.prompt('/goal nopause #1 on');
   await client.prompt('/goal enable #1');
   await client.until(() => client.records.filter((record) => record.type === 'agent_settled').length >= 2);
   const list = await client.prompt('/test-question-tools');
