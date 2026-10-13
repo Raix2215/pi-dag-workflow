@@ -62,8 +62,8 @@ test('protected Todo display commands cannot overwrite damaged records', async (
 });
 
 for (const language of ['zh-CN', 'en']) test(`native DAG reader keeps each padded task and its right-aligned status on one body row (${language})`, async () => {
-  const previous = process.env.PI_CODING_AGENT_DIR, oldLanguage = process.env.LANGUAGE, oldCols = process.stdout.columns, oldRows = process.stdout.rows;
-  process.env.PI_CODING_AGENT_DIR = join(tmpdir(), 'fixture-nonexistent-agent-directory'); process.env.LANGUAGE = language; process.stdout.columns = 80; process.stdout.rows = 42;
+  const previous = process.env.PI_CODING_AGENT_DIR, oldLocale = process.env.LC_ALL, oldCols = process.stdout.columns, oldRows = process.stdout.rows;
+  process.env.PI_CODING_AGENT_DIR = join(tmpdir(), 'fixture-nonexistent-agent-directory'); process.env.LC_ALL = language; process.stdout.columns = 80; process.stdout.rows = 42;
   let h: ReturnType<typeof harness> | undefined;
   try {
     let state = emptyState(); for (let i = 0; i < 5; i++) state = applyTodo(state, { action: 'create', subject: `构建任务 ${i}` }).state;
@@ -76,7 +76,7 @@ for (const language of ['zh-CN', 'en']) test(`native DAG reader keeps each padde
     for (const line of taskRows) assert.match(stripTerminalSequences(line), language === 'zh-CN' ? /\[主会话\].*\[待执行\]$/u : /\[Main session\].*\[Pending\]$/u, 'the right-hand status stays on its task row');
   } finally {
     if (h) await h.emit('session_shutdown'); process.stdout.columns = oldCols; process.stdout.rows = oldRows;
-    if (oldLanguage === undefined) delete process.env.LANGUAGE; else process.env.LANGUAGE = oldLanguage;
+    if (oldLocale === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = oldLocale;
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
   }
 });
