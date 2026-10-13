@@ -3,7 +3,7 @@ import type { WorkflowState } from '../todos/state.ts';
 import { planViolation } from './policy.ts';
 import { completeArguments, type CompletionSpec } from '../shared/completion.ts';
 import { chinese, type Translator } from '../shared/i18n.ts';
-import { choose } from '../ui/menu.ts';
+import { choose, withMenuScope } from '../ui/menu.ts';
 import { loadConfig, type WorkflowConfig } from '../shared/config.ts';
 
 interface Hooks { summary?(): boolean; setSummary?(visible: boolean, ctx: ExtensionContext): void; msg?: Translator; state(): WorkflowState; protected(): boolean; commit(next: WorkflowState, ctx: ExtensionContext): void; assertCanEnter(): void; onEnter(ctx: ExtensionContext): void; loadConfig?(): Promise<WorkflowConfig> }
@@ -21,7 +21,7 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
     while (current()) {
       const value = hooks.state();
       const selected = await choose(ctx, msg('Plan 设置'), [
-        { id: 'mode', label: value.plan ? msg('退出只读模式') : msg('进入只读模式'), ...(ctx.isIdle() ? {} : { disabledReason: msg('主会话仍在运行；请先停止或等待，再切换 Plan') }) },
+        { id: 'mode', label: value.plan ? msg('退出只读模式') : msg('进入只读模式'), tone: 'warning', ...(ctx.isIdle() ? {} : { disabledReason: msg('主会话仍在运行；请先停止或等待，再切换 Plan') }) },
         { id: 'tools', label: msg('额外只读工具'), value: String(new Set([...configTools, ...value.planTools]).size) },
         { id: 'summary', label: msg('显示摘要'), value: hooks.summary?.() !== false ? msg('开启') : msg('关闭') },
       ], { msg, isCurrent: current, lines: [msg('Plan 只读：允许阅读、搜索和整理任务定义；禁止写入、Shell和派发执行任务。'), msg('退出 Plan 不会自动恢复 Goal；隐藏摘要不改变只读限制。')] });
@@ -66,7 +66,7 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
   pi.registerCommand("plan", {
     description: msg("切换只读规划；start/off/status/tools，或直接描述规划需求"),
     getArgumentCompletions: (prefix) => completeArguments(prefix, completion),
-    handler: async (args, ctx) => {
+    handler: async (args, ctx) => withMenuScope(ctx, async () => {
       try {
         const trimmed = args.trim();
         if (trimmed === 'help') { ctx.ui.notify(msg('/plan start/off/status · tools 名称1,名称2（本会话追加只读工具，机器级默认见配置文件 planTools）；进入前需主会话空闲且子 Agent 已结束／取消。Plan 期间 Goal 保持暂停，恢复需明确 /goal enable。'), 'info'); return; }
@@ -92,6 +92,6 @@ export function registerPlan(pi: ExtensionAPI, hooks: Hooks): void {
         ctx.ui.notify(off ? msg("已退出 Plan；使用同一份 Todos 继续") : msg("已进入 Plan（只读）；可探索与编辑 Todos，实施／完成／委派待退出后继续"), "info");
         if (!off && trimmed && trimmed !== "start") pi.sendUserMessage(trimmed);
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
-    },
+    }),
   });
 }

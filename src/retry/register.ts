@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from '@e
 import { chinese, type Translator } from '../shared/i18n.ts';
 import { completeArguments } from '../shared/completion.ts';
 import { notify } from '../ui/render.ts';
-import { choose, type MenuCursor } from '../ui/menu.ts';
+import { choose, withMenuScope, type MenuCursor } from '../ui/menu.ts';
 import { retrySummary } from '../ui/presentation.ts';
 import { safeDiagnostic } from '../agents/diagnostics.ts';
 import { defaultRetryModels, modelRefText, parseModelRefs, validateRetryModels, type RetryModels, type RetryModelRef, emptyRetryState, intervalText, parseCount, parseIntervals, parseRetrySettings, RETRY_MESSAGE, RETRY_TYPE, restoreRetryState, retryDelay, retrySpent, validateRetryState, type RetryState } from './state.ts';
@@ -481,7 +481,7 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
   pi.registerCommand('retry', {
     description: msg('出错后重试：when-error 间隔列表 [count 次数]、off、status、models'),
     getArgumentCompletions: (text) => completeArguments(text, { actions: [{ action: 'when-error', description: msg('设置并开启出错后重试') }, { action: 'off', description: msg('关闭并取消计时') }, { action: 'status', description: msg('查看重试状态') }, { action: 'models', description: msg('设置替代模型：models、models 候选列表、models after 次数、models off') }], freeText: ['when-error', 'models'] }),
-    handler: async (args, ctx) => {
+    handler: async (args, ctx) => withMenuScope(ctx, async () => {
       let internal = false;
       try {
         const [action, ...parts] = args.trim().split(/\s+/);
@@ -507,7 +507,7 @@ export function registerRetry(pi: ExtensionAPI, hooks: Hooks) {
         }
         notify(ctx, safeDiagnostic(String(cause)), 'error');
       }
-    },
+    }),
   });
   pi.on('agent_settled', (event, ctx) => { observe(ctx, (event as { aborted?: boolean }).aborted); hooks.onChanged?.(ctx); });
   pi.on('turn_start', (_event, ctx) => {

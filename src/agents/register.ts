@@ -9,7 +9,7 @@ import { CORE_TOOLS, ProfileStore, type Profile } from "./profiles.ts";
 import { contextArtifacts, taskContext } from "./context.ts";
 import { resetClosure } from "../todos/presets.ts";
 import { AgentNotices, type Notice } from "./notices.ts";
-import { choose, readView, type MenuCursor } from '../ui/menu.ts';
+import { choose, readView, withMenuScope, type MenuCursor } from '../ui/menu.ts';
 import { jobSummary, profileSummary, toolDisplay } from '../ui/presentation.ts';
 import { clean, notify } from "../ui/render.ts";
 import type { ClearScope, Todo, TodoParams, WorkflowState } from "../todos/state.ts";
@@ -424,7 +424,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
         { id: 'send', label: msg('发送方向'), ...(!active(job) ? { disabledReason: msg('子 Agent 已停止') } : {}) },
         { id: 'answer', label: msg('回答问题'), ...(job.pendingRequests === 0 ? { disabledReason: msg('当前没有待答复问题') } : {}) },
         { id: 'cancel', label: msg('停止此子 Agent'), ...(!active(job) ? { disabledReason: msg('子 Agent 已停止') } : {}) },
-        { id: 'remove', label: msg('移除记录') },
+        { id: 'remove', label: msg('移除记录'), tone: 'error' },
       ], { msg, isCurrent: current, lines: () => jobSummary(runtime?.exportSummaries().find((value) => value.id === job.id) ?? job, msg) }));
       if (!current() || action === undefined) continue;
       if (action === 'output') { const output = await ready(ctx, false).wait(job.id, { timeout: 0 }); if (current()) await owned(jobTitle, () => readView(ctx, jobTitle, jobSummary({ ...output, ...(todoStatusOf(output.todoId) ? { todoStatus: todoStatusOf(output.todoId)! } : {}) }, msg).join('\n'), { msg, isCurrent: current })); }
@@ -441,7 +441,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       }
     }
   }
-  pi.registerCommand("agents", { description: msg("子 Agent 状态／消息／取消与 Profile；也可直接描述需求"), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => {
+  pi.registerCommand("agents", { description: msg("子 Agent 状态／消息／取消与 Profile；也可直接描述需求"), getArgumentCompletions: (prefix) => completeArguments(prefix, completion), handler: async (args, ctx) => withMenuScope(ctx, async () => {
     try {
       const [action, ...parts] = args.trim().split(/\s+/);
       if (action === 'help') { ctx.ui.notify(msg('/agents list · wait jobId · send jobId 消息 · reply requestId 回答 · cancel/remove jobId · pause/resume · profiles · profile 名称 provider/model [thinking] [工具逗号列表] · unprofile 名称 · reset · Profile 的 instructions 写在配置文件里，作为该子任务的被动指导消息'), 'info'); return; }
@@ -477,7 +477,7 @@ export function registerAgents(pi: ExtensionAPI, hooks: Hooks) {
       if (action === "unprofile") { ready(ctx); if (parts.length !== 1) throw new Error(msg("/agents unprofile 名称")); await profiles!.load(); profiles!.delete(parts[0]!); await profiles!.save(); return; }
       pi.sendUserMessage(msg`请管理当前子 Agent／Profile：${args}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
     } catch (cause) { notify(ctx, safeDiagnostic(String(cause)), "error"); }
-  } });
+  }) });
   return {
     pauseAutomatic() { paused = true; clearDelivery(); },
     resumeAutomatic() { paused = false; failedRound = false; },

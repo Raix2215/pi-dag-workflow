@@ -13,7 +13,7 @@ import { emptyViewPreferences, restoreViewPreferences, VIEW_TYPE } from '../ui/p
 import { LEGACY_WORKFLOW_TYPE as STATE_TYPE } from '../shared/state-types.ts';
 import { passiveMessage } from '../shared/passive-message.ts';
 import { clean, notify, renderDag, renderTasks, renderWidget, widgetHeightBudget } from '../ui/render.ts';
-import { detailView } from '../ui/detail.ts';
+import { bindMenuDisplay, menuDisplayOpen, readView } from '../ui/menu.ts';
 import { noFeatures, type Feature } from './features.ts';
 import { loadConfig, loadLocale, configPaths, type WorkflowConfig } from '../shared/config.ts';
 import { createTranslator } from '../shared/i18n.ts';
@@ -57,7 +57,7 @@ export function createWorkflow(initialApi: ExtensionAPI) {
   const state = (): WorkflowState => ({ ...tasks, tasks: modules.todos && !todoError ? tasks.tasks : noTasks, plan: modules.plan && plan.enabled, planTools: modules.plan ? plan.tools : [] });
   const visible = (feature: Feature) => modules[feature] && (feature === 'todos' ? tasks.visible : preferences.visible[feature] !== false);
   const retryScope = () => { const goal = activeGoal()?.recoveryGoal(); return createHash('sha256').update(JSON.stringify([state().plan, goal ? [goal.id, goal.title, goal.description, goal.status, goal.modelPause, goal.autoresearch] : null])).digest('hex'); };
-  let detailOpen = false, refreshDetail: (() => void) | undefined;
+  let unbindMenu: (() => void) | undefined;
   const userPrompts = new Set<string>();
   let lastPaint: { tasks: WorkflowState['tasks']; key: string; ui: ExtensionContext['ui']; theme: ExtensionContext['ui']['theme'] } | undefined;
   let planNotice = false;
@@ -67,6 +67,7 @@ export function createWorkflow(initialApi: ExtensionAPI) {
 
   function paint(ctx: ExtensionContext) {
     if (!ctx.hasUI || !Object.values(modules).some(Boolean)) return;
+    if (menuDisplayOpen(ctx)) { lastPaint = undefined; ctx.ui.setWidget(WIDGET, undefined); return; }
     const snapshotJobs = visible('agents') ? jobs() : [];
     const projected = { ...state(), tasks: visible('todos') ? state().tasks : noTasks, plan: visible('plan') && state().plan };
     const goalTitle = visible('goal') ? activeGoal()?.title() : undefined;
@@ -74,10 +75,9 @@ export function createWorkflow(initialApi: ExtensionAPI) {
     const retryLine = recovery?.enabled && recovery.phase !== 'armed' ? msg`重试 · ${recovery.phase} · ${recovery.attempts}/${recovery.count ?? msg('不限')}` : undefined;
     const now = Date.now();
     const jobKey = snapshotJobs.map((job) => [job.id, job.todoId, job.status, job.reportDelivery, job.taskReportStale, job.dismissed, job.label, job.activity?.kind, job.activity?.tool, job.activity?.since, job.activity?.since ? Math.floor((now - job.activity.since) / 1000) : undefined]);
-    const key = JSON.stringify([modules, projected.plan, tasks.visible, preferences, tasks.view, tasks.treeStyle, tasks.filter, goalTitle, retryLine, todoError, planError, jobKey, detailOpen]);
+    const key = JSON.stringify([modules, projected.plan, tasks.visible, preferences, tasks.view, tasks.treeStyle, tasks.filter, goalTitle, retryLine, todoError, planError, jobKey]);
     if (lastPaint?.tasks === projected.tasks && lastPaint.key === key && lastPaint.ui === ctx.ui && lastPaint.theme === ctx.ui.theme) return;
     lastPaint = { tasks: projected.tasks, key, ui: ctx.ui, theme: ctx.ui.theme };
-    if (detailOpen) { refreshDetail?.(); return; }
     if (!projected.tasks.some((task) => task.status !== 'deleted') && !projected.plan && !todoError && !planError && !goalTitle && !snapshotJobs.length && !retryLine) { ctx.ui.setWidget(WIDGET, undefined); return; }
     const lines = (width: number, rows = 36) => {
       const error = todoError ?? planError, budget = widgetHeightBudget(rows);
@@ -177,15 +177,14 @@ export function createWorkflow(initialApi: ExtensionAPI) {
   async function show(ctx: ExtensionContext, view: 'list' | 'dag', filter?: TodoFilter) {
     const selection = filter ?? tasks.filter ?? 'full';
     const lines = (width: number) => view === 'dag' ? renderDag(state(), width, ctx.ui.theme, activeGoal()?.title(), jobs(), { msg, filter: selection }) : renderTasks(state(), width, { maxRows: Infinity, theme: ctx.ui.theme, jobs: jobs(), goalTitle: activeGoal()?.title(), msg, filter: selection });
-    if (ctx.mode !== 'tui') { notify(ctx, lines(80).join('\n') || msg('暂无任务')); return; }
-    detailOpen = true; ctx.ui.setWidget(WIDGET, undefined);
-    try { await ctx.ui.custom<void>((tui, theme, _keys, done) => { const panel = detailView(lines, () => tui.terminal.rows, () => tui.requestRender(), done, theme, msg); refreshDetail = () => { panel.invalidate(); tui.requestRender(); }; return { ...panel, render: (width: number) => panel.render(width).map((line) => truncateToWidth(line, width, '…', true)) }; }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '95%', anchor: 'center' } }); }
-    finally { detailOpen = false; refreshDetail = undefined; lastPaint = undefined; paint(ctx); }
+    const own = generation;
+    await readView(ctx, view === 'dag' ? 'DAG' : msg('任务清单'), lines(Math.max(16, (process.stdout.columns ?? 80) - 4) - 2).join('\n') || msg('暂无任务'), { msg, isCurrent: () => own === generation });
   }
   function lifecycle(owner: ExtensionAPI, feature: Feature) {
     owner.on('session_start', async (event, ctx) => {
       if (!started.has(event)) { started.add(event); Object.assign(modules, noFeatures()); owners.clear(); generation++; branchCache = undefined; configs.clear(); warnedEphemeral = false; lastPaint = undefined; tasks = emptyState(); plan = emptyPlanState(); todoError = undefined; planError = undefined; guidance.reset(); preferences = emptyViewPreferences(); }
       modules[feature] = true; owners.set(feature, owner);
+      if (!unbindMenu) unbindMenu = bindMenuDisplay(ctx, () => { lastPaint = undefined; paint(ctx); });
       if (feature === 'todos') { restoreTodo(ctx); await restorePresets(ctx); }
       if (feature === 'plan') restorePlan(ctx);
       try { preferences = restoreViewPreferences(readBranch(ctx)); } catch { preferences = emptyViewPreferences(); }
@@ -198,7 +197,7 @@ export function createWorkflow(initialApi: ExtensionAPI) {
       if (modules.todos) await restorePresets(ctx); paint(ctx);
     });
     owner.on('session_shutdown', (event, ctx) => {
-      if (stopped.has(event)) return; stopped.add(event); generation++; dispose(); owners.clear();
+      if (stopped.has(event)) return; stopped.add(event); generation++; unbindMenu?.(); unbindMenu = undefined; dispose(); owners.clear();
       tasks = emptyState(); plan = emptyPlanState(); preferences = emptyViewPreferences(); todoError = undefined; planError = undefined; guidance.reset(); lastPaint = undefined;
       if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
     });

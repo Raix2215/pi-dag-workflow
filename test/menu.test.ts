@@ -1,256 +1,159 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ExtensionContext, Theme } from '@earendil-works/pi-coding-agent';
-import { visibleWidth, type TUI } from '@earendil-works/pi-tui';
-import { choose, readView, type MenuItem } from '../src/ui/menu.ts';
+import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
+import { choose, readView, bindMenuDisplay, menuDisplayOpen, withMenuScope, type MenuItem } from '../src/ui/menu.ts';
+import { createTranslator } from '../src/shared/i18n.ts';
 
-interface FakeComponent { render(width: number): string[]; handleInput(data: string): void; dispose?(): void }
-
-const theme = {
-  fg: (_color: string, text: string) => text,
-  bold: (text: string) => text,
-  style: (text: string) => text,
-  colors: {},
-  appearance: 'dark',
-} as unknown as Theme;
-
-function makeContext(mode: 'tui' | 'rpc' | 'print' | 'json', rows = 24) {
-  const notices: string[] = [];
-  const terminal = { rows };
-  let component: FakeComponent | undefined;
+const plain = (text: string) => stripTerminalSequences(text);
+function host(mode: 'tui' | 'rpc' | 'print' | 'json' | undefined = 'rpc') {
+  const calls: { title: string; options: string[]; signal?: AbortSignal }[] = [], notices: string[] = [], styles: { text: string; fg: string; bold: boolean }[] = [];
+  if (mode === 'tui') { const stdout = process.stdout as { columns?: number; rows?: number }; stdout.columns = stdout.columns ?? 120; stdout.rows = stdout.rows ?? 40; }
+  let select: (title: string, options: string[], signal?: AbortSignal) => Promise<string | undefined> = async () => undefined;
+  let input: () => Promise<string | undefined> = async () => undefined;
   const ctx = {
-    mode,
-    hasUI: mode !== 'print' && mode !== 'json',
+    mode, hasUI: !['print', 'json'].includes(mode ?? ''), sessionManager: {},
     ui: {
-      notify: (message: string) => { notices.push(message); },
-      select: async () => undefined,
-      input: async () => undefined,
-      editor: async () => undefined,
-      custom: (factory: (tui: TUI, theme: Theme, kb: unknown, done: (result: unknown) => void) => FakeComponent) =>
-        new Promise<unknown>((resolve) => { component = factory({ terminal, requestRender() {} } as unknown as TUI, theme, {}, resolve); }),
+      theme: { style: (text: string, options: { fg: string; bold: boolean }) => { styles.push({ text, ...options }); return `${options.bold ? '\x1b[1m' : '\x1b[22m'}\x1b[32m${text}\x1b[0m`; } },
+      select: (title: string, options: string[], opts?: { signal?: AbortSignal }) => { calls.push({ title, options, ...(opts?.signal ? { signal: opts.signal } : {}) }); return select(title, options, opts?.signal); },
+      input: () => input(), notify: (text: string) => notices.push(text),
+      custom: () => { throw new Error('Custom UI must never be used'); },
     },
   } as unknown as ExtensionContext;
-  return { ctx, notices, component: () => component, resize: (rows: number) => { terminal.rows = rows; } };
+  return { ctx, calls, notices, styles, select: (fn: typeof select) => { select = fn; }, input: (fn: typeof input) => { input = fn; } };
 }
+const items = (n: number): MenuItem[] => Array.from({ length: n }, (_, i) => ({ id: `i${i}`, label: `Item ${i}` }));
 
-function makeRpc(mode: string | undefined, hasUI: boolean) {
-  const notices: string[] = [];
-  const calls: string[][] = [];
-  let impl: (title: string, options: string[]) => Promise<string | undefined> = async () => undefined;
-  const ctx = {
-    mode,
-    hasUI,
-    ui: {
-      notify: (message: string) => { notices.push(message); },
-      select: (title: string, options: string[]) => { calls.push(options); return impl(title, options); },
-      input: async () => undefined,
-      custom: () => { throw new Error('custom must not open outside tui'); },
-    },
-  } as unknown as ExtensionContext;
-  return { ctx, notices, calls, setSelect: (fn: typeof impl) => { impl = fn; } };
-}
-
-const items = (n: number): MenuItem[] => Array.from({ length: n }, (_, index) => ({ id: `a${index}`, label: `Item ${index}` }));
-
-test('choose paginates, mutates the caller cursor draft and returns the selected id', async () => {
-  const fake = makeContext('tui');
-  const cursor = { query: '', selectedId: 'a0', page: 0 };
-  const pending = choose(fake.ctx, 'Pick', items(10), { searchable: true, cursor });
-  const view = fake.component()!;
-  assert.equal(view.render(80).length <= 24, true);
-  view.handleInput('\x1b[6~'); // PageDown
-  assert.ok(view.render(80).some((line) => line.includes('Item 8')));
-  assert.equal(cursor.page, 1);
-  view.handleInput('\r');
-  assert.equal(await pending, 'a8');
-  assert.equal(cursor.selectedId, 'a8');
+test('native paging selects the later item and retains the returned cursor', async () => {
+  const h = host(), cursor: { page?: number; selectedId?: string } = {}; let step = 0;
+  h.select(async (_title, options) => ++step === 1 ? options.find(value => value === '下一页') : options.find(value => value === 'Item 8'));
+  assert.equal(await choose(h.ctx, 'Pick', items(10), { cursor }), 'i8');
+  assert.equal(cursor.page, 1); assert.equal(cursor.selectedId, 'i8'); assert.match(h.calls[1]!.title, /2\/2/);
 });
 
-test('choose filters through the search input and selects a later page item', async () => {
-  const fake = makeContext('tui');
-  const cursor: { query?: string } = {};
-  const pending = choose(fake.ctx, 'Pick', items(10), { searchable: true, cursor });
-  const view = fake.component()!;
-  view.handleInput('9');
-  view.render(80);
-  view.handleInput('\r');
-  assert.equal(await pending, 'a9');
-  assert.equal(cursor.query, '9');
+test('native search filters records beyond the current page and cancelling search preserves the query', async () => {
+  const h = host(), cursor: { query?: string } = {}; let step = 0;
+  h.input(async () => 'Item 19'); h.select(async (_title, options) => ++step === 1 ? options.find(value => value === '搜索…') : options.find(value => value === 'Item 19'));
+  assert.equal(await choose(h.ctx, 'Search', items(20), { searchable: true, cursor }), 'i19'); assert.equal(cursor.query, 'Item 19');
+  step = 0; h.input(async () => undefined); h.select(async (_title, options) => ++step === 1 ? options.find(value => value === '搜索…') : options.find(value => value === 'Item 19'));
+  assert.equal(await choose(h.ctx, 'Search', items(20), { searchable: true, cursor }), 'i19'); assert.equal(cursor.query, 'Item 19');
 });
 
-test('choose refuses a disabled item with a reason and cancels on escape', async () => {
-  const fake = makeContext('tui');
-  const pending = choose(fake.ctx, 'Pick', [
-    { id: 'blocked', label: 'Blocked', disabledReason: 'no access' },
-    { id: 'fine', label: 'Fine' },
-  ]);
-  let settled = false;
-  void pending.then(() => { settled = true; });
-  const view = fake.component()!;
-  view.handleInput('\r');
-  await Promise.resolve();
-  assert.equal(settled, false);
-  assert.ok(fake.notices.some((notice) => notice.includes('no access')));
-  view.handleInput('\x1b');
-  assert.equal(await pending, undefined);
+test('disabled choices stay visible with a reason and cannot execute', async () => {
+  const h = host(); let step = 0;
+  h.select(async (_title, options) => ++step === 1 ? options.find(value => value.includes('no access')) : options.find(value => value === 'Allowed'));
+  assert.equal(await choose(h.ctx, 'Pick', [{ id: 'blocked', label: 'Blocked', disabledReason: 'no access' }, { id: 'allowed', label: 'Allowed' }]), 'allowed'); assert.equal(h.calls.length, 2);
 });
 
-test('choose switches to the fixed action zone with Tab', async () => {
-  const fake = makeContext('tui');
-  const pending = choose(fake.ctx, 'Pick', items(3), { actions: [{ id: 'save', label: 'Save' }] });
-  const view = fake.component()!;
-  view.handleInput('\t');
-  view.handleInput('\r');
-  assert.equal(await pending, 'save');
+test('native fixed actions preserve their current values and return caller ids', async () => {
+  const h = host(); h.select(async (_title, options) => options.find(value => value.startsWith('Save')));
+  assert.equal(await choose(h.ctx, 'Pick', items(3), { actions: [{ id: 'save', label: 'Save', value: '2 entries' }] }), 'save');
+  assert.ok(h.calls[0]!.options.some(value => value.includes('2 entries')));
 });
 
-test('the list shows the item value and a short terminal keeps the selected value and action visible', async () => {
-  const fake = makeContext('tui', 8);
-  const pending = choose(fake.ctx, 'Pick', [
-    { id: 'a', label: 'Alpha', value: 'root-1' },
-    { id: 'b', label: 'Beta', value: 'root-2' },
-  ], {
-    actions: [
-      { id: 'save', label: 'Save the current selection and keep going' },
-      { id: 'clear', label: 'Clear everything now' },
-    ],
-    cursor: { selectedId: 'b' },
-  });
-  const view = fake.component()!;
-  const lines = view.render(80);
-  assert.ok(lines.length <= 4, `rendered ${lines.length} lines on a short terminal`);
-  assert.ok(lines.every((line) => visibleWidth(line) === 80), 'overlay covers the underlying widget across every row');
-  assert.ok(lines.some((line) => line.includes('root-2')), 'selected value is visible');
-  view.handleInput('\t');
-  const actionLines = view.render(80);
-  assert.ok(actionLines.length <= 4);
-  assert.ok(actionLines.some((line) => line.includes('Save')), 'selected long action stays visible');
-  view.handleInput('\r');
-  assert.equal(await pending, 'save');
-
-  const tiny = makeContext('tui', 6);
-  const tinyPending = choose(tiny.ctx, 'Pick', [
-    { id: 'b', label: 'Beta', value: 'root-2' },
-  ], { actions: [{ id: 'save', label: 'Save the current selection and keep going' }], cursor: { selectedId: 'b' } });
-  const tinyView = tiny.component()!;
-  const tinyLines = tinyView.render(80);
-  assert.ok(tinyLines.length <= 2, `rendered ${tinyLines.length} lines on a 6-row terminal`);
-  assert.ok(tinyLines.some((line) => line.includes('root-2')), 'selected value survives on a 6-row terminal');
-  tinyView.handleInput('\t');
-  assert.ok(tinyView.render(80).some((line) => line.includes('Save')), 'selected action survives on a 6-row terminal');
-  tinyView.handleInput('\x1b');
-  await tinyPending;
+test('native TUI preserves identity and semantic state colors, and never uses an overlay', async () => {
+  const h = host('tui'); h.select(async (_title, options) => options.find(value => plain(value).includes('#12')));
+  assert.equal(await choose(h.ctx, 'Goal', [{ id: '12', label: '#12 Long completed objective', value: '已完成' }, { id: '18', label: '#18 Active objective', value: '活动' }, { id: '20', label: '#20 Waiting objective', value: '暂停' }, { id: '21', label: '#21 Failed objective', value: '失败' }]), '12');
+  for (const fg of ['accent', 'muted', 'warning', 'error']) assert.ok(h.styles.some(style => style.fg === fg), fg);
+  assert.ok(h.styles.some(style => style.text === '#12' && style.bold), 'identifier is bold');
+  assert.ok(h.styles.some(style => style.text === '[已完成]' && style.fg === 'muted'), 'history is dimmed');
+  assert.ok(plain(h.calls[0]!.options[0]!).startsWith('#12 [已完成]'), 'status remains before a long title');
 });
 
-test('resize keeps the highlighted record while short pages recompute', async () => {
-  const fake = makeContext('tui', 40), cursor = { selectedId: 'a24', page: 3 };
-  const pending = choose(fake.ctx, 'Pick', items(40), { searchable: true, cursor });
-  const view = fake.component()!; view.render(80);
-  fake.resize(14);
-  assert.ok(view.render(40).some((line) => line.includes('Item 24')), 'resize does not silently change the selected record');
-  view.handleInput('\r'); assert.equal(await pending, 'a24');
+test('a directory never embeds long history, requirements or a preview of an unselected record', async () => {
+  const h = host('tui'); h.select(async () => undefined);
+  await choose(h.ctx, 'Goal', items(20), { searchable: true, lines: () => ['Scope\n' + 'DO NOT INLINE HISTORY '.repeat(200)] });
+  assert.doesNotMatch(h.calls[0]!.title, /DO NOT INLINE HISTORY|Scope/); assert.ok(h.calls[0]!.title.split('\n').length === 2);
 });
 
-test('the detail lines function re-evaluates for the current selection', async () => {
-  const fake = makeContext('tui');
-  const pending = choose(fake.ctx, 'Pick', items(3), {
-    lines: (item) => [`detail for ${item.label}`],
-  });
-  const view = fake.component()!;
-  assert.ok(view.render(80).some((line) => line.includes('detail for Item 0')));
-  view.handleInput('\x1b[B'); // Down
-  assert.ok(view.render(80).some((line) => line.includes('detail for Item 1')));
-  view.handleInput('\x1b');
-  await pending;
+test('a selected action page has at most three short context lines; complete body remains separately viewable', async () => {
+  const h = host(); await choose(h.ctx, 'Goal #1', items(3), { lines: ['Status: paused', 'Allowance: 4/32', 'Next action: verify', 'FULL BODY SHOULD NOT BE INLINE'] });
+  assert.match(h.calls[0]!.title, /Status: paused/); assert.match(h.calls[0]!.title, /4\/32/); assert.doesNotMatch(h.calls[0]!.title, /FULL BODY/);
 });
 
-test('RPC duplicate labels on one page resolve to the right id', async () => {
-  const fake = makeRpc('rpc', true);
-  fake.setSelect(async (_title, options) => options.find((option) => option.startsWith('Same (2)')) ?? options[0]);
-  const cursor: { selectedId?: string } = {};
-  const result = await choose(fake.ctx, 'Pick', [
-    { id: 'a', label: 'Same' },
-    { id: 'b', label: 'Same' },
-    { id: 'c', label: 'Other' },
-  ], { cursor });
-  assert.equal(result, 'b');
-  assert.equal(cursor.selectedId, 'b');
+test('native duplicate labels select the correct stable id', async () => {
+  const h = host(); h.select(async (_title, options) => options.find(value => value === 'Same (2)'));
+  assert.equal(await choose(h.ctx, 'Pick', [{ id: 'a', label: 'Same' }, { id: 'b', label: 'Same' }]), 'b');
 });
 
-test('RPC cross-page navigation selects the same label on the target page', async () => {
-  const fake = makeRpc('rpc', true);
-  let step = 0;
-  fake.setSelect(async (_title, options) => {
-    step += 1;
-    if (step === 1) return options.find((option) => option === '下一页');
-    return options.find((option) => option === 'Same');
-  });
-  const list: MenuItem[] = Array.from({ length: 9 }, (_, index) => ({ id: `a${index}`, label: `Item ${index}` }));
-  list[0] = { id: 'a0', label: 'Same' };
-  list[1] = { id: 'a1', label: 'Same' };
-  list[8] = { id: 'a8', label: 'Same' };
-  assert.equal(await choose(fake.ctx, 'Pick', list), 'a8');
+test('duplicate-label suffixes cannot collide with a literal label', async () => {
+  const h = host(); h.select(async (_title, options) => options[2]);
+  assert.equal(await choose(h.ctx, 'Pick', [{ id: 'a', label: 'Same' }, { id: 'b', label: 'Same' }, { id: 'c', label: 'Same (1)' }]), 'c');
+  assert.equal(new Set(h.calls[0]!.options).size, h.calls[0]!.options.length);
 });
 
-test('expiry during a pending RPC select does not commit the cursor or return an id', async () => {
-  const fake = makeRpc('rpc', true);
-  let current = true;
-  fake.setSelect(() => new Promise(() => {}));
-  const cursor: { selectedId?: string; page?: number } = { selectedId: 'keep' };
-  const pending = choose(fake.ctx, 'Pick', items(10), { cursor, isCurrent: () => current });
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  current = false;
-  // A fake select has no live RPC pipe. Keep a bounded deadline referenced while
-  // the unref'ed expiry poll resolves, and fail if the dialog never closes.
+test('expiry aborts the native dialog and never commits its draft cursor', async () => {
+  const h = host(), cursor = { selectedId: 'keep' }; let current = true;
+  h.select(async () => new Promise(() => {}));
+  const pending = choose(h.ctx, 'Pick', items(10), { cursor, isCurrent: () => current });
+  await new Promise(resolve => setTimeout(resolve, 150)); current = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Expired menu did not close')), 2000); });
+  try { assert.equal(await Promise.race([pending, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Expired native dialog did not close')), 2000); })]), undefined); }
+  finally { clearTimeout(timer); }
+  assert.deepEqual(cursor, { selectedId: 'keep' }); assert.equal(h.calls[0]!.signal?.aborted, true);
+});
+
+test('native text reader pages the entire body and is read-only, with restrained bold labels', async () => {
+  const h = host('tui'), original = Array.from({ length: 40 }, (_, i) => `Scope line ${i}`).join('\n');
+  let step = 0; h.select(async (_title, options) => ++step <= 2 ? options.find(value => value === '下一页') : options.find(value => value === '返回'));
+  await readView(h.ctx, 'Full scope', original);
+  assert.equal(h.calls.length, 3); assert.ok(h.calls[0]!.options.some(value => plain(value).includes('Scope line 0'))); for (let i = 0; i < 40; i++) assert.ok(h.styles.some(style => style.text === `Scope line ${i}`), `full body line ${i} remains accessible`);
+  assert.ok(h.styles.some(style => style.text === 'Scope line 0' && !style.bold), 'ordinary body is not bold');
+  assert.equal(h.calls.some(call => call.options.some(value => value.includes('编辑'))), false, 'reader has no editor or save operation');
+});
+
+test('reader body fits the native list padding without extra single-character wrapped rows', async () => {
+  const h = host('tui'), oldCols = process.stdout.columns, oldRows = process.stdout.rows;
+  process.stdout.columns = 52; process.stdout.rows = 22;
+  h.select(async () => undefined);
   try {
-    assert.equal(await Promise.race([pending, deadline]), undefined);
-    assert.deepEqual(cursor, { selectedId: 'keep' });
-  } finally { clearTimeout(timer); }
+    await readView(h.ctx, 'Reader', '汉字正文'.repeat(50));
+    for (const value of h.calls[0]!.options) assert.ok(visibleWidth(value) <= 48, 'native selector needs two prefix and two outer-padding columns');
+  } finally { process.stdout.columns = oldCols; process.stdout.rows = oldRows; }
 });
 
-test('an unknown mode with hasUI falls back to RPC while print and json stay closed', async () => {
-  const unknown = makeRpc(undefined, true);
-  unknown.setSelect(async (_title, options) => options.find((option) => option.startsWith('Item 1')));
-  assert.equal(await choose(unknown.ctx, 'Pick', items(3)), 'a1');
-
-  const print = makeRpc('print', false);
-  assert.equal(await choose(print.ctx, 'Pick', items(3)), undefined);
-  assert.equal(print.calls.length, 0);
-
-  const json = makeRpc('json', true);
-  assert.equal(await choose(json.ctx, 'Pick', items(3)), undefined);
-  assert.equal(json.calls.length, 0);
+test('native resize preserves the first visible paragraph while re-opening the reader', async () => {
+  const h = host('tui'), oldRows = process.stdout.rows; process.stdout.rows = 42;
+  let step = 0;
+  h.select(async (_title, options, signal) => {
+    step++;
+    if (step <= 2) return options.find(value => value === '下一页');
+    if (step === 3) { process.stdout.rows = 30; return new Promise(resolve => signal!.addEventListener('abort', () => resolve(undefined), { once: true })); }
+    return options.find(value => value === '返回');
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([readView(h.ctx, 'Reader', Array.from({ length: 60 }, (_, i) => `Paragraph ${i}`).join('\n')), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Native resize did not reopen')), 2000); })]);
+    assert.equal(h.calls.length, 4);
+    assert.ok(h.calls[2]!.options.some(value => plain(value).includes('Paragraph 28'))); assert.ok(h.calls[3]!.options.some(value => plain(value).includes('Paragraph 28')));
+  } finally { clearTimeout(timer); process.stdout.rows = oldRows; }
 });
 
-test('readView renders a scrollable TUI screen and resolves on escape', async () => {
-  const fake = makeContext('tui');
-  const pending = readView(fake.ctx, 'Details', 'hello\nworld');
-  const view = fake.component()!;
-  assert.ok(view.render(40).some((line) => line.includes('hello')));
-  assert.ok(view.render(40).every((line) => visibleWidth(line) === 40), 'short detail lines cover the underlying widget');
-  view.handleInput('\x1b');
-  await pending;
+test('the entire nested command hides our summary once and restores it only at the end', async () => {
+  const h = host('tui'), visibility: boolean[] = [];
+  bindMenuDisplay(h.ctx, () => visibility.push(menuDisplayOpen(h.ctx)));
+  await withMenuScope(h.ctx, async () => {
+    h.select(async () => undefined); await choose(h.ctx, 'Directory', items(3));
+    assert.equal(menuDisplayOpen(h.ctx), true); await readView(h.ctx, 'Body', 'ordinary line'); assert.equal(menuDisplayOpen(h.ctx), true);
+  });
+  assert.deepEqual(visibility, [true, false]); assert.equal(menuDisplayOpen(h.ctx), false);
 });
 
-test('non-TUI modes never open a custom screen and leave state untouched', async () => {
-  const print = makeContext('print');
-  const cursor = { query: 'kept', page: 2 };
-  assert.equal(await choose(print.ctx, 'Pick', items(3), { cursor }), undefined);
-  assert.deepEqual(cursor, { query: 'kept', page: 2 });
-  assert.equal(print.component(), undefined);
-  await readView(print.ctx, 'Details', 'line one\nline two');
-  assert.ok(print.notices.some((notice) => notice.includes('line one')));
-
-  const json = makeContext('json');
-  assert.equal(await choose(json.ctx, 'Pick', items(3)), undefined);
+test('old scope completion cannot restore widgets after a replacement session binding', async () => {
+  const h = host(), old: boolean[] = [], fresh: boolean[] = [];
+  bindMenuDisplay(h.ctx, () => old.push(menuDisplayOpen(h.ctx)));
+  let finish: () => void = () => {}; const pending = withMenuScope(h.ctx, () => new Promise<void>(resolve => { finish = resolve; }));
+  bindMenuDisplay(h.ctx, () => fresh.push(menuDisplayOpen(h.ctx))); finish(); await pending;
+  assert.deepEqual(old, [true]); assert.deepEqual(fresh, []);
 });
 
-test('an already aborted signal resolves readView without touching the UI', async () => {
-  const fake = makeContext('print');
-  const controller = new AbortController();
-  controller.abort();
-  await readView(fake.ctx, 'Details', 'text', { signal: controller.signal });
-  assert.equal(fake.notices.length, 0);
+test('RPC/unknown clients use plain native dialogs and print/json never open UI', async () => {
+  for (const mode of ['rpc', undefined] as const) { const h = host(mode); h.select(async (_title, options) => options[0]); assert.equal(await choose(h.ctx, 'Pick', items(3)), 'i0'); assert.doesNotMatch(h.calls[0]!.title + h.calls[0]!.options.join(''), /\x1b/); }
+  for (const mode of ['print', 'json'] as const) { const h = host(mode); assert.equal(await choose(h.ctx, 'Pick', items(3)), undefined); await readView(h.ctx, 'Body', 'readable'); assert.equal(h.calls.length, 0); assert.deepEqual(h.notices, ['readable']); }
+  const h = host(); const controller = new AbortController(); controller.abort(); await readView(h.ctx, 'Body', 'text', { signal: controller.signal }); assert.equal(h.calls.length, 0);
+});
+
+test('localized native options remain plain for RPC and semantic colors work in both languages', async () => {
+  const h = host('tui'), msg = createTranslator('en'); await choose(h.ctx, 'Goals', [{ id: '1', label: '#1 Scope', value: msg('失败') }], { msg });
+  assert.ok(h.styles.some(style => style.fg === 'error')); assert.ok(h.calls[0]!.options.some(value => plain(value) === 'Back'));
 });

@@ -3,7 +3,7 @@ import { Text, truncateToWidth } from '@earendil-works/pi-tui';
 import { CHECKPOINT_RULE } from './checkpoints.ts';
 import { TODO_FILTERS, statusLabel, TodoParamsSchema, type ClearScope, type TodoFilter, type TodoParams, type TodoResult, type WorkflowState } from './state.ts';
 import type { Preset } from './presets.ts';
-import { choose, readView, type MenuCursor } from '../ui/menu.ts';
+import { choose, readView, withMenuScope, type MenuCursor } from '../ui/menu.ts';
 import { todoSummary, toolDisplay } from '../ui/presentation.ts';
 import { filteredView } from '../ui/filter.ts';
 import { clean, notify, type AgentView } from '../ui/render.ts';
@@ -156,7 +156,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
   pi.registerCommand("todos", {
     description: msg('当前 Todos：查看、编辑与视图切换；也可直接描述需求'),
     getArgumentCompletions: (prefix) => completeArguments(prefix, completion),
-    handler: async (args, ctx) => {
+    handler: async (args, ctx) => withMenuScope(ctx, async () => {
       try {
         const trimmed = args.trim();
         const [action, ...parts] = trimmed.split(/\s+/);
@@ -171,6 +171,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
             const preset = list.find((value) => value.name === selected); if (!preset) continue;
             await readView(ctx, preset.name, toolDisplay({ version: 2, preset }, '', msg), { msg, isCurrent: () => epoch === sessionEpoch });
           }
+          return;
         }
         if (action === 'apply' || action === 'reset') {
           await hooks.refreshPresets?.();
@@ -251,7 +252,7 @@ export function registerTodos(pi: ExtensionAPI, hooks: Hooks): void {
         if (params) { notify(ctx, mutate(params, ctx, 'command').text, "info"); return; }
         pi.sendUserMessage(msg`请管理当前 Todos：${trimmed}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
       } catch (error) { notify(ctx, error instanceof Error ? error.message : String(error), "error"); }
-    },
+    }),
   });
   pi.registerCommand("dag", { description: msg('查看当前 Todos 的依赖图'), getArgumentCompletions: (prefix) => {
     const value = prefix.trim();

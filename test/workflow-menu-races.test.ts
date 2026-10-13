@@ -6,11 +6,12 @@ import { createWorkflow } from '../src/workflow/index.ts';
 import { restorePlanState } from '../src/plan/state.ts';
 import { registerTodos } from '../src/todos/register.ts';
 import { registerPlan } from '../src/plan/register.ts';
+import { stripTerminalSequences } from '@earendil-works/pi-tui';
 import { emptyState, applyTodo, STATE_TYPE } from '../src/todos/state.ts';
 
-const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text, colors: {}, appearance: 'dark' };
+const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text, style: (text: string) => text, colors: {}, appearance: 'dark' };
 function harness(branch: any[] = []) {
-  const tools = new Map(), commands = new Map(), events = new Map<string, Function[]>(), panels: any[] = [];
+  const tools = new Map(), commands = new Map(), events = new Map<string, Function[]>();
   const pi: any = new Proxy({
     on(name: string, fn: Function) { events.set(name, [...events.get(name) ?? [], fn]); },
     registerTool(tool: any) { tools.set(tool.name, tool); },
@@ -22,11 +23,11 @@ function harness(branch: any[] = []) {
     mode: 'rpc', cwd: tmpdir(), hasUI: true, isIdle: () => true,
     sessionManager: { getBranch: () => branch, getSessionFile: () => undefined },
     ui: { theme, setWidget() {}, notify() {}, select: async () => undefined,
-      custom(factory: Function) { return new Promise(resolve => panels.push(factory({ terminal: { rows: 36 }, requestRender() {} }, theme, {}, resolve))); },
+      custom() { throw new Error('Menus must use native Pi dialogs'); },
     },
   };
   const emit = async (name: string) => { const event = {}; for (const fn of events.get(name) ?? []) await fn(event, ctx); };
-  return { pi, ctx, tools, commands, branch, panels, emit };
+  return { pi, ctx, tools, commands, branch, emit };
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -60,21 +61,45 @@ test('protected Todo display commands cannot overwrite damaged records', async (
   } finally { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; }
 });
 
+test('native DAG reader keeps each padded task and its right-aligned status on one body row', async () => {
+  const previous = process.env.PI_CODING_AGENT_DIR, oldCols = process.stdout.columns, oldRows = process.stdout.rows;
+  process.env.PI_CODING_AGENT_DIR = join(tmpdir(), 'fixture-nonexistent-agent-directory'); process.stdout.columns = 80; process.stdout.rows = 42;
+  let h: ReturnType<typeof harness> | undefined;
+  try {
+    let state = emptyState(); for (let i = 0; i < 5; i++) state = applyTodo(state, { action: 'create', subject: `构建任务 ${i}` }).state;
+    h = harness([{ type: 'custom', customType: STATE_TYPE, data: state }]); h.ctx.mode = 'tui';
+    let body: string[] = [];
+    h.ctx.ui.select = async (_title: string, options: string[]) => { body = options.filter(value => value.startsWith('│ ')); return '返回'; };
+    const workflow = createWorkflow(h.pi); await workflow.attach('todos', h.pi); await h.emit('session_start'); await h.commands.get('dag').handler('', h.ctx);
+    const taskRows = body.filter(line => /#\d+/.test(line));
+    assert.equal(taskRows.length, 5, 'every task is present');
+    for (const line of taskRows) assert.match(stripTerminalSequences(line), /\[主会话\].*\[待执行\]$/u, 'the right-hand status stays on its task row');
+  } finally {
+    if (h) await h.emit('session_shutdown'); process.stdout.columns = oldCols; process.stdout.rows = oldRows;
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+  }
+});
+
 test('old Todo completion confirmation cannot accept a concurrently changed requirement', async () => {
   const h = harness(); h.ctx.mode = 'tui';
   let state = applyTodo(emptyState(), { action: 'create', subject: 'old verified requirement', description: 'old scope' }).state;
   let confirmResolve: (value: boolean) => void = () => {}; let confirmText = '';
   h.ctx.ui.confirm = (_title: string, text: string) => { confirmText = text; return new Promise<boolean>(resolve => { confirmResolve = resolve; }); };
+  const steps = ['old verified requirement', '核验后完成任务', '返回']; let step = 0;
+  h.ctx.ui.select = async (_title: string, options: string[]) => { const value = options.find(option => option.includes(steps[Math.min(step, steps.length - 1)]!)); step++; return value; };
   const mutate = (params: any) => { const result = applyTodo(state, params); state = result.state; return result; };
   registerTodos(h.pi, { state: () => state, protected: () => false, mutate, commit: next => { state = next; }, reset() {}, async show() {} });
-  const running = h.commands.get('todos').handler('', h.ctx); await tick();
-  h.panels[0].render(80); h.panels[0].handleInput('\r'); await tick();
-  h.panels[1].render(80); for (let i = 0; i < 3; i++) h.panels[1].handleInput('\x1b[B'); h.panels[1].handleInput('\r'); await tick();
+  const running = h.commands.get('todos').handler('', h.ctx);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bounded = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), 2000); });
+  while (!confirmText) { if (await Promise.race([tick().then(() => false as const), bounded]) === 'timeout') throw new Error(`Menu did not reach confirmation; step=${step}`); }
+  h.ctx.ui.select = async () => '返回';
   assert.equal(confirmText, 'old verified requirement');
   mutate({ action: 'update', id: 1, subject: 'new unverified requirement', description: 'new scope' });
   confirmResolve(true); await tick();
   assert.equal(state.tasks[0]!.subject, 'new unverified requirement'); assert.equal(state.tasks[0]!.status, 'pending');
-  h.panels.at(-1).handleInput('\x1b'); await running;
+  const settled = await Promise.race([running.then(() => 'done' as const), bounded]); clearTimeout(timer);
+  assert.equal(settled, 'done', 'the tasks menu returns after native selection completes');
 });
 
 for (const modeChange of [true, false]) test(`stale Plan tool menu preserves ${modeChange ? 'active protection' : 'newer tool choices'}`, async () => {
@@ -86,9 +111,10 @@ for (const modeChange of [true, false]) test(`stale Plan tool menu preserves ${m
       await h.commands.get('plan').handler(modeChange ? 'start' : 'tools other_search', h.ctx);
       return labels.find(label => label.startsWith('web_search'));
     }
-    return undefined;
+    return labels.find(label => label === '返回');
   };
   registerPlan(h.pi, { state: () => state, protected: () => false, commit: next => { state = next; }, assertCanEnter() {}, onEnter() {}, loadConfig: async () => ({ planTools: [] }) as any });
-  await h.emit('session_start'); await h.commands.get('plan').handler('settings', h.ctx);
+  await h.emit('session_start');
+  await h.commands.get('plan').handler('settings', h.ctx);
   assert.equal(state.plan, modeChange); assert.deepEqual(state.planTools, modeChange ? [] : ['other_search']);
 });

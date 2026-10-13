@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- Use Pi's native bordered dialogs for menus and read-only paginated details. Keep selection pages short and temporarily hide this package's summaries throughout a menu flow.
+- Highlight important states, warnings, and destructive actions with semantic theme colors and restrained bold. Preserve full body text and reading position when resizing.
+- Keep native option labels unambiguous, including duplicate-name suffixes; preserve cancellation, stale-input guards, and menu-owned Goal behavior.
+
 ## [0.5.0] - 2026-10-12
 
 ### Added

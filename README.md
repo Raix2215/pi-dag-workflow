@@ -22,12 +22,14 @@ Use one extension for each shared name, such as `todo`, `/plan`, `/goal`, `/retr
 
 ## Menus
 
-`/todos`, `/goal`, `/agents`, and `/retry` open menus with readable state summaries. Task, Goal, job, profile, fragment, and model directories support paging and search. Pages show up to eight entries and shrink on short terminals.
+`/todos`, `/goal`, `/agents`, and `/retry` use Pi's native bordered menus. Directories show short status and up to eight entries, with smaller pages on short terminals. Complete requirements, findings, and reports open in a separate read-only paginated view.
 
 - ↑/↓ selects; Enter opens or confirms the selected item.
-- PgUp/PgDn changes pages; type in the search field to filter.
-- Tab moves between the list and fixed actions; Ctrl+↑/↓ scrolls the selected preview.
-- Esc returns one level; Esc at the root closes the menu. Full text views also support Home/End.
+- Select **Previous page**, **Next page**, or **Search…** to navigate a directory.
+- Esc returns one level; Esc at the root closes the menu. Cancelled search leaves the current filter unchanged.
+- While a menu or editor is open, this package's summaries are hidden. Leaving the complete menu flow restores them without changing saved visibility.
+
+Identifiers, important states, and warnings use restrained bold and semantic theme colors. Failures and destructive actions stand out; completed history is muted. Body text remains readable without whole paragraphs being bold.
 
 Settings do not start work. Drafts change runtime settings only after saving; cancellation leaves them unchanged. `/plan` directly toggles read-only mode; `/plan settings` opens its menu without changing mode. Each feature has its own summary visibility, controlled in its menu or with `show`/`hide`.
 
