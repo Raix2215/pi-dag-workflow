@@ -448,11 +448,19 @@ export const archivedManifestPath = (id: string) => join(teamDir(id), 'team.arch
  * `readTeam`/`listTeams` only accept `team.json`, so the team is no longer active, and its `t-` directory
  * still keeps `createTeam` from reusing the old id.
  */
-export async function dissolveTeam(id: string): Promise<boolean> {
+export async function dissolveTeam(id: string, options: { onlyIfEmpty?: boolean } = {}): Promise<boolean> {
   try {
-    return await withLock(manifestLock(id), async () => {
+    // Serialize with joinTeam: no member can arrive between the empty check and archival.
+    return await withLock(nameLock(id), () => withLock(manifestLock(id), async () => {
       const team = await readTeam(id);
       if (!team) return false;
+      if (options.onlyIfEmpty) {
+        const files = await readdir(membersDir(id)).catch((cause: NodeJS.ErrnoException) => {
+          if (cause.code === 'ENOENT') return [];
+          throw cause;
+        });
+        if (files.some(file => file.endsWith('.json'))) return false;
+      }
       const target = archivedManifestPath(id);
       // A second dissolution (a restored copy) must not overwrite the first carrier.
       let path = target;
@@ -461,7 +469,7 @@ export async function dissolveTeam(id: string): Promise<boolean> {
       }
       await rename(manifestPath(id), path);
       return true;
-    });
+    }));
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === 'ENOENT' && !await readTeam(id)) return false;
     throw cause;

@@ -8,7 +8,7 @@ import { dirname as dirnameP, join } from 'node:path';
 import { join as joinPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chinese } from '../src/shared/i18n.ts';
-import { bindMemberRuntime, claimOwnership, createTeam, joinTeam, listTeams, noteMemberEvent, readMembers, renameMember, readTeam, setMemberRuntime, teamsRoot } from '../src/team/io/registry.ts';
+import { bindMemberRuntime, claimOwnership, createTeam, dissolveTeam, joinTeam, listTeams, noteMemberEvent, readMembers, renameMember, readTeam, setMemberRuntime, teamsRoot } from '../src/team/io/registry.ts';
 import { cleanupRuntimeFiles, runtimePairFor, writeRuntimePid } from '../src/team/io/runtime.ts';
 import { memberState } from '../src/team/domain/teams.ts';
 import { sendToMember } from '../src/team/io/inbox.ts';
@@ -183,6 +183,7 @@ test('a session outside the team sees a read-only board with join actions', asyn
   await panels.focus('Alpha .'); await panels.press('l');
   await focusRow('加入当前会话');
   assert.match(focused(panels), /加入当前会话/, 'the team row owns the only current-session join entry');
+  await assert.rejects(panels.focus('团队管理'), /No selectable panel row/, 'non-empty teams still require membership to dissolve');
   await closePanel(panels, opening);
 });
 
@@ -228,6 +229,105 @@ test('dissolve takes two Enters, archives the team, keeps its data and clears st
   await stale.fire('session_start');
   assert.equal(stale.appends.at(-1)!.data, undefined, 'the pointer is cleared');
   assert.match(stale.notices.at(-1)!.message, /原团队 t-gone 已解散/);
+});
+
+for (const elsewhere of [false, true]) test(`an empty team can be dissolved without joining it (joined elsewhere: ${elsewhere})`, { timeout: 6000 }, async t => {
+  await agentDir(t);
+  const alpha = await createTeam({ name: 'Alpha', workspaceRoot: workspace });
+  const beta = await createTeam({ name: 'Beta', workspaceRoot: workspace });
+  const h = await panelHost(t, workspace), panel = menuPanel();
+  const registration = registerTeam(h.pi, { msg: chinese, panel, pid: () => 111 });
+  if (elsewhere) {
+    await joinTeam(beta.id, { sessionId: 's1', sessionName: 'Lead', pid: 111, now: 1_000 });
+    h.pi.appendEntry('pi-dag-workflow.team-pointer', { teamId: beta.id, memberName: 'Lead' });
+  }
+  const before = JSON.stringify(await readMembers(beta.id)), pointer = registration.pointer(h.ctx), appends = h.appends.length;
+  let current: string | undefined = alpha.id, joins = 0, leaves = 0;
+  const panels = recordPanels(h.ctx);
+  const { teamMenu } = await import('../src/team/commands/menu.ts');
+  const opening = teamMenu(h.ctx, { ...launchHooks(h, panel, registration, () => current, id => { current = id; }), join: async (ctx: any, name: string) => { joins++; return registration.join(ctx, name); }, leave: async (ctx: any, options?: { authorized?: boolean }) => { leaves++; await registration.leave(ctx, options); } });
+  try {
+    await panels.wait(() => panels.live() === 1);
+    await panels.focus('Alpha .'); await panels.press('l');
+    await teamFocus(panels, '解散团队');
+    await panels.press('\r');
+    assert.ok(await readTeam(alpha.id), 'the first Enter only arms confirmation');
+    await panels.press('\x1b');
+    assert.ok(await readTeam(alpha.id), 'Escape cancels without archiving');
+    await panels.press('\r'); await panels.press('\r');
+    await panels.wait(() => h.notices.some(notice => /Alpha 已解散/.test(notice.message)));
+    assert.equal(await readTeam(alpha.id), undefined);
+    assert.equal(JSON.parse(await readFile(join(teamsRoot(), alpha.id, 'team.archived.json'), 'utf8')).name, 'Alpha');
+    assert.deepEqual(await readMembers(alpha.id), [], 'no temporary member is created to authorize deletion');
+    assert.equal(joins, 0); assert.equal(leaves, 0, 'deleting another team must not call leave on this session');
+    assert.deepEqual(registration.pointer(h.ctx), pointer); assert.equal(h.appends.length, appends);
+    assert.equal(JSON.stringify(await readMembers(beta.id)), before); assert.ok(await readTeam(beta.id));
+  } finally { await closePanel(panels, opening); }
+});
+
+test('an empty-team confirmation cannot archive members that join before confirmation', { timeout: 6000 }, async t => {
+  await agentDir(t);
+  const alpha = await createTeam({ name: 'Alpha', workspaceRoot: workspace });
+  const h = await panelHost(t, workspace), panel = menuPanel(), registration = registerTeam(h.pi, { msg: chinese, panel });
+  let current: string | undefined = alpha.id;
+  const panels = recordPanels(h.ctx);
+  const { teamMenu } = await import('../src/team/commands/menu.ts');
+  const opening = teamMenu(h.ctx, launchHooks(h, panel, registration, () => current, id => { current = id; }));
+  try {
+    await panels.wait(() => panels.live() === 1);
+    await panels.focus('Alpha .'); await panels.press('l'); await teamFocus(panels, '解散团队');
+    await panels.press('\r');
+    await joinTeam(alpha.id, { sessionId: 'new-peer', sessionName: 'Peer', pid: 222, now: 1_000 });
+    await panels.press('\r');
+    await panels.wait(() => h.notices.some(notice => notice.level === 'error'));
+    assert.match(h.notices.find(notice => notice.level === 'error')!.message, /加入团队/, 'the refusal tells this viewer how to gain membership rather than claiming success');
+    assert.ok(await readTeam(alpha.id), 'new members invalidate the empty-only action');
+    assert.deepEqual((await readMembers(alpha.id)).map(member => member.sessionId), ['new-peer']);
+    assert.ok(!h.notices.some(notice => /已解散/.test(notice.message)), 'refusal is never reported as successful deletion');
+    assert.equal(registration.pointer(h.ctx), undefined);
+  } finally { await closePanel(panels, opening); }
+});
+
+test('empty-only dissolution serializes concurrent joins and retains unreadable member records', { timeout: 6000 }, async t => {
+  await agentDir(t);
+  const alpha = await createTeam({ name: 'Alpha', workspaceRoot: workspace });
+  const folder = join(teamsRoot(), alpha.id), manifest = join(folder, 'team.json');
+  await writeFile(join(folder, 'members', 'unreadable.json'), '{invalid');
+  assert.equal(await dissolveTeam(alpha.id, { onlyIfEmpty: true }), false, 'invalid member JSON is not proof of an empty team');
+  assert.ok(await readTeam(alpha.id));
+  await rm(join(folder, 'members', 'unreadable.json'));
+  const missing = await createTeam({ name: 'Missing members directory', workspaceRoot: workspace });
+  await rm(join(teamsRoot(), missing.id, 'members'), { recursive: true });
+  assert.equal(await dissolveTeam(missing.id, { onlyIfEmpty: true }), true, 'a missing members directory proves no member files exist');
+  let entered!: () => void, release!: () => void, attempted!: (result: string) => void, joiningStarted = false;
+  const archiveEntered = new Promise<void>(resolve => { entered = resolve; });
+  const released = new Promise<void>(resolve => { release = resolve; });
+  const joinAttempt = new Promise<string>(resolve => { attempted = resolve; });
+  const rename = fsPromises.rename, open = fsPromises.open;
+  t.mock.method(fsPromises, 'rename', async (...[from, to]: Parameters<typeof fsPromises.rename>) => {
+    if (String(from) === manifest) { entered(); await released; }
+    return rename(from, to);
+  });
+  t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof fsPromises.open>) => {
+    const joining = joiningStarted && String(args[0]) === join(folder, 'names.lock');
+    try { const handle = await open(...args); if (joining) attempted('acquired'); return handle; }
+    catch (cause) { if (joining) attempted((cause as NodeJS.ErrnoException).code ?? 'unknown'); throw cause; }
+  });
+  syncBuiltinESMExports();
+  t.after(() => { release(); t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const archiving = dissolveTeam(alpha.id, { onlyIfEmpty: true });
+  let joining: ReturnType<typeof joinTeam> | undefined;
+  try {
+    await archiveEntered;
+    joiningStarted = true;
+    joining = joinTeam(alpha.id, { sessionId: 'late-peer', sessionName: 'Peer', pid: 222, now: 1_000 });
+    assert.equal(await joinAttempt, 'EEXIST', 'the real join cannot acquire the name lock while archival is in progress');
+    release();
+    assert.equal(await archiving, true);
+    assert.equal(await joining, undefined, 'a queued join rechecks the active manifest and creates no orphan member');
+    assert.deepEqual(await readMembers(alpha.id), []);
+    assert.equal(await readTeam(alpha.id), undefined);
+  } finally { release(); await archiving; await joining; }
 });
 
 const launchHooks = (h: any, panel: any, registration: any, current: () => string | undefined, set: (id: string | undefined) => void) => ({

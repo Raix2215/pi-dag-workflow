@@ -144,6 +144,7 @@ export async function teamMenu(ctx: ExtensionContext, hooks: TeamMenuHooks): Pro
       if (member.holder.pid !== hooks.pid()) throw new Error(msg('已被接管：本进程已不是该成员的持有者；先重新加入或接管'));
       return member;
     };
+    const emptyTeam = (id: string) => id === currentId && members.length === 0;
     // Built on every redraw so a pid verdict, a rename or a dissolve is not frozen at panel-open time.
     const teamRows = () => teams.map(item => ({ id: `team:${item.id}`, kind: 'entity' as const, label: item.name, icon: glyph('agents'),
       values: [...(item.id === currentId ? [{ text: msg('正在查看'), tone: 'muted' as const }] : []), ...(item.id === pointer?.teamId ? [{ text: msg('已加入'), tone: 'accent' as const }] : [])],
@@ -155,7 +156,25 @@ export async function teamMenu(ctx: ExtensionContext, hooks: TeamMenuHooks): Pro
           { id: `team:${item.id}/join`, kind: 'action' as const, icon: glyph('agents'), label: msg('加入当前会话'), description: msg`把正在使用的会话加入 ${item.name}；不创建新会话，也不更换当前对话。`, ...(pointer ? { disabledReason: msg('先退出当前团队，再加入另一个团队。') } : {}), run: async () => { try { if (await hooks.join(ctx, item.name)) hooks.setCurrentTeam(item.id); } catch (cause) { fail(cause); } } },
         ]),
         newSessionEntry(item),
-        ...(pointer?.teamId === item.id ? [{ id: `team:${item.id}/management`, kind: 'entity' as const, icon: glyph('settings'), label: msg('团队管理'), children: [{ id: `team:${item.id}/dissolve`, kind: 'action' as const, icon: glyph('delete'), destructive: true, label: msg('解散团队'), confirmation: { title: msg`解散团队 ${item.name}？`, consequences: msg('归档团队登记；不停止成员进程，不删除会话、信箱或历史。'), action: msg('解散') }, ...(membership?.holder.pid === hooks.pid() ? {} : { disabledReason: msg('当前会话的成员代表权已改变；请先确认或接管代表权。') }), description: msg('仅归档团队登记；不停止进程、不删除会话、信箱或历史。再按一次确认。'), run: async () => { try { await requireCurrentWriter(item.id); await dissolveTeam(item.id); await hooks.leave(ctx, { authorized: true }); hooks.setCurrentTeam(undefined); notify(ctx, msg`团队 ${item.name} 已解散：会话与信箱保留，进程未停止`, 'info'); } catch (cause) { fail(cause); } } }] }] : []),
+        ...(pointer?.teamId === item.id || emptyTeam(item.id) ? [{ id: `team:${item.id}/management`, kind: 'entity' as const, icon: glyph('settings'), label: msg('团队管理'), children: [{
+          id: `team:${item.id}/dissolve`, kind: 'action' as const, icon: glyph('delete'), destructive: true, label: msg('解散团队'),
+          confirmation: { title: msg`解散团队 ${item.name}？`, consequences: msg('归档团队登记；不停止成员进程，不删除会话、信箱或历史。'), action: msg('解散') },
+          ...(emptyTeam(item.id) || membership?.holder.pid === hooks.pid() ? {} : { disabledReason: msg('当前会话的成员代表权已改变；请先确认或接管代表权。') }),
+          description: msg('仅归档团队登记；不停止进程、不删除会话、信箱或历史。再按一次确认。'),
+          run: async () => {
+            try {
+              const represented = hooks.pointer(ctx)?.teamId === item.id && !!await readMember(item.id, ctx.sessionManager.getSessionId());
+              if (represented) await requireCurrentWriter(item.id);
+              // The empty-only exception is rechecked under the join/name lock, not just when rendered.
+              if (!await dissolveTeam(item.id, { onlyIfEmpty: !represented }) && await readTeam(item.id)) {
+                throw new Error(msg('团队目录里没有该成员记录；先重新加入团队'));
+              }
+              if (hooks.pointer(ctx)?.teamId === item.id) await hooks.leave(ctx, { authorized: true });
+              hooks.setCurrentTeam(undefined);
+              notify(ctx, msg`团队 ${item.name} 已解散：会话与信箱保留，进程未停止`, 'info');
+            } catch (cause) { fail(cause); }
+          },
+        }] }] : []),
       ] }));
     let nextRosterRead = Date.now() + 1000, rosterRead: Promise<void> | undefined;
     const refreshRoster = () => {
