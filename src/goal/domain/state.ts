@@ -1,0 +1,176 @@
+import { Type, type Static } from 'typebox';
+import { chinese, type Translator } from "../../shared/i18n.ts";
+import { goalAutoresearch, goalModelPause, goalNolimit, goalLimitLabel, goalBudgetSpent } from "./policy.ts";
+import { glyph } from '../../shared/ui/symbols.ts';
+export { goalAutoresearch, goalModelPause, goalNolimit, goalLimitLabel, goalBudgetSpent } from "./policy.ts";
+
+export const GoalParamsSchema = Type.Object({
+  action: Type.Enum(['create', 'update', 'list', 'get', 'delete', 'enable', 'disable', 'complete'] as const, { type: 'string' }),
+  id: Type.Optional(Type.Integer({ minimum: 1 })),
+  title: Type.Optional(Type.String({ description: 'Short title; create requires it' })),
+  description: Type.Optional(Type.String({ description: 'Objective and acceptance criteria' })),
+  maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+  progress: Type.Optional(Type.String({ description: 'update only: verified milestone/finding/decision/blocker, not routine status; optional' })),
+  nextStep: Type.Optional(Type.String({ description: 'Update only when the next action materially changes; notes cannot narrow the objective. Empty clears it, forbidden under nopause' })),
+}, { additionalProperties: false });
+export type GoalParams = Static<typeof GoalParamsSchema>;
+export type ModelPausePolicy = 'allow' | 'deny';
+export interface Goal { id: number; title: string; description?: string; status: 'active' | 'paused' | 'completed' | 'deleted'; maxTurns: number; createdAt: number; completedAt?: number; modelPause?: ModelPausePolicy; nolimit?: boolean; autoresearch?: boolean }
+export interface GoalRun { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string; errorRetries?: number; pendingWake?: { id: string; goalId: number; usedBefore: number; nextStep?: string } }
+export interface GoalState { version: 1; goals: Goal[]; nextId: number; focusId?: number; run: GoalRun }
+export const GOAL_TYPE = 'pi-dag-workflow.goal';
+const GOAL_DEFAULT_TURNS = 32;
+export const emptyGoalState = (): GoalState => ({ version: 1, goals: [], nextId: 1, run: { paused: true, used: 0, stalled: 0 } });
+export const focusedGoal = (state: GoalState): Goal | undefined => state.goals.find((goal) => goal.id === state.focusId && !['completed', 'deleted'].includes(goal.status));
+export const activates = (action: GoalParams['action']): boolean => action === 'enable';
+export const stops = (action: GoalParams['action']): boolean => ['disable', 'complete', 'delete'].includes(action);
+function text(value: unknown, field: string, bytes: number, required = false, msg: Translator = chinese): asserts value is string {
+  if (typeof value !== 'string' || Buffer.byteLength(value) > bytes || required && !value.trim()) throw new Error(msg`${field} 需为${required ? msg('非空') : ''}文本，最多 ${bytes} 字节`);
+}
+export function validateGoalState(state: GoalState, msg: Translator = chinese): void {
+  if (!state || state.version !== 1 || !Array.isArray(state.goals) || !Number.isSafeInteger(state.nextId) || state.nextId < 1) throw new Error(msg('不支持或损坏的 Goal 状态'));
+  const ids = new Set<number>();
+  let active = 0;
+  for (const goal of state.goals) {
+    if (!goal || !Number.isSafeInteger(goal.id) || goal.id < 1 || goal.id >= state.nextId || ids.has(goal.id)) throw new Error(msg('损坏或重复的目标编号'));
+    ids.add(goal.id); text(goal.title, 'title', 1024, true, msg);
+    if (Array.from(goal.title).length > 80) throw new Error(msg('目标标题最多 80 个字符'));
+    if (goal.description !== undefined) text(goal.description, 'description', 8192, false, msg);
+    if (!['active', 'paused', 'completed', 'deleted'].includes(goal.status) || !Number.isSafeInteger(goal.maxTurns) || goal.maxTurns < 1 || goal.maxTurns > 200 || !Number.isFinite(goal.createdAt)) throw new Error(msg('损坏的目标状态／预算'));
+    if (goal.modelPause !== undefined && !['allow', 'deny'].includes(goal.modelPause)) throw new Error(msg('损坏的模型暂停策略'));
+    if (goal.nolimit !== undefined && typeof goal.nolimit !== 'boolean') throw new Error(msg('损坏的续跑额度设置'));
+    if (goal.autoresearch !== undefined && typeof goal.autoresearch !== 'boolean') throw new Error(msg('损坏的持续研究设置'));
+    if (goal.completedAt !== undefined && !Number.isFinite(goal.completedAt)) throw new Error(msg('损坏的完成时间'));
+    if (goal.status === 'active') { active++; if (state.focusId !== goal.id) throw new Error(msg('只有 focus 目标可以启用')); }
+  }
+  if (active > 1 || state.focusId !== undefined && (!Number.isSafeInteger(state.focusId) || !focusedGoal(state))) throw new Error(msg('损坏的 focus 目标'));
+  const run = state.run;
+  if (!run || typeof run.paused !== 'boolean' || !Number.isSafeInteger(run.used) || run.used < 0 || !Number.isSafeInteger(run.stalled) || run.stalled < 0 || !run.paused && focusedGoal(state)?.status !== 'active') throw new Error(msg('损坏的 Goal 续跑状态'));
+  if (run.pendingWake !== undefined) {
+    const wake = run.pendingWake;
+    if (!wake || typeof wake.id !== 'string' || !wake.id || wake.id.length > 100 || !Number.isSafeInteger(wake.goalId) || !ids.has(wake.goalId) || !Number.isSafeInteger(wake.usedBefore) || wake.usedBefore < 0 || wake.usedBefore >= run.used) throw new Error(msg('损坏的待发续跑请求'));
+    if (wake.nextStep !== undefined) text(wake.nextStep, 'nextStep', 2048, false, msg);
+  }
+  if (run.reason !== undefined) text(run.reason, 'reason', 2048, false, msg);
+  if (run.progress !== undefined) text(run.progress, 'progress', 2048, false, msg);
+  if (run.nextStep !== undefined) text(run.nextStep, 'nextStep', 2048, false, msg);
+  if (run.errorRetries !== undefined && (!Number.isSafeInteger(run.errorRetries) || run.errorRetries < 0 || run.errorRetries > 20)) throw new Error(msg('损坏的自动重试计数'));
+}
+const fields: Record<GoalParams['action'], string[]> = {
+  create: ['title', 'description', 'maxTurns'], update: ['id', 'title', 'description', 'maxTurns', 'progress', 'nextStep'], list: [], get: ['id'], delete: ['id'], enable: ['id'], disable: ['id'], complete: ['id'],
+};
+export function applyGoal(state: GoalState, params: GoalParams, defaultTurns = GOAL_DEFAULT_TURNS, msg: Translator = chinese): { state: GoalState; text: string } {
+  const allowed = fields[params.action];
+  if (!allowed) throw new Error(msg('未知 Goal 操作'));
+  for (const key of Object.keys(params)) if (key !== 'action' && !allowed.includes(key)) throw new Error(msg`${params.action} 不接受字段 ${key}`);
+  const current = state.goals.find((goal) => goal.id === (params.id ?? state.focusId));
+  if (params.action !== 'create' && params.action !== 'list' && !current) throw new Error(msg('找不到目标；请给出 id'));
+  if (params.action === 'list') {
+    const content = state.goals.filter((goal) => goal.status !== 'deleted').map((goal) => {
+      const label = goal.id === state.focusId && state.run.paused ? msg('暂停') : { active: msg('活动'), paused: msg('暂停'), completed: msg('已完成'), deleted: msg('已删除') }[goal.status];
+      return `#${goal.id}${goal.id === state.focusId ? ' ' + glyph('goal') : ''} [${label}] ${goal.title}${goalAutoresearch(goal) ? msg(' · 持续研究') : ''} · ${goalLimitLabel(goal)}`;
+    }).join('\n') || msg('暂无目标');
+    return { state, text: content };
+  }
+  if (params.action === 'get') return { state, text: JSON.stringify({ goal: current, controls: { autoresearch: goalAutoresearch(current!), nolimit: goalNolimit(current!), modelPause: goalModelPause(current!) }, ...(current!.id === state.focusId ? { run: state.run } : {}) }) };
+  if (current?.status === 'deleted' && params.action !== 'create') throw new Error(msg('目标已删除'));
+  const next = structuredClone(state);
+  if (params.action === 'create') {
+    text(params.title, 'title', 1024, true, msg);
+    next.goals.push({ id: next.nextId++, title: params.title.trim(), status: 'paused', modelPause: 'allow', maxTurns: params.maxTurns ?? defaultTurns, createdAt: Date.now(), ...(params.description !== undefined ? { description: params.description } : {}) });
+  } else {
+    const goal = next.goals.find((item) => item.id === current!.id)!;
+    if (params.action === 'update') {
+      if (Object.keys(params).every((key) => key === 'action' || key === 'id')) throw new Error(msg('update 需要修改字段'));
+      if (params.title !== undefined) { text(params.title, 'title', 1024, true, msg); goal.title = params.title.trim(); }
+      if (params.description !== undefined) goal.description = params.description;
+      if (params.maxTurns !== undefined) goal.maxTurns = params.maxTurns;
+      if (params.progress !== undefined || params.nextStep !== undefined) {
+        if (goal.id !== next.focusId) throw new Error(msg('只能更新当前目标的进展／下一步'));
+        if (params.progress !== undefined) next.run.progress = params.progress.trim();
+        if (params.nextStep !== undefined) {
+          if (params.nextStep.trim()) next.run.nextStep = params.nextStep.trim();
+          else delete next.run.nextStep;
+        }
+      }
+    } else if (activates(params.action)) {
+      if (goal.status === 'completed') throw new Error(msg('已完成目标不能重启；新建目标记录返工'));
+      // Repeating enable/focus on an already-running goal does not refill its budget.
+      if (next.focusId === goal.id && !next.run.paused) return { state, text: msg`目标 #${goal.id} 已启用；预算不重置` };
+      for (const item of next.goals) if (item.status === 'active') item.status = 'paused';
+      goal.status = 'active'; next.focusId = goal.id;
+      next.run = { paused: false, used: 0, stalled: 0, nextStep: msg`推进目标：${goal.title}` };
+    } else if (params.action === 'disable') {
+      if (goal.status === 'completed') throw new Error(msg('已完成目标无需停用'));
+      goal.status = 'paused';
+      if (goal.id === next.focusId) next.run = { ...next.run, paused: true, reason: msg('已停用') };
+    } else {
+      goal.status = params.action === 'delete' ? 'deleted' : 'completed';
+      if (goal.status === 'completed') goal.completedAt = Date.now();
+      if (goal.id === next.focusId) { delete next.focusId; next.run = { ...next.run, paused: true, reason: goal.status === 'deleted' ? msg('目标已删除') : msg('目标已完成') }; delete next.run.nextStep; }
+    }
+  }
+  validateGoalState(next, msg);
+  if (JSON.stringify(next) === JSON.stringify(state)) return { state, text: msg('Goal 无变化') };
+  const goal = params.action === 'create' ? next.goals.at(-1)! : next.goals.find((item) => item.id === current!.id)!;
+  const waitHint = goalModelPause(goal) === 'deny' ? msg('自主解决缺口并继续执行；禁止提问和模型停用') : msg('先尝试替代路径并继续独立工作；仅真实外部阻塞时请求用户');
+  const hint = activates(params.action) ? goalAutoresearch(goal)
+    ? msg('；持续研究：不限轮数、不自行完成，不提问或交还工作；核验阶段成果后继续原范围内的研究') : goalNolimit(goal)
+    ? msg`；不限续跑轮数，仅重要新证据或执行方向变化时 update progress/nextStep，${waitHint}`
+    : msg`；自动续跑上限 ${goal.maxTurns}，仅重要新证据或执行方向变化时 update progress/nextStep，${waitHint}` : '';
+  return { state: next, text: msg`Goal #${goal.id} ${params.action}：${goal.title}${hint}` };
+}
+/** User command only: policy belongs to a Goal, survives enable, and never edits its run. */
+export function setModelPausePolicy(state: GoalState, id: number, policy: ModelPausePolicy, msg: Translator = chinese): GoalState {
+  const goal = state.goals.find((item) => item.id === id);
+  if (!goal || goal.status === 'deleted') throw new Error(msg('找不到目标；请给出 id'));
+  if (!['allow', 'deny'].includes(policy)) throw new Error(msg('损坏的模型暂停策略'));
+  if ((goal.modelPause ?? 'allow') === policy) return state;
+  const next = { ...state, goals: state.goals.map((item) => item.id === id ? { ...item, modelPause: policy } : item) };
+  validateGoalState(next, msg);
+  return next;
+}
+/** User command only: the unlimited flag belongs to a Goal, survives enable, and never edits its run. */
+export function setGoalNolimit(state: GoalState, id: number, nolimit: boolean, msg: Translator = chinese): GoalState {
+  const goal = state.goals.find((item) => item.id === id);
+  if (!goal || goal.status === 'deleted') throw new Error(msg('找不到目标；请给出 id'));
+  if (typeof nolimit !== 'boolean') throw new Error(msg('损坏的续跑额度设置'));
+  if ((goal.nolimit === true) === nolimit) return state;
+  const next = { ...state, goals: state.goals.map((item) => item.id === id ? { ...item, nolimit } : item) };
+  validateGoalState(next, msg);
+  return next;
+}
+/** User command only; changing mode never starts work, clears usage, or changes saved controls. */
+export function setGoalAutoresearch(state: GoalState, id: number, autoresearch: boolean, msg: Translator = chinese): GoalState {
+  const goal = state.goals.find((item) => item.id === id);
+  if (!goal || ['deleted', 'completed'].includes(goal.status)) throw new Error(msg('找不到未完成目标；请给出 id'));
+  if (typeof autoresearch !== 'boolean') throw new Error(msg('损坏的持续研究设置'));
+  if (goalAutoresearch(goal) === autoresearch) return state;
+  const next = { ...state, goals: state.goals.map((item) => item.id === id ? { ...item, autoresearch } : item) };
+  validateGoalState(next, msg);
+  return next;
+}
+export function pauseGoal(state: GoalState, reason: string): GoalState {
+  if (state.run.paused && state.run.reason === reason) return state;
+  return { ...state, run: { ...state.run, paused: true, reason } };
+}
+/** A reservation is refundable until a real model turn starts. Never refills a confirmed budget. */
+export function releaseGoalWake(state: GoalState, refund = true): GoalState {
+  const wake = state.run.pendingWake;
+  if (!wake) return state;
+  const run = { ...state.run, used: refund ? Math.max(wake.usedBefore, state.run.used - 1) : state.run.used };
+  delete run.pendingWake;
+  return { ...state, run };
+}
+export function reserveGoalWake(state: GoalState): GoalState | undefined {
+  const goal = focusedGoal(state);
+  if (!goal || state.run.paused || goalBudgetSpent(state, goal)) return;
+  return { ...state, run: { ...state.run, used: state.run.used + 1 } };
+}
+/** Unknown/corrupt authoritative entries are errors, never silently roll back. */
+export function restoreGoalState(branch: readonly { type: string; customType?: string; data?: unknown }[], msg: Translator = chinese): GoalState {
+  const entry = [...branch].reverse().find((item) => item.type === 'custom' && item.customType === GOAL_TYPE);
+  const state = entry ? structuredClone(entry.data) as GoalState : emptyGoalState();
+  validateGoalState(state, msg);
+  return state;
+}

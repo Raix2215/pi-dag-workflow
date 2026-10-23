@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
 
+// plan-config.test.ts
+{
 const webTool = fileURLToPath(new URL('./fixtures/web-search-tool.ts', import.meta.url));
 const controls = fileURLToPath(new URL('./fixtures/session-controls.ts', import.meta.url));
 
@@ -49,3 +51,4 @@ test('actual Pi: a config-listed read-only network tool runs in Plan mode, an un
   const write = (await allowed.prompt('TEST CALL write {"path":"nope.txt","content":"x"}')).findLast((item) => item.type === 'tool_execution_end' && item.toolName === 'write')!;
   assert.equal(write.isError, true, 'write stays blocked in Plan mode');
 });
+}

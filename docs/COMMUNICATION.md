@@ -10,7 +10,7 @@ For a new job, configuration resolves in order: the parent's model, thinking lev
 
 Explicit `model` takes an exact registered `{ provider, id }`. Discover one with `subagent_inspect({ models: true, query, limit, offset })`; the catalog returns provider, id, name, reasoning, context limits, and input modes, with `limit` defaulting to 20 and capped at 100 and no endpoints or credentials. Model discovery cannot be combined with job, profile, output, or wait fields.
 
-Supported child tools are `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`, and `powershell` when available, up to eight, replacing the inherited list. A registered shell tool does not make the program it runs executable, and tool selection is not an operating-system sandbox. When unsupported inherited tools are filtered out, the spawn result reports them as `ignoredInheritedTools`.
+Child tools include built-ins and explicitly selected tools from configured childExtensions, without a fixed tool-count limit. subagent_inspect({tools:true}) returns name, description and core/extension origin. childExtensions is read at dispatch time; paths may be absolute, ~/ paths, or relative to the configuration directory. Missing or unreadable files reject dispatch before startup. A registered shell tool does not make the program it runs executable, and tool selection is not an operating-system sandbox. When unsupported inherited tools are filtered out, the spawn result reports them as `ignoredInheritedTools`.
 
 A child works in the same directory, discovers workspace rules, and has independent conversation history. Selected profile instructions and `context: true` guidance arrive as task context. Ordinary task briefs contain the current requirements excerpt, direct prerequisite states, current valid report excerpts, and declared `metadata.artifacts` references. Fragment briefs include position and state from the same fragment instance. Briefs are bounded to 2,000 characters and never use stale reports as current evidence. Ordinary task briefs mark omitted input. Supply all required input in the assignment; references are unverified, and full output remains available through inspection.
 
@@ -38,7 +38,7 @@ A tool result is available to the following model request. Reports enter at `tur
 
 `/agents` opens a searchable, paginated job directory with attention and history filters. Selected details distinguish process status, report delivery, and linked Todo acceptance. Read reports, answer pending questions, send direction, or stop/remove a job from its action page. Cancellation and removal require confirmation and do not undo files.
 
-The root `/agents` menu also opens the profile and model directories. Argument commands such as `/agents profiles`, `/agents list`, and `/agents wait` print readable text instead of opening those views. The instruction and skill editors save only the confirmed current profile; cancellation and expired input leave it unchanged.
+The root `/agents` menu lists Profiles inline and opens the model catalog. Argument commands such as `/agents profiles`, `/agents list`, and `/agents wait` print readable text instead of opening those views. The instruction and skill editors save only the confirmed current profile; cancellation and expired input leave it unchanged.
 
 Opening a menu or changing summary visibility does not start model requests or stop a job. `/agents show` and `/agents hide` affect only the Agent summary. The Agents feature can run independently; `todoId` bindings require the Todos feature.
 
@@ -71,7 +71,7 @@ Output collection acknowledges the returned terminal report and removes matching
 |---|---|
 | Successful job, report pending, Todo unfinished | Pending delivery |
 | Successful job, report delivered, Todo unfinished | Pending verification |
-| Accepted Todo | Completed |
+| Accepted Task | Completed |
 | Latest failed/interrupted attempt still current | Failure/interruption state |
 | Explicitly dismissed attempt, Todo unfinished | Main session / Ready to resume |
 | Main-session takeover | Canonical Todo owner and state |
@@ -110,7 +110,7 @@ A parent abort during authentication/startup cancels dispatch and leaves its Tod
 
 ## Goal and recovery context
 
-Automatic child-report wakes and Goal continuations share the active Goal's allowance. Plan, Goal pause, Agent-delivery pause, or an exhausted finite allowance suppresses automatic wakes. Model failures hold buffered reports while native Pi or user-enabled `/retry` recovery runs. Successful recovery reopens delivery. `/retry` is off by default, applies only to the main session, and does not restart children. Its Goal requests obey the remaining continuation allowance; Plan remains read-only. Optional model replacement uses a user-confirmed ordered list, sharing the same intervals and total retry count. It changes only the parent's session selection; existing children keep their captured model and settings. Candidate exhaustion pauses Goal error recovery, including continuous research. User cancellation and branch changes cancel obsolete recovery. Restoring keeps retry settings but requires explicit re-enabling.
+Automatic child-report wakes and Goal continuations share the active Goal's allowance. Plan, Goal pause, Agent-delivery pause, or an exhausted finite allowance suppresses automatic wakes. Model failures hold buffered reports while native Pi or user-enabled `/retry` recovery runs. Successful recovery reopens delivery. `/retry` is off by default, applies only to the main session, and does not restart children. Its Goal requests obey the remaining continuation allowance; Plan remains read-only. Optional model replacement uses a user-confirmed ordered list, sharing the same intervals and total retry count. It changes only the parent's session selection; existing children keep their captured model and settings. Candidate exhaustion pauses Goal error recovery, including continuous research. User cancellation and branch changes cancel obsolete recovery. Restoring a session keeps saved Retry settings and its enabled switch, returning to armed if it was enabled (or off if disabled) while cancelling any old pending timer; Goal restoration, by contrast, is always paused and requires explicit re-enabling (`/goal enable`).
 
 `/agents resume` permits future report arrivals. Retrieve previously suppressed reports explicitly. Restoring or switching a session stops managed child processes and restores their records as interrupted; it does not revive execution or automatically resume the Goal.
 
@@ -118,7 +118,7 @@ Workflow checkpoints carry bounded Todo/Job summaries. Goal checkpoints retain o
 
 `/goal autoresearch [#id] [on|off]` toggles continuous autonomous research for one Goal without starting it or replacing its saved `nolimit`/`nopause` controls. While selected, it forces unlimited continuation and model-pause denial; those forced values are separate from the saved ordinary-mode settings and the Goal's actual running state, and they do not change `/retry`. It rejects model completion or Goal switching. Stages and Todos remain individually verifiable. User stops, Plan, error limits, and compaction protections still pause work; restore requires explicit enable. Mode or scope changes during pending error recovery can retire the old request and pause the Goal without clearing used turns.
 
-Short continuation messages refer to the current Goal contract. Ordinary Goals verify every requirement before completion; continuous Goals verify milestones and proceed to another useful step without completing the whole Goal. These messages do not authorize a smaller objective or additional permissions. Only important new evidence or a changed execution decision calls for `goal update`.
+Short continuation messages refer to the current Goal contract. Ordinary Goals verify every requirement before completion; continuous Goals verify milestones and proceed to another useful step without completing the whole Goal. These messages do not authorize a smaller objective or additional permissions. Only important new evidence or a changed execution decision calls for `goal update`. While a Goal is paused, `goal update` can still record `progress` or `nextStep` notes for the currently focused Goal without re-enabling the Goal, waking execution, or altering its budget or scope; non-current, never-focused, completed, or deleted Goals cannot write to the shared run.
 
 ## Retained data and cleanup
 

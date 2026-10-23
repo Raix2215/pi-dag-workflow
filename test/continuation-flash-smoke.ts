@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
-import { GOAL_TYPE, type GoalState } from '../src/goal/state.ts';
+import { GOAL_TYPE, type GoalState } from "../src/goal/domain/state.ts";
+import { GOAL_CONTINUE_MESSAGE } from './fixtures/public-records.ts';
 
 // Explicit opt-in live acceptance: PI_DAG_TEST_MODEL chooses the provider, never a private default.
 // Two different Goal continuation messages must advance two verified file-writing phases.
@@ -25,7 +26,7 @@ try {
   const final = entries.findLast((entry) => entry.customType === GOAL_TYPE).data as GoalState;
   assert.equal(aborted, false);
   assert.equal(final.run.used, 2, 'the second phase must follow a separately budgeted automatic continuation');
-  assert.equal(entries.filter((entry) => entry.customType === 'pi-dag-workflow.goal-continue').length, 1, 'idle enable uses a user message, the second phase uses a boundary continuation');
+  assert.equal(entries.filter((entry) => entry.customType === GOAL_CONTINUE_MESSAGE).length, 1, 'idle enable uses a user message, the second phase uses a boundary continuation');
   assert.equal(await readFile(join(client.root, 'phase-one.txt'), 'utf8'), 'ONE\n');
   assert.equal(await readFile(join(client.root, 'phase-two.txt'), 'utf8'), 'TWO\n');
   console.log(JSON.stringify({ passed: true, automaticRounds: final.run.used, requests: client.records.filter((record) => record.type === 'turn_start').length }, null, 2));

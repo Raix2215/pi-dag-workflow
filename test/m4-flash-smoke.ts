@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { IsolatedClient, liveModel } from './fixtures/isolated-client.ts';
-import { STATE_TYPE } from '../src/todos/state.ts';
-import { GOAL_TYPE } from '../src/goal/state.ts';
-import { foldAgentEntries } from '../src/agents/persistence.ts';
+import { STATE_TYPE } from '../src/todos/domain/state.ts';
+import { GOAL_TYPE } from "../src/goal/domain/state.ts";
+import { foldAgentEntries } from "../src/agents/io/persistence.ts";
 
 // Explicit low-cost integration: parent + two short children, bounded wall time/parent turns.
 const client = await IsolatedClient.startFlash(['goal', 'subagent_spawn', 'subagent_inspect', 'subagent_send', 'subagent_cancel']);

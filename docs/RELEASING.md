@@ -13,14 +13,18 @@ Maintainer checklist for a public release. Run checks on Node.js 22 and 24.
 
 ```bash
 npm ci --ignore-scripts
-npm run check                         # typecheck, offline tests, pack inspection, hygiene
+npm run check:all                     # typecheck, offline behavior tests, pack and release hygiene
 node scripts/check-release.mjs --history
 npm run test:performance
 ```
 
-`check:release` verifies metadata, package contents, and machine-trace hygiene. It rejects personal home paths, private model literals, personal emails, real credential formats, `.env` files, session records, or a tracked `AGENTS.md`. Findings show only the file and rule, never the matched secret.
+`npm run check` runs type checking, offline behavior tests with bounded concurrency (`--test-concurrency=4`), and pack inspection. `npm run check:all` adds `check:release`; neither starts a terminal UI or requires tmux. Running it does not substitute for cross-platform CI, full Git history hygiene, or interaction acceptance.
 
-The default test suite requires no credentials or network model and runs on Pi 1.0. Its roughly 800 tests execute and reload all 32 selections of Todos, Plan, Agents, Goal, and Retry, as well as scripted failures, native and user-enabled retry coexistence, ordered model replacement, late model-selection cancellation, continuous Goal control, read-only status, ordinary prerequisite briefs, explicit profile skill files, and single-shot child configuration. Menu and command-view regressions cover paging, search, cancellation, protected reads, stale task/Plan dialogs, and bare-root versus argument-command output. The packed-install test loads all five feature entry points and launches a child using the host's Pi dependencies. A Pi 1.2 host was also checked through the explicit override; run `PI_DAG_TEST_CLI="<host dist/bundle/cli.js>" npm test` and record that host version separately.
+Terminal changes use one opt-in entry point, `tools/smoke-pty.mjs`: run `npm run smoke -- --require --team` for Team/history changes, or omit `--team` to visit all seven panels. It uses its own `tmux -L` server and must not touch user sessions. `--require` makes missing tmux fail rather than silently skip. Set `SMOKE_FRAMES` to an artifact directory for paired plain/ANSI captures. Check the changed operation and its return path, not a screenshot count; do not run the same scenario twice through different gates.
+
+`check:release` verifies metadata, package contents, and machine-trace hygiene. It rejects personal home paths, private model literals, personal emails, real credential formats, `.env` files, session records, or a tracked `AGENTS.md`. Findings show only the file and rule, never the matched secret. The `--history` flag extends this check to the entire Git commit history; release hygiene enforces strict checks without adding waivers, exemptions, or ignoring history.
+
+The default test suite requires no credentials or network model. Development dependencies are pinned to Pi 1.3.0; RPC fixtures select `PI_DAG_TEST_CLI` first, then the managed Pi installation, then the repository CLI. Record the actual host versions rather than assuming every check uses the development dependency. The suite executes and reloads module combinations derived across all six modules (`Todos`, `Plan`, `Agents`, `Goal`, `Retry`, `Team`): the registration matrix derives all 64 module combinations, while behavioral tests exercise a bounded 32-selection matrix. Team has its own test suites and real TUI smoke coverage in `tools/smoke-pty.mjs`. Tests also cover scripted failures, native and user-enabled retry coexistence, ordered model replacement, late model-selection cancellation, continuous Goal control, progress updates on paused goals, read-only status, ordinary prerequisite briefs, explicit profile skill files, single-shot child configuration, and secure session file location. Menu and command-view regressions cover paging, search, cancellation, protected reads, stale task/Plan dialogs, and bare-root versus argument-command output. The packed-install test loads all six feature entry points (Todos, Plan, Goal, Agents, Retry, Team) and launches a child using the host's Pi dependencies. Other hosts can be checked through the explicit override; run `PI_DAG_TEST_CLI="<host dist/bundle/cli.js>" npm test` and record that host version separately.
 
 With a caller-selected registered model, also run the bounded opt-in acceptance scripts:
 
@@ -35,7 +39,7 @@ These exercise Goal startup and verification, two separately budgeted automatic 
 
 Review every result; opt-in scripts never run in default CI. Their generated artifacts must remain outside the release package.
 
-For terminal changes, obtain approval for bounded real TUI tests. Exercise keyboard navigation, search, paging, details, draft save/cancel, resize, and user interruption with a caller-selected model. Record the enabled plugins, theme, thinking level, and known untested cases. An isolated fixture run, an isolated real TUI session, and a full configured extension environment are separate checks; an isolated real TUI run verifies only that boundary and does not stand in for the configured environment. Use a separate test session, preserve personal configuration and Profile/preset files, and keep private model names, paths, captures, and test records out of Git and the package.
+For terminal changes, select a bounded real TUI scenario that exercises the changed flow, including its return path. Keep scripted-provider checks separate from any explicitly approved caller-selected model check. Record the enabled plugins, theme, thinking level, and known untested cases. An isolated fixture run, an isolated real TUI session, and a full configured extension environment are separate checks; an isolated real TUI run verifies only that boundary and does not stand in for the configured environment. Use a separate test session, preserve personal configuration and Profile/preset files, and keep private model names, paths, captures, and test records out of Git and the package.
 
 ## 3. Publish with maintainer approval
 
@@ -46,7 +50,7 @@ VERSION=$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")
 npm pack --dry-run --ignore-scripts
 git status --short                     # confirm only intended changes
 git add <reviewed-files>
-git commit -m "Release v${VERSION}"
+git commit -m "chore(release): v${VERSION}"
 node scripts/check-release.mjs --history
 git tag "v${VERSION}"
 git push origin main
@@ -57,6 +61,6 @@ Create a non-prerelease GitHub Release for the tag using its CHANGELOG section. 
 
 ## 4. Confirm installation
 
-Update only the approved package with `pi update <package-source>`, then compare its installed manifest version and commit with the release. Running sessions need `/reload` or a restart. Reload pauses restored Goals, including autoresearch, and keeps `/retry` off; explicitly re-enable each when ready. Verify the saved candidate order and Goal controls were preserved.
+Update only the approved package with `pi update <package-source>`, then compare its installed manifest version and commit with the release. Running sessions need `/reload` or a restart. Reload pauses restored Goals, including autoresearch, while `/retry` keeps its saved enabled state and interval settings and only cancels a pending recovery; re-enable a Goal explicitly, and verify the saved candidate order, Goal controls, and retry settings were preserved.
 
 Keep private vulnerability reporting enabled as described in `SECURITY.md`. Preserve session history, user configuration, and unrelated packages during installation updates.

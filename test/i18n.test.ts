@@ -1,278 +1,94 @@
+import { GOAL_CONTINUE_MESSAGE, GOAL_TYPE, type GoalState } from './fixtures/public-records.ts';
+import { loadPublic } from './fixtures/public-host.ts';
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir } from 'node:os';
 import { join } from "node:path";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { chinese, createTranslator, localizeSavedMessage, resolveLocale } from "../src/shared/i18n.ts";
-import { englishMessages } from "../src/shared/messages.en.ts";
-import { configPaths, loadConfig, loadLocale } from "../src/shared/config.ts";
-import { applyTodo, emptyState, statusLabel, type Todo, type WorkflowState } from "../src/todos/state.ts";
-import { applyGoal, emptyGoalState, type GoalState } from "../src/goal/state.ts";
-import { renderTasks, renderDag, clean } from "../src/ui/render.ts";
-import { detailView } from "../src/ui/detail.ts";
-import { dagLayout } from "../src/dag/layout.ts";
-import { dagStructure } from "../src/dag/cache.ts";
-import { registerTodos } from "../src/todos/register.ts";
-import { registerPlan } from "../src/plan/register.ts";
-import { registerGoal } from "../src/goal/register.ts";
-import { registerAgents } from "../src/agents/register.ts";
+import { fileURLToPath } from 'node:url';
+import { access } from "node:fs/promises";
+import { IsolatedClient } from "./fixtures/isolated-client.ts";
 
-const en = createTranslator("en");
+
+let sharedClient: IsolatedClient;
+before(async () => { sharedClient = await IsolatedClient.start(undefined, 'i18n-public', [fileURLToPath(new URL('./fixtures/session-controls.ts', import.meta.url))], [], false, undefined, 'en'); });
+after(async () => { await sharedClient.close(); });
+async function startEnglish() { await sharedClient.send('new_session'); return sharedClient; }
+
+// i18n.test.ts
+{
 const hasHan = (text: string): boolean => /\p{Script=Han}/u.test(text);
-const placeholders = (text: string): string[] => [...text.matchAll(/\{(\d+)\}/g)].map((match) => match[1]!).sort();
-const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
+const outcome = (events: { type: string; toolName?: unknown; result?: unknown; isError?: unknown }[], name: string) => {
+  const end = events.find(event => event.type === 'tool_execution_end' && event.toolName === name)!;
+  assert.ok(end, `missing ${name} tool result`);
+  const result = end.result as { content: { text?: string }[]; isError?: boolean };
+  return { text: result.content.map(part => part.text ?? '').join('\n'), isError: end.isError === true || result.isError === true };
+};
 
-// ---------------------------------------------------------------------------
-// Locale resolution
-// ---------------------------------------------------------------------------
-
-test("resolveLocale honours an explicit language and otherwise follows terminal preferences", () => {
-  assert.equal(resolveLocale("en", {}), "en");
-  assert.equal(resolveLocale("zh-CN", { LANG: "en_US.UTF-8" }), "zh-CN");
-  assert.equal(resolveLocale("auto", { LANG: "zh_CN.UTF-8" }), "zh-CN");
-  assert.equal(resolveLocale("auto", { LANG: "zh-TW" }), "zh-CN");
-  assert.equal(resolveLocale("auto", { LANG: "en_US.UTF-8" }), "en");
-  assert.equal(resolveLocale("auto", { LANG: "fr_FR.UTF-8" }), "en");
-  assert.equal(resolveLocale("auto", {}), "en");
-});
-
-test("resolveLocale precedence is LC_ALL > LC_MESSAGES > LANGUAGE > LANG, first LANGUAGE entry wins", () => {
-  assert.equal(resolveLocale("auto", { LC_ALL: "zh_CN", LANG: "en_US" }), "zh-CN");
-  assert.equal(resolveLocale("auto", { LC_MESSAGES: "zh_CN", LANG: "en_US" }), "zh-CN");
-  assert.equal(resolveLocale("auto", { LC_ALL: "en_US", LC_MESSAGES: "zh_CN", LANG: "zh_CN" }), "en");
-  assert.equal(resolveLocale("auto", { LANGUAGE: "zh_CN:en", LANG: "en_US" }), "zh-CN");
-  assert.equal(resolveLocale("auto", { LANGUAGE: "fr_FR:zh_CN", LANG: "zh_CN" }), "en");
-  assert.equal(resolveLocale("auto", { LANGUAGE: "", LANG: "zh_CN" }), "zh-CN");
-});
-
-// ---------------------------------------------------------------------------
-// Translator semantics
-// ---------------------------------------------------------------------------
-
-test("createTranslator translates static templates before interpolation and copies values verbatim", () => {
-  assert.equal(en("待执行"), "Pending");
-  assert.equal(createTranslator("zh-CN")("待执行"), "待执行");
-  assert.equal(en`已清空 ${2} 项，编号不复用`, "Cleared 2 item(s); ids are not reused");
-  // Unknown keys fall through untouched in both locales.
-  assert.equal(en("不存在的模板"), "不存在的模板");
-  assert.equal(chinese("不存在的模板"), "不存在的模板");
-  for (const key of ['constructor', 'toString', '__proto__']) assert.equal(en(key), key);
-  // A user value that itself looks like a placeholder is not re-substituted.
-  const subject = "含 {0} 与 {1} 的用户标题";
-  assert.equal(en`已创建 #${1}：${subject} [${en("已完成")}]`, "Created #1: 含 {0} 与 {1} 的用户标题 [Completed]");
-  // User text with terminal escapes reaches the translator untouched; UI clean() removes it.
-  const dirty = "标题\x1b[31m红\x1b[0m\n下一行";
-  const rendered = en`已更新 #${1}：${dirty} [${en("进行中")}]`;
-  assert.ok(rendered.includes("\x1b[31m"));
-  assert.doesNotMatch(clean(rendered), /\x1b|\n/);
-});
-
-test("interleaved translators keep their own locale without leaking global state", () => {
-  const zh = createTranslator("zh-CN");
-  const messages: string[] = [];
-  for (let index = 0; index < 3; index++) {
-    messages.push(en("已完成"), zh("已完成"), en("待执行"), zh("待执行"));
-    messages.push(en`已更新 #${index + 1}：${index} [${en("已完成")}]`, zh`已更新 #${index + 1}：${index} [${zh("已完成")}]`);
+test("applyTodo speaks English while user-authored subjects stay untouched", { timeout: 30000 }, async () => {
+  const client = await startEnglish();
+  await client.prompt('begin localized Todo');
+  const call = (params: object) => client.prompt(`TEST CALL todo ${JSON.stringify(params)}`).then(events => outcome(events, 'todo'));
+  const created = await call({ action: 'create', subject: '中文任务' });
+  assert.equal(created.text, 'Created #1: 中文任务 [Pending]');
+  assert.equal((await call({ action: 'list' })).text, 'This page: 1 / 1 tasks\n#1 [Pending] 中文任务');
+  for (const [params, pattern] of [
+    [{ action: 'create', subject: ' ' }, /subject/],
+    [{ action: 'update', id: 99, status: 'completed' }, /Task #99 not found/],
+    [{ action: 'update', id: 1 }, /at least one changed field/],
+    [{ action: 'bogus' }, /action: must be equal to one of the allowed values/],
+  ] as const) {
+    const rejected = await call(params);
+    assert.equal(rejected.isError, true); assert.match(rejected.text, pattern);
   }
-  assert.deepEqual(messages.slice(0, 4), ["Completed", "已完成", "Pending", "待执行"]);
-  assert.equal(messages[4], "Updated #1: 0 [Completed]");
-  assert.equal(messages[5], "已更新 #1：0 [已完成]");
-  // Repeated calls remain stable and the exported default still speaks Chinese.
-  assert.equal(en("已完成"), "Completed");
-  assert.equal(chinese("已完成"), "已完成");
+  // The scope is named as the user named it; the enum key no longer leaks into the sentence.
+  assert.match((await call({ action: 'clear' })).text, /^Cleared 1 item\(s\) \(all clearable records\); kept 0; IDs are not reused/);
+  assert.equal((await call({ action: 'list' })).text, 'This page: 0 / 0 tasks\nNo tasks');
 });
 
-test('saved plugin reasons follow the new locale without changing unknown text', () => {
-  assert.equal(localizeSavedMessage('目标已完成', en), 'Goal completed');
-  assert.equal(localizeSavedMessage('Goal completed', chinese), '目标已完成');
-  assert.equal(localizeSavedMessage('Goal completed', en), 'Goal completed');
-  assert.equal(localizeSavedMessage('Unknown historical reason {0}', en), 'Unknown historical reason {0}');
+test("applyTodo dependency and Plan rejections are localized without translating ids or subjects", { timeout: 30000 }, async () => {
+  const client = await startEnglish();
+  await client.prompt('begin localized dependencies');
+  const call = (params: object) => client.prompt(`TEST CALL todo ${JSON.stringify(params)}`).then(events => outcome(events, 'todo'));
+  await call({ action: 'create', subject: '入口' });
+  await call({ action: 'create', subject: '下游', blockedBy: [1] });
+  const blocked = await call({ action: 'update', id: 2, status: 'completed' });
+  assert.equal(blocked.isError, true); assert.match(blocked.text, /Prerequisites incomplete: #1; cannot start or complete #2/);
+  const deleted = await call({ action: 'delete', id: 1 });
+  assert.equal(deleted.isError, true); assert.match(deleted.text, /depends on deleted #1/);
+  const invalid = await call({ action: 'create', subject: 'X', blockedBy: [0] });
+  assert.equal(invalid.isError, true); assert.match(invalid.text, /blockedBy\.0: must be >= 1/);
+  await client.prompt('/plan start');
+  const plan = await call({ action: 'update', id: 1, status: 'in_progress' });
+  assert.equal(plan.isError, true); assert.match(plan.text, /Plan only allows organizing Todos, not starting or completing them/);
+  assert.match((await call({ action: 'list' })).text, /#2<-#1 \[Pending\] 下游/);
+  const unsupported = await call({ action: 'update', id: 2, blockedBy: [1] });
+  assert.equal(unsupported.isError, true); assert.match(unsupported.text, /blockedBy|validation/i);
 });
 
-test("English catalog values never contain Han characters and mirror key placeholders", () => {
-  const entries = Object.entries(englishMessages);
-  assert.ok(entries.length > 200);
-  for (const [key, value] of entries) {
-    assert.ok(key.length > 0 && value.length > 0, key);
-    assert.ok(!hasHan(value), `English value still contains Han: ${key} -> ${value}`);
-    assert.deepEqual(placeholders(value), placeholders(key), `placeholder mismatch: ${key} -> ${value}`);
+test("applyGoal speaks English, keeps Chinese titles/descriptions and applies the turn budget", { timeout: 30000 }, async () => {
+  const client = await startEnglish();
+  await client.prompt('begin localized Goal');
+  const call = (params: object) => client.prompt(`TEST CALL goal ${JSON.stringify(params)}`).then(events => outcome(events, 'goal'));
+  assert.equal((await call({ action: 'list' })).text, 'No goals');
+  const created = await call({ action: 'create', title: '中文目标', description: '完整描述不要翻译', maxTurns: 20 });
+  assert.equal(created.text, 'Goal #1 create: 中文目标');
+  const listed = await call({ action: 'list' });
+  assert.match(listed.text, /中文目标/); assert.match(listed.text, /20/);
+  const state = (await client.entries() as { customType?: string; data?: GoalState }[]).findLast(entry => entry.customType === GOAL_TYPE)?.data;
+  assert.equal(state!.goals[0]!.description, '完整描述不要翻译');
+  for (const [params, pattern] of [
+    [{ action: 'create', title: '' }, /title must be non-empty text/],
+    [{ action: 'create', title: 'X', maxTurns: 201 }, /maxTurns: must be <= 200/],
+    [{ action: 'bogus' }, /action: must be equal to one of the allowed values/],
+  ] as const) {
+    const rejected = await call(params);
+    assert.equal(rejected.isError, true); assert.match(rejected.text, pattern);
   }
-});
-
-// ---------------------------------------------------------------------------
-// Pure helpers
-// ---------------------------------------------------------------------------
-
-test("applyTodo speaks English while user-authored subjects stay untouched", () => {
-  const created = applyTodo(emptyState(), { action: "create", subject: "中文任务" }, en);
-  assert.equal(created.text, "Created #1: 中文任务 [Pending]");
-  assert.equal(applyTodo(created.state, { action: "list" }, en).text, "This page: 1 / 1 tasks\n#1 [Pending] 中文任务");
-  assert.equal(applyTodo(created.state, { action: "clear" }, en).text, "Cleared 1 item(s) (all); kept 0; IDs are not reused");
-  // Validation errors are localized.
-  assert.throws(() => applyTodo(emptyState(), { action: "create", subject: " " }, en), /subject/);
-  assert.throws(() => applyTodo(created.state, { action: "update", id: 99 }, en), /Task #99 not found/);
-  assert.throws(() => applyTodo(created.state, { action: "update", id: 1 }, en), /at least one changed field/);
-  assert.throws(() => applyTodo(created.state, { action: "bogus" as never }, en), /Unknown Todo action/);
-  // Chinese remains the baseline default.
-  assert.equal(applyTodo(emptyState(), { action: "create", subject: "任务" }).text, "已创建 #1：任务 [待执行]");
-  assert.equal(statusLabel.pending, "待执行");
-});
-
-test("applyTodo dependency and Plan rejections are localized without translating ids or subjects", () => {
-  const state: WorkflowState = { ...emptyState(), tasks: [
-    { id: 1, subject: "入口", status: "pending", blockedBy: [] },
-    { id: 2, subject: "下游", status: "pending", blockedBy: [1] },
-  ], nextId: 3 };
-  assert.throws(() => applyTodo(state, { action: "update", id: 2, status: "completed" }, en), /Prerequisites incomplete: #1; cannot start or complete #2/);
-  assert.throws(() => applyTodo({ ...state, plan: true }, { action: "update", id: 1, status: "in_progress" }, en), /Plan only allows organizing tasks/);
-  assert.throws(() => applyTodo(emptyState(), { action: "create", subject: "X", blockedBy: [0] }, en), /Dependencies must be valid task ids/);
-  assert.throws(() => applyTodo(state, { action: "delete", id: 1 }, en), /depends on deleted #1/);
-  assert.throws(() => applyTodo(state, { action: "update", id: 2, blockedBy: [1] } as never, en), /does not accept field blockedBy/);
-});
-
-test("applyGoal speaks English, keeps Chinese titles/descriptions and applies the turn budget", () => {
-  const created = applyGoal(emptyGoalState(), { action: "create", title: "中文目标", description: "完整描述不要翻译" }, 20, en);
-  assert.equal(created.text, "Goal #1 create: 中文目标");
-  assert.equal(created.state.goals[0]!.description, "完整描述不要翻译");
-  assert.equal(applyGoal(emptyGoalState(), { action: "list" }, 20, en).text, "No goals");
-  assert.throws(() => applyGoal(emptyGoalState(), { action: "create", title: "" }, 20, en), /title must be non-empty text of at most 1024 bytes/);
-  assert.throws(() => applyGoal(emptyGoalState(), { action: "create", title: "X", maxTurns: 201 }, 32, en), /Corrupt goal status\/budget/);
-  assert.throws(() => applyGoal(emptyGoalState(), { action: "bogus" as never }, 20, en), /Unknown Goal action/);
-  // A paused focused goal labels itself in English while preserving the title.
-  const paused: GoalState = { ...created.state, focusId: 1, goals: [{ ...created.state.goals[0]!, status: "paused" }], run: { paused: true, used: 1, stalled: 0 } };
-  assert.equal(applyGoal(paused, { action: "list" }, 20, en).text, "#1 󰓾 [Paused] 中文目标 · 20");
-  // Chinese baseline default.
-  assert.equal(applyGoal(emptyGoalState(), { action: "create", title: "目标" }).text, "Goal #1 create：目标");
-});
-
-// ---------------------------------------------------------------------------
-// UI rendering
-// ---------------------------------------------------------------------------
-
-const uiTasks: Todo[] = [
-  { id: 1, subject: "Entry", status: "completed", blockedBy: [] },
-  { id: 2, subject: "Research", status: "in_progress", blockedBy: [1], activeForm: "checking" },
-  { id: 3, subject: "Implement", status: "pending", blockedBy: [1], owner: "User{0}\x1b[31m" },
-  { id: 4, subject: "Verify", status: "pending", blockedBy: [2, 3] },
-];
-const uiState: WorkflowState = { ...emptyState(), tasks: uiTasks, nextId: 5, plan: true };
-const uiJobs = [{ id: "a1", todoId: 2, profile: "fast", status: "running" as const, activity: { kind: "thinking" as const, since: Date.now() } }];
-
-test("English renderTasks shows read-only, live agent activity, hidden rows and status words at every width", () => {
-  for (const width of [20, 40, 80, 120]) {
-    const lines = renderTasks(uiState, width, { maxRows: 3, jobs: uiJobs, msg: en });
-    for (const line of lines) {
-      assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
-      assert.doesNotMatch(line, /[\r\n]/);
-    }
-    assert.ok(!hasHan(lines.join("\n")), `unexpected Chinese at width ${width}: ${lines.join("\n")}`);
-  }
-  const wide = renderTasks(uiState, 80, { maxRows: 3, jobs: uiJobs, msg: en }).join("\n");
-  assert.match(wide, /Plan \[read-only\]/);
-  assert.match(wide, /Thinking/);
-  assert.match(wide, /Main session/);
-  assert.match(wide, /1 hidden/);
-  const narrow = renderTasks(uiState, 20, { maxRows: 3, jobs: uiJobs, msg: en }).join("\n");
-  assert.match(narrow, /1 hidden/);
-  assert.doesNotMatch(narrow, /Plan \[read-only\]/);
-  // Owner text is cleaned for display but its placeholder-looking content survives as data.
-  assert.match(wide, /User\{0\}/);
-  assert.equal(stripAnsi(wide), wide);
-  assert.doesNotMatch(wide, /\x1b/);
-});
-
-test("English renderTasks keeps the three-block alignment and canonical chronological ids", () => {
-  const lines = renderTasks(uiState, 120, { maxRows: Infinity, jobs: uiJobs, msg: en });
-  const body = lines.filter((line) => /^[│ ]*[├└]─ /.test(stripAnsi(line)));
-  assert.equal(body.length, 4);
-  const iconColumn = (line: string): number => stripAnsi(line).search(/[✓○◐]/);
-  const titleColumn = (line: string): number => {
-    const plain = stripAnsi(line);
-    const icon = plain.search(/[✓○◐]/);
-    const after = plain.slice(icon + 1);
-    return icon + 1 + (after.length - after.replace(/^ +/, "").length);
-  };
-  const icons = body.map(iconColumn);
-  const titles = body.map(titleColumn);
-  assert.ok(icons.every((value) => value === icons[0]));
-  assert.ok(titles.every((value) => value === icons[0]! + 2));
-  const ids = body.map((line) => Number(/#(\d+)/.exec(stripAnsi(line))![1]));
-  assert.deepEqual(ids, [1, 2, 3, 4]);
-});
-
-test("English renderDag uses an explicit localized fallback and stays within narrow widths", () => {
-  const fallback = renderDag(uiState, 40, undefined, undefined, [], { maxLines: 8, msg: en });
-  for (const line of fallback) assert.ok(visibleWidth(line) <= 40, line);
-  const text = fallback.join("\n");
-  assert.match(text, /Graph degraded to a list: Parallel node/);
-  assert.match(text, /#4<-#2,#3/);
-  assert.ok(!hasHan(text));
-  // A real solid graph is also localized at the header level.
-  const graph = renderDag(uiState, 120, undefined, "中文目标", [], { msg: en });
-  assert.match(graph.join("\n"), /Plan \[read-only\]/);
-});
-
-test("English dagLayout reasons and detail footer use the supplied translator", () => {
-  const tiny = dagLayout(dagStructure([{ id: 1, status: "pending", blockedBy: [] }]), 10, en);
-  assert.equal(tiny.layout, undefined);
-  assert.equal(tiny.reason, "Insufficient width");
-  const structure = dagStructure([{ id: 1, status: 'pending', blockedBy: [] }]);
-  assert.equal(dagLayout(structure, 10, en).reason, 'Insufficient width');
-  assert.equal(dagLayout(structure, 10, chinese).reason, '宽度不足');
-  assert.equal(dagLayout(structure, 10, en).reason, 'Insufficient width');
-
-  const panel = detailView(() => ["HEADER", "row"], () => 3, () => {}, () => {}, undefined, en);
-  const rendered = panel.render(80);
-  assert.match(rendered[rendered.length - 1]!, /Esc back · ↑\/↓ PgUp\/PgDn Home\/End/);
-  assert.ok(rendered.every((line) => visibleWidth(line) <= 80));
-  assert.ok(!hasHan(rendered.join("\n")));
-});
-
-// ---------------------------------------------------------------------------
-// Config language
-// ---------------------------------------------------------------------------
-
-test("loadConfig defaults to language auto and loadLocale follows config before terminal preferences", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "dag-i18n-"));
-  const previous = {
-    agent: process.env.PI_CODING_AGENT_DIR,
-    LC_ALL: process.env.LC_ALL, LC_MESSAGES: process.env.LC_MESSAGES,
-    LANGUAGE: process.env.LANGUAGE, LANG: process.env.LANG,
-  };
-  process.env.PI_CODING_AGENT_DIR = directory;
-  delete process.env.LC_ALL; delete process.env.LC_MESSAGES; delete process.env.LANGUAGE; delete process.env.LANG;
-  try {
-    assert.deepEqual(await loadConfig(), { language: "auto", goalMaxTurns: 32, goalNoProgressLimit: 8, goalErrorRetries: 5, planTools: [], goalNoPauseTools: ['ask_user_question'] });
-    process.env.LANG = "zh_CN.UTF-8";
-    assert.equal(loadLocale(), "zh-CN");
-    process.env.LC_ALL = "en_US.UTF-8";
-    assert.equal(loadLocale(), "en");
-
-    await mkdir(configPaths().directory, { recursive: true });
-    const config = configPaths().config;
-    const write = (value: unknown) => writeFile(config, JSON.stringify(value));
-    await write({ language: "en" });
-    assert.equal(loadLocale(), "en");
-    assert.deepEqual(await loadConfig(), { language: "en", goalMaxTurns: 32, goalNoProgressLimit: 8, goalErrorRetries: 5, planTools: [], goalNoPauseTools: ['ask_user_question'] });
-    await write({ language: "zh-CN" });
-    assert.equal(loadLocale(), "zh-CN");
-    await write({ language: "auto" });
-    assert.equal(loadLocale(), "en");
-    await write({ language: "fr" });
-    assert.equal(loadLocale(), "en");
-    await write("not json");
-    assert.equal(loadLocale(), "en");
-  } finally {
-    if (previous.agent === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previous.agent;
-    const restore = (key: "LC_ALL" | "LC_MESSAGES" | "LANGUAGE" | "LANG", value: string | undefined) => {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    };
-    restore("LC_ALL", previous.LC_ALL); restore("LC_MESSAGES", previous.LC_MESSAGES);
-    restore("LANGUAGE", previous.LANGUAGE); restore("LANG", previous.LANG);
-    await rm(directory, { recursive: true, force: true });
-  }
+  assert.equal((await call({ action: 'list' })).isError, false);
+  const paused = await call({ action: 'disable', id: 1 });
+  assert.equal(paused.isError, false);
+  assert.match((await call({ action: 'list' })).text, /#1.*\[Paused\] 中文目标.*20/);
 });
 
 // ---------------------------------------------------------------------------
@@ -293,11 +109,11 @@ function fakePi(): FakePi {
 
 test("registerTodos/Plan/Goal/Agents localize command descriptions and completions through hooks.msg", async () => {
   const { pi, commands } = fakePi();
-  const state: WorkflowState = { ...emptyState(), tasks: [{ id: 1, subject: "入口", status: "pending", blockedBy: [] }] };
-  registerTodos(pi as never, { msg: en, state: () => state, mutate: () => state as never, commit: () => {}, show: async () => {}, protected: () => false, reset: () => {} });
-  registerPlan(pi as never, { msg: en, state: () => state, commit: () => {}, protected: () => false, assertCanEnter: () => {}, onEnter: () => {} });
-  registerGoal(pi as never, { msg: en, state: () => state, jobs: () => [], paint: () => {}, protected: () => false, pauseAgents: () => {}, resumeAgents: () => {} });
-  registerAgents(pi as never, { msg: en, state: () => state, mutate: () => {}, paint: () => {}, protected: () => false });
+  const previous = { dir: process.env.PI_CODING_AGENT_DIR, lang: process.env.LC_ALL };
+  const dir = await mkdtemp(join(tmpdir(), 'dag-i18n-public-'));
+  process.env.PI_CODING_AGENT_DIR = dir; process.env.LC_ALL = 'en_US.UTF-8';
+  try { await loadPublic(pi, ['todos', 'plan', 'goal', 'agents']); }
+  finally { if (previous.lang === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = previous.lang; }
 
   for (const name of ["todos", "plan", "goal", "agents"]) {
     const description = commands.get(name)!.description!;
@@ -327,10 +143,171 @@ test("registerTodos/Plan/Goal/Agents localize command descriptions and completio
   assert.equal(agents["list"], "View Jobs and pause state");
   assert.equal(agents["profile"], "Save a Profile: profile name provider/model [thinking] [tools]");
 
-  // Omitting msg keeps the Chinese baseline.
   const plain = fakePi();
-  registerTodos(plain.pi as never, { state: () => state, mutate: () => state as never, commit: () => {}, show: async () => {}, protected: () => false, reset: () => {} });
-  assert.equal(plain.commands.get("todos")!.description, "当前 Todos：查看、编辑与视图切换；也可直接描述需求");
-  const zhItems = plain.commands.get("todos")!.getArgumentCompletions!("")!;
-  assert.equal(zhItems.find((item) => item.value === "add")!.description, "新建任务：add 标题 [--after 1,2]");
+  try {
+    await loadPublic(plain.pi, ['todos', 'plan', 'goal', 'agents'], 'zh-CN');
+    assert.equal(process.env.LC_ALL, previous.lang, 'an explicit fixture locale does not leak into the next assembly');
+    assert.equal(plain.commands.get("todos")!.description, "当前 Todos：查看、编辑与视图切换；也可直接描述需求");
+    const zhItems = plain.commands.get("todos")!.getArgumentCompletions!("")!;
+    assert.equal(zhItems.find((item) => item.value === "add")!.description, "新建任务：add 标题 [--after 1,2]");
+  } finally {
+    if (previous.dir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous.dir;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
+}
+
+// i18n-integration.test.ts
+{
+const hasHan = (text: string): boolean => /\p{Script=Han}/u.test(text);
+/** English session must opt in through the terminal language; no personal config is read. */
+const start = () => startEnglish();
+
+const notifications = (events: Record<string, unknown>[]): string[] =>
+  events.filter((event) => event.method === "notify").map((event) => String(event.message));
+const results = (events: Record<string, unknown>[], toolName: string): { text: string; isError: boolean }[] =>
+  events.filter((event) => event.type === "tool_execution_end" && event.toolName === toolName).map((event) => {
+    const result = event.result as { isError?: boolean; content: { type: string; text?: string }[] };
+    return { text: result.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n"), isError: event.isError === true || result.isError === true };
+  });
+const goalState = (entries: unknown[]): GoalState | undefined =>
+  (entries as { customType?: string; data?: GoalState }[]).findLast((entry) => entry.customType === GOAL_TYPE)?.data;
+
+test("actual Pi English session advertises English commands, help and goal-reset confirmation", { timeout: 30000 }, async () => {
+  const client = await start();
+  const commands = (await client.send("get_commands")).data as { commands: { name: string; description: string }[] };
+  const descriptions = new Map(commands.commands.map((command) => [command.name, command.description]));
+  assert.match(descriptions.get("todos")!, /Current Todos/);
+  assert.match(descriptions.get("dag")!, /dependency graph/);
+  assert.match(descriptions.get("plan")!, /read-only planning/);
+  assert.match(descriptions.get("agents")!, /Child agent status/);
+  assert.match(descriptions.get("goal")!, /Goal new\/list\/enable/);
+  for (const name of ["todos", "dag", "plan", "agents", "goal"]) assert.ok(!hasHan(descriptions.get(name)!), `/${name}: ${descriptions.get(name)}`);
+
+  for (const command of ["/todos help", "/plan help", "/agents help", "/goal help"]) {
+    const notice = notifications(await client.prompt(command));
+    assert.ok(notice.length > 0, command);
+    assert.ok(notice.every((message) => !hasHan(message)), `${command}: ${notice.join(" | ")}`);
+  }
+  // Local usage errors are localized too.
+  const usage = notifications(await client.prompt("/todos view now"));
+  assert.ok(usage.some((message) => message.includes("Usage: /todos view list|dag")), usage.join(" | "));
+
+  await client.prompt("begin english session");
+  await client.prompt('TEST CALL goal {"action":"create","title":"中文目标"}');
+  const offset = client.records.length;
+  const resetting = client.prompt("/goal reset");
+  await client.until(() => client.records.slice(offset).some((event) => event.method === "confirm"));
+  const confirm = client.records.slice(offset).find((event) => event.method === "confirm")!;
+  assert.equal(confirm.title, "Clear Goal state?");
+  assert.equal(confirm.message, "History, Todos, Jobs and project files are kept; auto-continuation stops.");
+  client.child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: confirm.id, confirmed: true })}\n`);
+  await resetting;
+  assert.deepEqual(goalState(await client.entries())!.goals, []);
+});
+
+test("actual Pi English Todo dependency rejection and Plan write block stay localized", { timeout: 30000 }, async () => {
+  const client = await start();
+  await client.prompt("begin english rejections");
+  await client.prompt("/todos add entry");
+  await client.prompt("/todos add downstream --after 1");
+
+  let rejection = results(await client.prompt('TEST CALL todo {"action":"update","id":2,"status":"completed"}'), "todo");
+  assert.equal(rejection[0]!.isError, true);
+  assert.match(rejection[0]!.text, /Prerequisites incomplete: #1; cannot start or complete #2/);
+  rejection = results(await client.prompt('TEST CALL todo {"action":"create","subject":"orphan","blockedBy":[99]}'), "todo");
+  assert.equal(rejection[0]!.isError, true);
+  assert.match(rejection[0]!.text, /depends on missing #99/);
+  assert.ok(!hasHan(rejection[0]!.text));
+
+  await client.prompt("/plan start");
+  const blocked = results(await client.prompt('TEST CALL write {"path":"forbidden.txt","content":"no"}'), "write");
+  assert.equal(blocked[0]!.isError, true);
+  assert.match(blocked[0]!.text, /not allowed in Plan; run \/plan off first/);
+  await assert.rejects(access(join(client.root, "forbidden.txt")));
+});
+
+test("actual Pi English independent Goal: continuation, untranslated description, budget and reason", { timeout: 40000 }, async () => {
+  const client = await start();
+  const mark = client.records.length;
+  await client.prompt("begin english goal");
+  const created = results(await client.prompt('TEST CALL goal {"action":"create","title":"预算目标","description":"完整描述不要翻译","maxTurns":2}'), "goal");
+  assert.equal(created[0]!.text, "Goal #1 create: 预算目标");
+  await client.prompt('TEST CALL goal {"action":"enable","id":1}');
+  await client.until(() => {
+    const records = client.records.slice(mark) as { type?: string; entry?: { customType?: string; data?: GoalState } }[];
+    const latest = records.filter((record) => record.type === "entry_appended" && record.entry?.customType === GOAL_TYPE).at(-1)?.entry?.data;
+    const continuations = records.filter((record) => record.entry?.customType === GOAL_CONTINUE_MESSAGE).length;
+    return latest?.run.paused === true && latest.run.used >= 1 && continuations >= 1;
+  });
+
+  const entries = await client.entries();
+  const continuations = (entries as { customType?: string; content?: string }[])
+    .filter((entry) => entry.customType === GOAL_CONTINUE_MESSAGE)
+    .map((entry) => String(entry.content));
+  assert.equal(continuations.length, 2);
+  assert.match(continuations[1]!, /Review Goal #1.*goal get/);
+  assert.ok(!hasHan(continuations[1]!.replaceAll('预算目标', '')));
+  assert.match(continuations[0]!, /^Goal #1 1\/2: 预算目标\./);
+  const checkpoint = (entries as any[]).find((entry) => entry.customType === 'pi-dag-workflow.goal-checkpoint' && entry.content.includes('"paused":false'));
+  assert.match(checkpoint.content, /完整描述不要翻译/);
+  assert.ok(!hasHan(checkpoint.content.replaceAll('预算目标', '').replaceAll('完整描述不要翻译', '')));
+  assert.match(continuations[0]!, /This is a workflow continuation, not new user authorization\./);
+  assert.ok(!hasHan(continuations[0]!.replaceAll("预算目标", "").replaceAll("完整描述不要翻译", "")), continuations[0]!);
+
+  const state = goalState(entries)!;
+  assert.equal(state.run.paused, true);
+  assert.equal(state.run.used, 2);
+  assert.equal(state.run.reason, "Auto-continuation reached the 2-turn limit");
+  assert.equal(state.goals[0]!.title, "预算目标");
+  assert.equal(state.goals[0]!.description, "完整描述不要翻译");
+
+  const listing = notifications(await client.prompt("/goal get #1"));
+  assert.ok(listing.some((message) => message.includes("Continuations used: 2/2") && message.includes("Auto-continuation reached the 2-turn limit")), listing.join(" | "));
+  assert.ok(listing.some((message) => message.includes("预算目标")), listing.join(" | "));
+  assert.ok(!hasHan(listing.join("\n").replaceAll("预算目标", "").replaceAll("完整描述不要翻译", "")), listing.join(" | "));
+});
+
+test("actual Pi English Goal with a Todo reaches the turn budget and reports it in English", { timeout: 40000 }, async () => {
+  const client = await start();
+  const mark = client.records.length;
+  await client.prompt("begin english budget");
+  await client.prompt('TEST CALL todo {"action":"create","subject":"entry"}');
+  await client.prompt('TEST CALL goal {"action":"create","title":"额度目标","maxTurns":2}');
+  await client.prompt('TEST CALL goal {"action":"enable","id":1}');
+  await client.until(() => {
+    const records = client.records.slice(mark) as { type?: string; entry?: { customType?: string; data?: GoalState } }[];
+    const latest = records.filter((record) => record.type === "entry_appended" && record.entry?.customType === GOAL_TYPE).at(-1)?.entry?.data;
+    const continuations = records.filter((record) => record.entry?.customType === GOAL_CONTINUE_MESSAGE).length;
+    return latest?.run.paused === true && latest.run.used >= 2 && continuations >= 2;
+  });
+
+  const state = goalState(await client.entries())!;
+  assert.equal(state.run.used, 2);
+  assert.equal(state.run.reason, "Auto-continuation reached the 2-turn limit");
+  const notices = notifications(await client.prompt("/goal get #1"));
+  assert.ok(notices.some((message) => message.includes("Auto-continuation reached the 2-turn limit")), notices.join(" | "));
+  const early = notifications(client.records.slice(mark) as Record<string, unknown>[]);
+  assert.ok(early.some((message) => message.includes("Goal paused: Auto-continuation reached the 2-turn limit")), early.join(" | "));
+  assert.ok(!hasHan(notices.join("\n").replace("额度目标", "")), notices.join(" | "));
+});
+
+test("actual Pi explicit config language overrides the English environment after reload", { timeout: 30000 }, async () => {
+  const client = await start();
+  const english = (await client.send("get_commands")).data as { commands: { name: string; description: string }[] };
+  assert.match(english.commands.find((command) => command.name === "todos")!.description, /Current Todos/);
+
+  await client.prompt("begin english config");
+  const directory = join(client.root, "agent", "pi-dag-workflow");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "pi-dag-workflow-config.json"), JSON.stringify({ language: "zh-CN" }));
+  await client.prompt("/test-reload");
+  const chinese = (await client.send("get_commands")).data as { commands: { name: string; description: string }[] };
+  assert.equal(chinese.commands.find((command) => command.name === "todos")!.description, "当前 Todos：查看、编辑与视图切换；也可直接描述需求");
+  const help = notifications(await client.prompt("/todos help"));
+  assert.ok(help.some((message) => message.includes("查看完整图")), help.join(" | "));
+  const created = results(await client.prompt('TEST CALL todo {"action":"create","subject":"任务"}'), 'todo');
+  assert.equal(created[0]!.text, '已创建 #1：任务 [待执行]');
+  assert.match(results(await client.prompt('TEST CALL todo {"action":"list"}'), 'todo')[0]!.text, /#1 \[待执行\] 任务/);
+});
+}

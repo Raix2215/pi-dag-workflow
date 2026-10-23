@@ -1,7 +1,8 @@
 import { performance } from 'node:perf_hooks';
-import { applyTodo, emptyState, newlyReady, type Todo } from '../src/todos/state.ts';
-import { fragmentContext } from '../src/agents/context.ts';
-import { registerGoal } from '../src/goal/register.ts';
+import { applyTodo, emptyState, newlyReady } from "../src/todos/domain/state.ts";
+import type { Todo } from "../src/shared/task-types.ts";
+import { fragmentContext } from "../src/agents/domain/context.ts";
+import { registerGoal } from "../src/goal/commands/register.ts";
 import { defaultConfig } from '../src/shared/config.ts';
 
 function measure(fn: () => void, samples = 100) {

@@ -3,10 +3,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorkflow } from '../src/workflow/index.ts';
-import { FEATURE_NAMES, type Feature } from '../src/workflow/features.ts';
-import { PresetStore } from '../src/todos/presets.ts';
-import { emptyState, STATE_TYPE } from '../src/todos/state.ts';
-import { renderTasks, renderDag } from '../src/ui/render.ts';
+import { FEATURE_NAMES, type Feature } from '../src/workflow/domain/features.ts';
+import { PresetStore } from '../src/todos/domain/presets.ts';
+import { emptyState, STATE_TYPE } from '../src/todos/domain/state.ts';
+import { renderTasks, renderDag } from '../src/shared/ui/render.ts';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
 
 const measure = (fn: () => void, count = 50) => {

@@ -3,7 +3,8 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IsolatedClient, liveModel } from "./fixtures/isolated-client.ts";
-import { STATE_TYPE, type WorkflowState } from "../src/todos/state.ts";
+import { STATE_TYPE } from "../src/todos/domain/state.ts";
+import type { WorkflowState } from "../src/shared/task-types.ts";
 
 // Explicit opt-in only: this script uses the real provider and may consume credits.
 const evidence = fileURLToPath(new URL("../artifacts/live/m1/", import.meta.url));

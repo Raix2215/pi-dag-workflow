@@ -1,4 +1,4 @@
-/** Optional Pi 0.99 tool metadata; names/exposure stay direct and unchanged. */
+/** Shared namespace and behavior annotations for workflow tools. */
 export const workflowNamespace = {
   name: 'pi_dag_workflow',
   description: 'Session-local tasks, goals and child agents',

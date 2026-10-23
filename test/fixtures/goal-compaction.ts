@@ -1,6 +1,7 @@
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { GOAL_CONTINUE_MESSAGE } from './public-records.ts';
 
 /** Deterministic memory/compaction extension for actual Pi event-flow tests. No model calls. */
 export default function goalCompaction(pi: ExtensionAPI): void {
@@ -17,9 +18,9 @@ export default function goalCompaction(pi: ExtensionAPI): void {
   });
   pi.registerCommand('test-compact-race', { description: 'Discard one proposed continuation and compact before idle recovery', handler: async () => { rejectOnce = true; } });
   pi.on('agent_before_settle', (event) => {
-    if (!rejectOnce || !event.entries.some((entry) => entry.type === 'custom_message' && entry.customType === 'pi-dag-workflow.goal-continue')) return;
+    if (!rejectOnce || !event.entries.some((entry) => entry.type === 'custom_message' && entry.customType === GOAL_CONTINUE_MESSAGE)) return;
     rejectOnce = false; compactAfterSettle = true;
-    return { entries: event.entries.filter((entry) => entry.type !== 'custom_message' || entry.customType !== 'pi-dag-workflow.goal-continue'), continue: false };
+    return { entries: event.entries.filter((entry) => entry.type !== 'custom_message' || entry.customType !== GOAL_CONTINUE_MESSAGE), continue: false };
   });
   pi.on('agent_settled', (_event, ctx) => {
     if (!compactAfterSettle) return;

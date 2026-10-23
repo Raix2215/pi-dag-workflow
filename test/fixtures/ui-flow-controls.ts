@@ -2,10 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
-import { STATE_TYPE, emptyState } from '../../src/todos/state.ts';
-import { GOAL_TYPE, emptyGoalState } from '../../src/goal/state.ts';
-import { PLAN_TYPE } from '../../src/plan/state.ts';
-import { AGENTS_ENTRY_TYPE, foldAgentEntries } from '../../src/agents/persistence.ts';
+import { STATE_TYPE, emptyState, GOAL_TYPE, emptyGoalState, PLAN_TYPE, AGENTS_ENTRY_TYPE, retainedJobs } from './public-records.ts';
 
 /** Explicit isolated UI fixture; no model traffic, private providers or daily-session access. */
 export default function controls(pi: ExtensionAPI): void {
@@ -29,7 +26,7 @@ export default function controls(pi: ExtensionAPI): void {
   const snapshot = async (ctx: ExtensionContext) => {
     const branch = ctx.sessionManager.getBranch();
     const data = (type: string) => { const entry = branch.findLast((item) => item.type === 'custom' && item.customType === type); return entry?.type === 'custom' ? entry.data : undefined; };
-    await writeFile(join(ctx.cwd, 'ui-state.json'), JSON.stringify({ requests, idle: ctx.isIdle(), todos: data(STATE_TYPE), plan: data(PLAN_TYPE), goals: data(GOAL_TYPE), model: ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined, retry: data('pi-dag-workflow.retry'), agents: foldAgentEntries(branch).records }), { mode: 0o600 });
+    await writeFile(join(ctx.cwd, 'ui-state.json'), JSON.stringify({ requests, idle: ctx.isIdle(), todos: data(STATE_TYPE), plan: data(PLAN_TYPE), goals: data(GOAL_TYPE), model: ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined, retry: data('pi-dag-workflow.retry'), agents: retainedJobs(branch).records }), { mode: 0o600 });
   };
   pi.on('tool_execution_end', (_event, ctx) => snapshot(ctx));
   pi.on('agent_settled', (_event, ctx) => snapshot(ctx));

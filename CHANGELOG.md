@@ -2,7 +2,79 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+**0.7.0 is an unreleased draft. The date below records preparation, not publication.**
+
+## [0.7.0] - 2026-10-22
+
+### Added
+
+- Dock a panel above the input box for `/todos`, `/plan`, `/goal`, `/agents`, `/team`, `/retry`, and `/dag-display`, with a tab bar that omits disabled modules and switches in place with `Tab`/`Shift+Tab`.
+- Walk panels with `j`/`k`, `h`/`l` (hierarchy), `g`/`G` (zone jumps), and `←`/`→` (one screen per press); expand entities through multiple inline accordion levels, edit values inline, and arm destructive rows with a second `Enter`.
+- Add the `Display` panel (seventh tab) provided by the workflow layer for icon style, language, per-module widget visibility, and the model-name width cap.
+- Add the `Team` panel (fifth tab, between Agents and Retry) for multi-session workspace collaboration: member rosters, session launch modes, takeover, session history, per-member mailboxes, and session deletion.
+- Expose two model Team tools: `team_inspect` (default self/member query, optional boundary waiting, and `scope: "team"` overview of the joined team) and `team_send` (peer messaging with fixed `agent` authorship). Team overview pages are bounded to 20 members/4 KiB; member snapshots to 2 KiB, reply excerpts to 240 characters, and optional activity to 3 records by default/10 maximum, with omissions flagged.
+- Add user-only runtime model/thinking controls and independent member/session naming by stable SID. Busy sessions apply changes after the current response and tool batch; target receipts distinguish submission, application and failure without changing global defaults or Profiles.
+- Initialize new or explicitly rebuilt blank Team sessions with one acknowledgement-only model turn, blocking tool execution and making successful replies locatable in native session history. Ordinary joins, saved-session resumes and reload do not repeat initialization or enable paused Goals.
+- Supply request-local Team identity and a compact roster, bounded to 12 members/2 KiB with omitted counts; browsing another team does not retarget model context.
+- Per-member mailbox: 10-second polling, oldest unread first, up to 10 messages per batch, 8 KiB per message body, no truncation. Messages become read only when delivered text is confirmed in the model's real input. Reload or process termination releases unconfirmed in-flight claims back to unread.
+- Three inbox policies per member: Manual (storage off), Queued (default, storage background, enters as `followUp` at turn end), Priority (storage all, enters via `steer` at next safe boundary without interrupting active tools).
+- Read-only session history: the member row opens Pi's own tree selector — the same screen as `/tree`, with no custom shell, overlay or extra keys: browse all saved branches, view untruncated saved bodies, and return with `Esc`. No session switching, navigation, label editing, or file writes.
+- Delete a member's saved session from `/team`: two-press confirmation under cross-team global SID operation lock; ensures no live or unverifiable process holds the SID; attempts `trash` first and falls back to `unlink` to delete the session file; clears `inboxes/<sessionId>.json` across all teams only after the file is confirmed gone.
+- Rebuild blank: two-press confirmation for file-less offline members whose old process is confirmed gone and session file is absent (`null` or `ENOENT`); reserves same `sessionId` via `--session-id` without restoring old context.
+- Session file locator: prioritizes SDK-reported `sessionFile` from any `--session-dir`; missing records fall back to scanning `PI_CODING_AGENT_SESSION_DIR` or default root (top-level and 1-level project bucket, non-recursive, rejecting leaf symlinks/directories); known missing paths do not guess alternative files.
+- Goal updates while paused: currently focused Goal can update `progress` and `nextStep` notes without re-enabling, waking execution, or altering budget/scope.
+- Add one symbol table as the single glyph source for panels, menus, widgets, tool results, and notices, with plain-text degradation decided by the table alone.
+- Load child extensions per Profile through the `childExtensions` field; manage them by expanding a Profile in `/agents`.
+- Keep the panel cursor, folded groups, search text, and expanded row across tab switches and across closing and reopening the panel.
+- Identify built-in and configured extension tools through `subagent_inspect tools:true`.
+
+### Changed
+
+- Replace the previous 17-line menu contract with an adaptive-height panel that shrinks hints, then rules, before the header leaves the screen.
+- Move widget visibility out of the per-module menus into the `Display` panel; the `show`/`hide` argument subcommands still work.
+- Keep Team focused on member sessions and mailboxes; historical task and goal data is left untouched and unused.
+- Restrict the model surface for Team to `team_inspect` and `team_send`; lifecycle actions (launch, stop, evict, delete, rebuild) belong to the user's panel.
+- Member liveness is probed on demand from the recorded PID; heartbeats and time-based death criteria are retired. Released records (`pid: 0`) are never probed, and unprobeable hosts report `unknown` instead of `exited`.
+- Lead succession elects only `attached` members that are not confirmed dead; `headless` members never lead; earliest `since` takes precedence over name; falls back to "no lead standby" when no candidate qualifies. Lead carries no extra privileges.
+- Team dissolve archives the manifest in place (`team.archived.json`) instead of deleting the directory.
+- Windows manual launch supports direct argv only with supported terminal emulators; custom shell templates, copy command, background (`headless`), and tmux are safely rejected on Windows.
+- Make takeover switch this session to the member's session file and continue the conversation here. Direct takeover refuses a live holder; explicit force takeover requests safe shutdown and waits for confirmed process exit under the SID lock before switching.
+- Keep plugin-authored model guidance in English across UI languages, including startup, error recovery, automatic suggestions and command-forwarding wrappers. UI labels remain localized; user-authored content and names are preserved.
+- Test assemblies derive all 64 module combinations for registration while preserving a bounded 32-selection behavioral matrix; `npm test` limits concurrency (`--test-concurrency=4`).
+- Turn Job and Profile lists, Task fragments, and member rosters into collapsible groups instead of sub-screens; only the dependency graph and model catalog use dedicated selection pages. Team join/leave/new-session actions live under their explicit target team; member session operations and management are grouped separately.
+- Make `childExtensions` a Profile field instead of a machine-wide configuration key, with no migration: a Profile without the field loads no child extensions.
+- Select child tools without a fixed tool-count limit.
+- Show the providing extension path and the Profile field to edit when a registered extension tool is rejected.
+- Use `Todos`, `Task #12`, `Standalone Agents`, and `Retry` consistently in task views, widgets, acceptance lines, and recovery summaries.
+- Separate module state and IO, load shared workflow code on attachment, and enforce dependency boundaries.
+- Retry restore preserves saved `enabled` switch, candidates, and intervals, returning to armed or off without reviving old timers; Goal restore is always paused.
+
+### Fixed
+
+- Preserve pending Retry recovery across a model error followed by compaction, retaining used attempts and candidate-model allowance while respecting native recovery and pause controls.
+- Refresh live panel state without replacing active drafts or confirmations; keep the original list, selection and red operation-specific warning during two-press confirmation.
+- Preserve member identity on rejoin and address runtime configuration/naming by full SID; keep the lead reference consistent after renaming.
+- Keep session-history body titles and the Esc return path visible, and return from body to native tree selection without switching sessions.
+- Stopping, leaving, or evicting a member preserves mailboxes and history data across teams.
+- Session history viewer operates in memory and does not rewrite, migrate, or append to inspected session files (legacy files without a version migrate in memory only).
+- Prevent race conditions and stale writes during member takeover by requiring the old process to fully exit under SID lock.
+- Prevent false reads by acknowledging mailbox messages only at real provider input boundary.
+- Address session locator security by rejecting leaf symlinks and directories, and refusing to guess alternative session files when a recorded path is invalid.
+- Preserve paused Goal state, budgets, and checkpoints when updating progress notes on the focused Goal.
+- Filter the `/agents` upper zone by the search query for jobs as well as profiles.
+- Make `l` expand or enter only, leaving collapse to `h`, and stop an expanded entity or group from closing on `l`.
+- Make destructive panel actions take exactly two presses instead of stacking a native confirmation on top of the arm.
+- Let the Goal and Team information band take the cursor and align with entity rows instead of sitting outside the focusable list.
+- Keep the upper zone, the divider, and a stable height while a read-only sub-screen scrolls, and stop `j` at the last line instead of pushing the panel.
+- Show a breadcrumb on read-only sub-screens and replace the misleading `Enter` hint with the scroll keys.
+- Correct symbol codepoints that drew misaligned icons.
+- Show `Tab Module` instead of `Tab Section` on the keys row, because Tab switches modules rather than sections.
+- Give every panel row a symbol, with explicit exemptions for engine-composed rows, headings, information bands, and spread rows.
+- Keep a floor in both panel zones so neither an expanded entity nor a long configuration list can squeeze the other to one row.
+- Release the panel registry when a panel closes so a later panel can always open, and say which panel still holds it instead of doing nothing.
+- Stop a child process and return the reason to the parent when its tool selection cannot be enforced, rather than continuing with a silently reduced set.
+- Apply Goal's own bounded exponential backoff after failures when Retry is disabled or unmounted.
+- Queue command forwards safely during startup and use final cancellation evidence in Goal and Retry.
 
 ## [0.5.1] - 2026-10-13
 
@@ -45,7 +117,7 @@ All notable changes to this project are documented in this file. The format is b
 
 - User commands and tool renderers show readable requirements, status, delivery, acceptance, and recovery information. Model tools retain their structured results.
 - Plan restores its own branch-local state. Each selected feature restores only its data; task-linked dispatch requires Todos.
-- Menus use focused native terminal overlays with responsive page sizes, full-width rows, and stable selection across resizing. Profile and job menus preserve complete selected details.
+- Menus mount inline in the editor area (no overlay), keep short actions in place as expandable rows, and preserve the cursor across refreshes and resizing. Text clients keep Pi's native selector.
 
 ### Fixed
 

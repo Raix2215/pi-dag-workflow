@@ -6,467 +6,205 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Tasks, dependencies, read-only planning, subagents, and automatic goal continuation for [Pi](https://pi.dev). Keep one task list in the current session, see what is running, and verify results before marking work complete.
+Session-local task DAG, read-only planning, subagents, autonomous goal continuation, resilient error recovery, and multi-session team collaboration for [Pi](https://pi.dev). Maintain one authoritative task list in your current session, monitor background agents in real time, and verify evidence before marking work complete.
 
-## Install
+![Task dependencies in the English interface](assets/overview.en.png)
+
+*Example data rendered by the actual panels; no model requests were used to create the previews.*
+
+## Highlights
+
+- **Prerequisite tracking** — Enforce execution order with `blockedBy`. Tasks cannot start, complete, or dispatch until their prerequisites are fulfilled.
+- **Read-only planning** — Read the code and structure the work before enabling implementation or child dispatch.
+- **Parallel subagents** — Dispatch up to 8 independent Pi child processes with explicit tool allowlists, skill sets, bounded task briefs, and same-task resumption.
+- **Goal continuation** — Continue long-running objectives across model turns with configurable pause policies, research modes, and pause-time progress notes.
+- **Error retry** — Automatically retry model and network failures across configurable intervals and fallback models when enabled.
+- **Team collaboration** — Coordinate independent Pi sessions in one workspace via point-to-point mailboxes, PID-verified liveness, and dynamic runtime model reconfiguration.
+
+## Installation
+
+Install the extension directly into Pi:
 
 ```bash
 pi install https://github.com/Raix2215/pi-dag-workflow
 ```
 
-Restart Pi or run `/reload`. Use `pi config` to select the modules you need.
+Restart Pi or execute `/reload`. Enable or disable specific modules anytime using `pi config`.
 
-Requires **Pi 1.0.0+** and **Node.js 22.19.0+**. Subagents require a Node-based Pi host. Use a Nerd Font for the panel icons. The interface supports English and Simplified Chinese.
+### Compatibility & Requirements
 
-Use one extension for each shared name, such as `todo`, `/plan`, `/goal`, `/retry`, or `subagent_spawn`.
+- **Pi**: `1.3.0` or newer (Pi 1.0–1.2 are outside verified compatibility).
+- **Node.js**: `>= 22.19.0` (required by package engines; subagents require a Node-based Pi host).
+- **Terminal Font**: A [Nerd Font](https://www.nerdfonts.com/) is recommended for tab and status icons.
+- **Localization**: Supports English and Simplified Chinese interfaces (`auto`, `en`, `zh-CN`).
+- **Team launches**: Modes depend on installed terminals. Windows supports supported desktop terminals through direct argv; shell-based tmux, background, copy-command and custom-template launches are refused.
 
-## Menus
+> **Note**: To prevent command and tool conflicts, avoid running multiple extensions providing identical names (e.g. standalone `todo`, `/plan`, `/goal`, `/retry`, or `subagent_spawn`).
 
-Bare `/todos`, `/goal`, `/agents`, and `/retry` use Pi's native management menus; bare `/dag` opens the paginated graph. Argument subcommands execute directly or print readable text. Root menus retain searchable directories, read-only details, editors, and necessary confirmations, with up to eight entries and smaller pages on short terminals.
+## Quick Start
 
-- ↑/↓ selects; Enter opens or confirms the selected item.
-- Select **Previous page**, **Next page**, or **Search…** to navigate a directory.
-- Esc returns one level; Esc at the root closes the menu. Cancelled search leaves the current filter unchanged.
-- While a menu or editor is open, this package's summaries are hidden. Leaving the complete menu flow restores them without changing saved visibility.
+A typical workflow progresses from planning to execution and autonomous continuation:
 
-Identifiers, warnings, and important actions use restrained bold and semantic theme colors. Setting values use the theme's dim color, separate from action labels; failures stand out and completed history is muted. Body text is not bolded as whole paragraphs.
+1. **Plan safely without executing actions**:
+   ```text
+   /plan start
+   ```
+   Direct Pi to investigate the codebase and draft a Todo dependency graph:
+   > "Inspect auth routes, plan token refresh with regression tests, and organize dependencies."
 
-Goal switches update in place in the root menu. Settings do not start work; continuous-research controls and actual execution status are shown separately. Draft cancellation leaves settings unchanged. `/plan` directly toggles read-only mode; `/plan settings` prints settings. Each feature has its own summary visibility, controlled in its menu or with `show`/`hide`.
+2. **Exit planning and review the task graph**:
+   ```text
+   /plan off
+   /todos
+   /dag
+   ```
+   `/todos` opens the interactive docked panel (`/todos paths` and `/todos flat` switch views); `/dag` opens the full scrollable dependency view.
 
-## Quick start
+3. **Drive continuous execution across turns**:
+   ```text
+   /goal new Implement token refresh and verify with tests
+   /goal enable #1
+   ```
 
-Ask Pi to organize and execute the work:
+---
 
-> Track investigation, implementation, and tests as Todos. Make implementation depend on investigation, delegate independent work, and verify results before completing tasks.
+## Core Modules
 
-```text
-/plan start
-```
+### 1. Tasks & Dependency DAG (`todo`)
 
-Explore the project and organize the Todo list. When ready to implement:
-
-```text
-/plan off
-/todos
-/dag
-```
-
-For a task that should continue across model turns:
-
-```text
-/goal new Add CSV export with tests
-/goal enable #1
-```
-
-Create a Goal only when you want continued work. Record important findings or decisions when they change the next action; ordinary activity belongs in the task and tool results.
-
-## What you get
-
-- **Todo dependencies.** `blockedBy` links tasks. Starting, completing, or dispatching a task requires its prerequisites to be completed.
-- **Read-only Plan.** Inspect, search, ask questions, and edit task definitions. Implementation and dispatch require `/plan off`.
-- **Parallel subagents.** Up to eight independent Pi processes, with explicit assignments, questions, reports, profiles, and same-task continuation.
-- **Goal continuation.** One active objective, user-controlled pause policies, and an optional continuous research mode.
-- **Error recovery.** User-controlled `/retry` works in Normal, Plan, and Goal modes, with looping intervals, per-error-streak limits, and optional ordered model replacements.
-- **Live progress.** Task tree or DAG previews, current child activity, pending delivery, and pending verification. Full views are scrollable.
-- **Session persistence.** Tasks, Goals, and job records follow the current Pi branch. Restore pauses autonomous work and leaves previous child processes stopped.
-
-## Tasks and dependencies
-
-The model manages tasks with `todo`. This batch creates two dependent tasks atomically:
+The model interacts with the session DAG through the `todo` tool. Create tasks atomically in batches of 1–50 operations:
 
 ```json
 {
   "action": "batch",
   "operations": [
-    { "action": "create", "ref": "build", "subject": "Implement CSV export" },
-    { "action": "create", "subject": "Verify CSV export", "blockedBy": ["@build"] }
+    { "action": "create", "ref": "audit", "subject": "Audit authentication endpoints" },
+    { "action": "create", "subject": "Implement refresh token", "blockedBy": ["@audit"] }
   ]
 }
 ```
 
-A batch accepts **1–50 definition operations**: pending creates and definition updates. `@ref` refers to an earlier create in that call. Any invalid operation leaves the task list unchanged.
+- **Atomic transactions**: `@ref` allows later creates within the batch to reference earlier ones. If any operation fails, the entire task list remains unchanged.
+- **State lifecycle**: Tasks use `pending`, `in_progress`, `completed`, `failed`, `cancelled`, and `deleted`. Prerequisites must be completed before work begins. Completed tasks are terminal; create new work for rework.
+- **Querying state**:
+  - `{"action": "list", "ready": true, "limit": 50}`: List executable tasks whose prerequisites are satisfied (paged up to 200).
+  - `{"action": "get", "id": 1}`: Inspect task details, direct blockers, and downstream dependants (`blocks`).
+  - `{"action": "status"}`: Retrieve a compact read-only summary of mode, task counts, protection, and retry state.
+- **Delivery vs. acceptance**: A child process completion or tool report delivery does not complete a task. The main session must independently verify files and tests before marking it `completed`.
 
-Useful queries:
+### 2. Read-only Plan Mode (`/plan`)
 
-```json
-{"action":"list","ready":true,"limit":50}
-{"action":"get","id":2}
-{"action":"status"}
-```
+Toggle plan mode with `/plan start` and `/plan off` (inspect settings and tools via `/plan settings` and `/plan tools`):
+- Strictly blocks file writes, edits, and all shell execution tools (`bash`, `powershell`).
+- Forbids subagent dispatch and starting or completing tasks.
+- Allows reading files, searching repositories, asking structured user questions, and creating or adjusting task definitions.
 
-`list` defaults to 50 tasks, with a maximum page size of 200. Use the returned continuation arguments to read the next page with the same filters. `get` returns the complete task, its direct dependents (`blocks`), and unmet prerequisites. `status` returns a compact, read-only summary of mode, task counts, protection, and retry state; `goal get` also includes retry state.
+### 3. Parallel Subagents (`agents`)
 
-Task states are `pending`, `in_progress`, `completed`, `failed`, `cancelled`, and `deleted`. A single create accepts `pending` or, when dependencies permit, `in_progress`; batches create pending tasks. Failed and cancelled attempts do not satisfy dependencies.
+Dispatch independent background Pi child processes for isolated, verifiable assignments:
+- **Strict single tier**: The main session dispatches child agents; child agents cannot spawn further subagents.
+- **Configuration resolution**: Settings resolve through parent defaults -> named profiles -> call-level overrides (`model`, `thinking`, `tools`, `skills`).
+- **Bounded briefs**: The `context: true` parameter supplies a concise brief (capped at 2,000 characters) containing prerequisite states and artifact references.
+- **Skills**: Attach up to 8 local Markdown files (<= 64 KiB each); requires `read` in the child's active tool set (inherited or explicitly declared). Skills are local file references, not additional tools or permissions.
+- **Steering & resumption**: Inspect running jobs with `subagent_inspect`, send messages or preflight tool updates via `subagent_send`, or resume prior attempts using `resumeFrom`.
+- **Sandbox boundaries**: Profile `isolate` restricts extension loading for Team/manual session launches; child tool selection controls the selected tool set. Neither provides an OS or credential sandbox, and neither rolls back file changes.
 
-After verification, update the status:
+For full protocol specifications, see [docs/COMMUNICATION.md](docs/COMMUNICATION.md).
 
-```json
-{"action":"update","id":1,"status":"completed"}
-```
+### 4. Autonomous Goals (`goal`)
 
-Keep `description` for task requirements and necessary context. Put verification summaries in the conversation or link to artifacts; a status change does not need another report in the task description.
+Manage multi-turn objectives with `/goal` and the `goal` tool:
+- **Safe defaults**: Creating a Goal does not auto-start it. Resumed sessions keep Goals paused until explicitly activated with `/goal enable`.
+- **Paused progress notes**: When paused, models can still record verified milestones (`progress`) or updated plans (`nextStep`) without resuming execution.
+- **Control switches**:
+  - `nopause`: Forbids interactive user questionnaires and mid-flight stops, but does *not* grant unlimited error retries.
+  - `nolimit`: Removes the default 32-turn continuation limit without altering error retry counts.
+  - `autoresearch`: Enforces continuous investigation loops without marking the Goal complete.
 
-### Views and cleanup
+### 5. Error Recovery (`retry`)
 
-A dependency tree shows the current task and its worker:
+Configure automated recovery from API failures, quota exhaustion, authentication errors, and network drops via `/retry`:
+- **Default state**: Error retry is disabled by default (`off`).
+- **User-defined intervals**: When enabled, the model retries using a sequence of specified pauses (e.g., `/retry when-error 5s,15s,30s count 3`). The `count` parameter is optional; omitting it allows recurring retries across the intervals without a fixed streak cutoff. Quota and authentication failures follow the same configured intervals.
+- **One recovery owner**: With Retry enabled, Goal hands failures to it. Otherwise Goal uses its own bounded error backoff; its allowance is separate from Retry's count.
+- **Fallback models**: Designate alternate models (`/retry models provider-b/backup-model`; replace this placeholder with a registered model). When the active model exhausts `after` consecutive plugin retry attempts (default 2; initial request failures and host-native retries do not count toward `after`), execution advances to the next candidate model while sharing the overall `count` budget. When the total `count` is exhausted, retries stop completely without switching further.
+- **Compaction resilience**: When an error is followed by session compaction, continuation respects the `resumeAfterCompaction` setting and user pause controls rather than restarting unconditionally.
+- **Safe restoration**: Reloading or resuming a session preserves retry parameters but resets state to `armed/off` without resurrecting defunct timers.
 
-```text
-●  Todo (1/3)
-└─ #1       ✓ Inspect parser                        [Main session] [Completed]
-   └─ #2    ◐ Add CSV export                         [a1 · worker] [󰥔 Running]
-      └─ #3 ○ Test CSV export                         [Main session] [Pending]
-```
+### 6. Multi-session Teams (`team`)
 
-`/dag` draws the same task dependencies:
+Open `/team` to create a team, then expand its row to join the current conversation or start a new member session. Starting a member does not move this conversation to that team.
 
-```text
-●  Todo (1/3) DAG
-          ┌───────────────────────────────┐
-          │ ✓ #1 Inspect parser           │
-          │ [Main session]                │
-          │ [Completed]                   │
-          └──────────────┬────────────────┘
-                         └─┐
-                           │
-                           │
-          ┌────────────────┴──────────────┐
-          │ ◐ #2 Add CSV export           │
-          │ [a1 · worker]                 │
-          │ [󰥔 Running]                   │
-          └──────────────┬────────────────┘
-                         └─┐
-                           │
-                           │
-          ┌────────────────┴──────────────┐
-          │ ○ #3 Test CSV export          │
-          │ [Main session]                │
-          │ [Pending]                     │
-          └───────────────────────────────┘
-```
+Connect multiple independent Pi sessions in the same workspace:
+- **Minimal model interface**: Models are restricted to two tools: `team_send` (point-to-point messaging) and `team_inspect` (`scope: "team"` reads the joined team, not the UI's viewed team, paged <= 20 members / 4 KiB; the default query reads self. Member snapshots <= 2 KiB, reply preview 240 characters, activity default 3 max 10).
+- **User-role transport security**: Team messages travel over user-role channels. **Agent-authored messages do not constitute human authorization or grant expanded privileges.**
+- **PID liveness**: Member presence is verified via operating system process checks and real event records, avoiding spurious heartbeat timeouts. Disbanding archives team records without killing processes or deleting session files.
+- **Live runtime reconfiguration**: From the Team panel, users can update a target member's model or reasoning level. Changes take effect before the target's next turn once its current reply and tool batch finish; submission is an update request, confirmed only when acknowledged by the target runtime. Switching providers directs subsequent turns to that provider. Existing running sessions require `/reload` to pick up newly added capabilities.
+- **Names and lifecycle**: Member labels and Pi session names are separate edits, addressed by full SID. Stop/removal preserves saved sessions and mailboxes; session-file/mailbox deletion is a separate confirmed action.
+- **Clean startup**: Newly initialized blank team sessions respond with a brief startup confirmation before awaiting explicit assignments. Ordinary joins, re-attaching existing sessions, and `/reload` do not repeat this confirmation.
+- **Read-only History**: Inspect session transcripts with Pi's native TreeSelector (press `Enter` to view entry content, `Esc` to return to the tree list, and `Esc` again to exit back to the Team panel).
 
-`/todos` opens task actions and full details, including fragment browsing; bare `/dag` opens the scrollable graph, while `/dag full` and other filtered shortcuts print it. Use `/todos list full` for the complete text list, `paths` for a dependency tree, or `flat` for a flat preview. The above-editor preview shrinks with terminal height, is capped at 12 lines, and prioritizes work needing attention. Graphs that do not fit use a dependency list. Hiding Todos leaves the other feature summaries visible.
+![Team runtime settings in the English interface](assets/team.en.png)
 
-Filters: `full`, `pending`, `completed`, `failed`, `cancelled`.
+---
 
-- `pending` includes work awaiting verification.
-- `completed` means the Todo has been accepted.
-- `failed` and `cancelled` reflect the latest current child attempt; interrupted attempts count as cancelled.
-- A dismissed attempt remains available in job history. Its unfinished Todo returns to `pending` and can be continued.
+## Docked Panels & Navigation
 
-`/todos clear` opens a confirmation menu. The tool accepts `scope: "completed"`, `"closed"`, or `"all"`. Cleanup preserves active work, undelivered reports, work awaiting verification, and required dependency records. IDs are not reused.
+Running `/todos`, `/plan`, `/goal`, `/agents`, `/team`, `/retry`, or `/dag-display` opens a docked panel above the editor. Six extension modules are independently selectable in `pi config`; Display is shared UI, not a seventh extension. Disabled modules are omitted from the tab bar.
 
-## Subagents
+### Keyboard Shortcuts
 
-Give each child an assignment with input paths, scope, and expected evidence:
-
-```json
-{
-  "task": "Inspect the CSV parser and report edge cases with file and line references. Do not edit files.",
-  "todoId": 1,
-  "tools": ["read", "grep", "find", "ls"]
-}
-```
-
-Use `subagent_spawn` for that call. A `todoId` is optional; linked tasks must be ready. Children work in the same directory with independent model context. They discover workspace rules and receive the selected assignment, profile guidance, and optional task brief.
-
-Per-call `model`, `thinking`, `tools`, and `skills` can select a temporary environment without saving a Profile. Discover exact models with `subagent_inspect models:true`. Tools and Skills replace their lists; `skills:[]` disables them and required `read` is never added implicitly. See [Agent communication](docs/COMMUNICATION.md) for precedence and parameters.
-
-### Prerequisite briefs
-
-Set `context: true` on a linked job to include the task's requirements excerpt, direct prerequisite states, and current valid report excerpts. Fragment tasks include their step position and fragment state. Briefs are capped at 2,000 characters and do not copy parent conversation history or use stale reports. Ordinary task briefs mark omitted input.
-
-Record explicit artifact references in a Todo's `metadata.artifacts`:
-
-```json
-{"action":"update","id":1,"metadata":{"artifacts":["build/results.csv","test-results.json"]}}
-```
-
-References are unverified inputs, not completion evidence or permission. Keep the full assignment self-contained, including any required paths omitted from a brief.
-
-### Inspect, collect, and direct
-
-With `subagent_inspect`:
-
-```json
-{"jobId":"a1"}
-{"jobId":"a1","output":true,"timeout":0}
-{"jobId":"a1","output":true,"until":"finish","timeout":30}
-```
-
-The default returns short status, activity, and pending question IDs. `output: true` collects output and questions. It requires `jobId` and supports:
-
-- `timeout: 0`: immediate snapshot.
-- `until: "update"`: wait for a new report, question, or end; default timeout 5 seconds.
-- `until: "finish"`: wait for execution to finish or a question; default timeout 30 seconds.
-- `after`: wait beyond a known `reportVersion`.
-
-Waits are capped at 300 seconds, and questions return early. Timeout or cancellation ends the wait; use `subagent_cancel` to stop the child.
-
-With `subagent_send`:
-
-```json
-{"recipient":"a1","message":"Include quoted fields and empty rows in the review."}
-{"requestId":"request-id","message":"Use the documented CSV rules."}
-```
-
-Normal direction is queued at a safe boundary. Add `interrupt: true` with a `recipient` to stop the current local turn, clear obsolete directions/questions, and continue in the same child context. Tool replacement also requires those fields and cannot use `requestId`; availability is checked before interruption. Failures report their phase, status, and effects. Main-session decisions require user authorization; neither delivery nor tool selection guarantees execution or a sandbox.
-
-### Continue an interrupted task
-
-First inspect the failure and check any files or external actions already affected. Then start a new attempt on the same Todo:
-
-```json
-{
-  "resumeFrom": "a1",
-  "profile": "research",
-  "task": "Check the existing findings and continue the remaining parser review. Do not repeat completed work."
-}
-```
-
-`resumeFrom` keeps the original Todo binding and assignment, using the last actual configuration without rereading the old Profile. Explicit Profiles and call-level fields overlay it; `profile:inherit` resets to the current parent configuration. A changed Todo definition requires a fresh assignment; records without a saved assignment require complete instructions in `task`.
-
-Explicit cancellation dismisses a failed or interrupted attempt from the current panel while preserving its history. The unfinished task shows **Ready to resume**. A main-session status update takes over the task; a new child attempt displays its own activity.
-
-Child errors include a bounded diagnostic and recovery guidance. Resolve account or network problems, verify partial results, and continue explicitly. Child model requests do not retry automatically. The default job deadline is 600 seconds; `timeout` can set up to 86,400 seconds.
-
-### Accepting results
-
-Execution, report delivery, and acceptance are separate:
-
-```text
-Child finishes → report delivered → main verifies work → Todo completed
-```
-
-A successful child shows **Pending delivery**, then **Pending verification** on its linked unfinished task. The main session completes the Todo after checking the work. Cancelling an already successful job preserves its undelivered report; `remove: true` explicitly discards the record.
-
-For delivery timing and interruption details, see [Agent communication](docs/COMMUNICATION.md).
-
-## Goals
-
-A Goal stores its objective, scope, and verification requirements. Creating one leaves it paused; `/goal enable` starts continued work. An ordinary Goal completes only after every original requirement has been verified.
-
-| Control | Behavior |
+| Key | Navigation / Action |
 |---|---|
-| `/goal enable [#id]` | Start or resume the selected Goal. An already active idle Goal continues with its remaining allowance. |
-| `/goal disable [#id]` | Pause the Goal. Running children remain independently controllable. |
-| `/goal nopause [#id] [on\|off]` | Toggle directly; on blocks model pause within existing permissions, off allows it. |
-| `/goal nolimit [#id] [on\|off]` | Toggle directly; on removes the continuation cap, off uses it, preserving used turns. |
-| `/goal autoresearch [#id] [on\|off]` | Toggle directly; on selects continuous research, off ordinary work. Settings do not start work. |
-| `/goal complete #id` | Record verified completion; only the user can complete a continuous Goal. |
+| `Tab` / `Shift+Tab` | Switch between active module tabs in place |
+| `j` / `k` or `↓` / `↑` | Move row cursor down / up |
+| `g` / `G` | Jump to the first row of the upper / lower zone |
+| `←` / `→` | Scroll active zone by one screen |
+| `h` / `l` | Collapse / expand details inline |
+| `Enter` | Toggle switch, cycle option, edit text inline, or execute action |
+| **Double `Enter`** | **In-place red prompt confirmation** for destructive actions (no popup page or window resizing) |
+| `/` | Live filter / search within active view |
+| `Esc` | Cancel inline edit, collapse view, or close the panel |
 
-Automatic Goal turns and child-report wakes share a default allowance of **32**. This counts plugin-requested continuations, not every API request or tool-result follow-up. Regular mode replans after eight rounds without recorded work progress and pauses if the next round remains unproductive. `nopause` keeps trying while user stops, budget limits, and error safeguards remain effective.
+Panels automatically scale to terminal height without artificial row limits. User input and confirmation workflows are never interrupted by background periodic refreshes. Above-editor widgets hide while panels are open and restore upon dismissal.
 
-Update `progress` only for important verified results, reproducible findings, decisions, or changed blockers. Update `nextStep` when the next action materially changes. Work notes do not change the objective or its permissions.
+### Display Preferences (`/dag-display`)
 
-A settled Goal request error waits for `/retry` recovery when enabled; otherwise the Goal pauses. Goal recovery uses the remaining continuation allowance. `nolimit` controls that allowance, not `/retry` settings.
+Open `/dag-display` or select the **Display** tab to configure interface preferences:
+- **Icon style**: Switch between Nerd Font icons and plain text symbols.
+- **Language**: Choose `auto` (terminal locale), `en`, or `zh-CN`.
+- **Status widgets**: Independently toggle persistent widgets for Todos, Plan, Goal, Agents, and Retry.
+- **Model column width**: Configure display width limits for model labels.
 
-### Continuous research
+---
 
-```text
-/goal new Improve parser correctness and performance within src/parser
-/goal autoresearch #1 on
-/goal enable #1
-```
+## Commands & Tools Quick Reference
 
-You can also switch **Continuous research** in the Goal root menu. Omitted on/off toggles; explicit on/off is idempotent. An omitted ID selects the current Goal. The model verifies each milestone, then chooses another useful hypothesis, experiment, or evidence check within the original scope. It cannot complete, pause, delete, or switch the Goal, ask questions, or hand work back. Individual Todos can still be verified and completed.
+| Module | Slash Command | Registered Tools | Description |
+|---|---|---|---|
+| **Todos** | `/todos`, `/dag` | `todo` | Task DAG, dependency ordering, status updates, batch definition, `/todos paths`, `/todos flat` |
+| **Plan** | `/plan` (`start`, `off`, `status`, `settings`, `tools`) | — | Read-only planning mode, shell/write block, and allowlist inspection |
+| **Agents** | `/agents` | `subagent_spawn`, `subagent_inspect`, `subagent_send`, `subagent_cancel` | Single-tier child process dispatch, steering, and verification |
+| **Goal** | `/goal` | `goal` | Multi-turn objective continuation, `nopause`, and `autoresearch` |
+| **Retry** | `/retry` (`when-error`, `models`, `on`, `off`, `status`) | — | Error interval backoff, streak limits, and candidate model fallback chains |
+| **Team** | `/team` | `team_send`, `team_inspect` | Multi-session workspace collaboration, mailboxes, and live controls |
+| **Display** | `/dag-display` | — | Interface language, icons, model width, and widget visibility |
 
-While active, this mode supplies unlimited continuation turns and autonomous decisions. It preserves the Goal's saved `nolimit` and `nopause` choices; turning it off restores those choices without clearing used turns. `goal get` reports saved values and effective `controls`. Turning the mode off is not a stop command: use `/goal disable` to stop future continuations or interrupt Pi to abort current work.
+---
 
-Research can be quantitative or qualitative, but results need evidence. No experiment tools, automatic Git commits, or additional permissions are enabled. Preserve user edits; reject only the experiment's own changes. User stops, Plan, unavailable resources, error recovery limits, and compaction safeguards remain effective. Changing policy or scope during an error wait can cancel that recovery and leave the Goal paused for explicit resumption. Restore always pauses it.
+## Status & Permission Boundaries
 
-Continuous work can consume tokens indefinitely; set provider spending limits before leaving it unattended.
+- **English model prompts & localized UI**: Internal system prompts and instructions generated by the plugin are standardized in English. UI panels and menus support full localization in English and Simplified Chinese.
+- **Session-bound state**: Tasks, Goals, and child records are tracked within the active Pi session branch. Session rollbacks do not resurrect exited child processes or revert file edits. Team rosters and mailboxes do not roll back with the Pi session branch.
+- **Isolate boundary**: Profile `isolate` restricts extension loading for Team/manual launches; tool selection limits the selected tools. Neither provides an OS sandbox or rolls back file side effects.
+- **Privacy boundary**: This extension adds no analytics or tracking requests. Model calls and other installed extensions still use their configured providers and network access.
 
-## Error recovery
+## Documentation & Community
 
-`/retry` opens the user menu. Exact commands also work without a menu:
-
-```text
-/retry when-error 5m,30s,10m count 3
-/retry when-error 3m
-/retry off
-/retry status
-```
-
-Recovery is **off by default** and applies to the main session in Normal, Plan, and Goal modes. It waits for Pi's native recovery to finish. When enabled, it covers settled model request errors, including quota and authentication failures; use `/retry off` to stop repeated attempts until the cause is resolved.
-
-- Intervals use positive whole numbers with `s`, `m`, or `h`, separated by commas. The sequence loops.
-- `count` limits actual retries within a consecutive error streak. Omit it for no retry-count limit. A successful turn resets the streak and interval position.
-- If Pi is busy at the deadline, recovery waits the same interval again without consuming an attempt or advancing the sequence.
-- User cancellation, changed mode or Goal scope, Goal completion, navigation, and compaction cancel obsolete work. Goal limits and Plan's read-only restrictions remain effective.
-- Reload restores settings with recovery **off**; explicitly enable it again. Children and shell tools are not retried.
-
-The menu shows current recovery state beside **Retry settings**, **Alternative models**, and **Show summary**. Back or Esc in a child page returns one level; **Exit menu** or root Esc closes it. Saving and toggles return to the main menu. Editors retain invalid input for correction. Cancellation saves nothing. An unchanged value does not restart the countdown; editing only the total count preserves remaining time and used attempts.
-
-### Alternative models
-
-```text
-/retry models
-/retry models provider-b/model-b provider-c/model-c
-/retry models after 2
-/retry models off
-```
-
-`/retry models` prints current settings. Use registered names in place of the placeholders, or open **Alternative models** from the `/retry` root menu to search and page through models. Edit candidate order in a draft: add, move up/down, remove, then save. Candidate order is explicit, with at most eight distinct models. Setting candidates enables model replacement, not automatic retry itself; `/retry when-error` enables recovery. Candidate and per-model setting changes require interactive confirmation. `/retry models off` keeps ordinary retry available.
-
-Each error streak starts with the current model, then tries candidates in order, omitting duplicates. Each model gets at most two plugin attempts by default. The interval sequence and total `count` are shared across models: switching adds no extra delay and does not skip the next wait. Pi's native retries and the initial failure do not consume plugin attempts. Missing models, unconfigured authentication, or incompatible image input skip a candidate without a probe request.
-
-A successful replacement stays selected for this session, without changing global defaults. Candidate exhaustion stops automatic recovery even when total `count` is unlimited. Reload retains the candidate settings with retry off. Manual model selection cancels the old chain; a model-selection operation already in flight may finish, so check the selected model after cancellation. Recovery never revives a cancelled request.
-
-**Switching providers sends the current context to the selected service and may increase cost and cache overhead.** Confirm the services before saving the candidates. Pi owns context handling; the extension does not remove conversation history to fit a model.
-
-Pi 1.1+ distinguishes provider aborts from user cancellation at final settlement. Hosts without that signal do not automatically recover ambiguous provider-aborted requests. Retry settings belong to the user; model tools can query their state but cannot configure them.
-
-## Tools and commands
-
-These are model tools; JSON examples above show their arguments.
-
-| Tool | Purpose |
-|---|---|
-| `todo` | Tasks, paged queries, read-only status, dependency checks, fragments, and atomic definition batches |
-| `goal` | Objectives, important progress, continuation, and verified completion |
-| `subagent_spawn` | New child jobs and `resumeFrom` attempts |
-| `subagent_inspect` | Status, optional output/waiting, and profile/model discovery |
-| `subagent_send` | Direction and answers to child questions |
-| `subagent_cancel` | Stop or explicitly remove a child record |
-
-| Command family | Common operations |
-|---|---|
-| `/todos` | `add`, `start`, `done`, `pending`, `failed`, `cancelled`, `edit`, `delete`, `clear`, `paths`, `flat`, `view`, `show`, `hide`, `presets`, `apply`, `reset` |
-| `/dag` | `[full/pending/completed/failed/cancelled]` |
-| `/plan` | Direct toggle; `start`, `off`, `status`, `settings`, `tools name1,name2`, `show`, `hide` |
-| `/goal` | `new`, `enable`, `disable`, `complete`, `delete`, `edit`, `get`, `list`, `nopause`, `nolimit`, `autoresearch`, `config`, `reset` |
-| `/agents` | `list`, `wait`, `send`, `reply`, `cancel`, `remove`, `pause`, `resume`, `profiles`, `profile`, `unprofile`, `reset` |
-| `/retry` | Menu, `when-error intervals [count N]`, `off`, `status`, `models` |
-
-Use `help` with `/todos`, `/plan`, `/goal`, or `/agents` for syntax; `/retry` opens its menu. `/agents wait a1` shows output to you; the model collects it through `subagent_inspect` with `output: true`.
-
-## Configuration
-
-Files live under Pi's agent directory, normally `~/.pi/agent/pi-dag-workflow/`. `/goal config` shows their paths. Configuration uses Pi's selected agent directory, including `PI_CODING_AGENT_DIR` overrides.
-
-### Settings
-
-Optional `pi-dag-workflow-config.json`:
-
-```json
-{
-  "language": "auto",
-  "goalMaxTurns": 32,
-  "goalNoProgressLimit": 8,
-  "planTools": [],
-  "goalNoPauseTools": ["ask_user_question"]
-}
-```
-
-| Setting | Accepted values |
-|---|---|
-| `language` | `auto`, `en`, `zh-CN`; auto follows the terminal locale |
-| `goalMaxTurns` | 1–200; default allowance for new Goals |
-| `goalNoProgressLimit` | 1–100; no-progress rounds before replanning |
-| `planTools` | Up to 16 trusted additional read-only tool names |
-| `goalNoPauseTools` | Up to 16 main-session tools blocked while a nopause or continuous research Goal runs |
-
-Trust extra Plan tools only when they are read-only. Editing, shell execution, and dispatch remain guarded. Apply settings with `/reload`.
-
-### Profiles
-
-Optional `pi-dag-workflow-profile.json`:
-
-```json
-{
-  "profiles": [
-    {
-      "name": "research",
-      "thinking": "off",
-      "tools": ["read", "grep", "find", "ls"],
-      "instructions": "Read the supplied inputs and report findings with file and line references."
-    }
-  ]
-}
-```
-
-For new jobs, omitted/inherit Profile captures the parent's model, thinking, and supported active built-ins. Named Profiles override their defined fields, then call-level model/thinking/tools/skills override them. Model references use exact registered provider/id values. Implicit thinking adapts to capabilities; explicitly unsupported levels fail.
-
-Supported child tools: `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`, `powershell`, up to eight. Omitted parent extension tools are reported in the dispatch receipt. Shell tools require their execution environment; children also receive parent communication. Select read-only tools explicitly for read-only work.
-
-Profile guidance is sent as task context. Discover profiles with `subagent_inspect`:
-
-```json
-{"profiles":"summary"}
-{"profile":"research"}
-```
-
-Summaries include settings without instructions. A named query returns that profile in full; `profiles: true` requests the full directory. Profiles allow 1–48 character names, up to 8 tools and 2,000 characters of instructions. The file holds up to 64 profiles within 64 KiB. `/agents profile` saves with owner-only file permissions and preserves selected skill entries.
-
-Set optional `skills` in a Profile or individual dispatch for explicit local Markdown files:
-
-```json
-{"name":"csv-review","tools":["read","grep"],"skills":["skills/csv-review/SKILL.md"]}
-```
-
-Choose up to eight files using absolute paths, `~/`, or paths relative to the dispatch working directory. Each must be a readable, nonempty Markdown file of at most 64 KiB when dispatched. A profile with skill entries requires an existing `read` tool. Entries arrive once as task references; the child reads relevant content when needed. Skill text does not activate tools, extensions, or MCP, authorize scripts, or override the assignment.
-
-### Task fragments
-
-Optional `pi-dag-workflow-preset.json`:
-
-```json
-{
-  "presets": [
-    {
-      "name": "verify-change",
-      "description": "Review and test a completed change",
-      "steps": [
-        { "key": "review", "subject": "Review implementation" },
-        { "key": "test", "subject": "Test {target}", "after": ["review"] }
-      ]
-    }
-  ]
-}
-```
-
-Discover and apply fragments with `todo`:
-
-```json
-{"action":"presets"}
-{"action":"presets","preset":"verify-change"}
-{"action":"apply","preset":"verify-change","vars":{"target":"CSV export"}}
-```
-
-A directory query returns names, descriptions, and step counts. A named query returns the full definition. Each apply creates a new run with fresh IDs. `reset` reopens a run or selected step and its live downstream tasks; active child bindings protect their tasks from reset. `context: true` on a bound child supplies a bounded fragment brief.
-
-A fragment has 1–32 steps. `after` names prerequisite step keys; `description` and `activeForm` provide task guidance, and `owner` is a display label. Optional `skill` is a suggested skill name. The file holds up to 64 fragments within 64 KiB. Keep personal configuration owner-readable and outside source control.
-
-### Modules
-
-Select these resources with `pi config`:
-
-| Resource | Provides |
-|---|---|
-| `src/todos/index.ts` | Todo tool, `/todos`, `/dag`, task menus and preview |
-| `src/plan/index.ts` | Plan command, settings, read-only guard and summary |
-| `src/agents/index.ts` | Child jobs, messages, profiles and job menus |
-| `src/goal/index.ts` | Goal tracking, continuation, settings and summary |
-| `src/retry/index.ts` | `/retry`, error recovery, model selection and summary |
-
-Each feature works independently and includes its own summary and user entry points; GUI management is concentrated in root commands. Choose Todos + Plan for planning and execution, Goal for research, or Retry alone for error recovery. Task-linked jobs and task graphs require Todos; Agents also work without task bindings. Reload applies module selection.
-
-## Safety and persistence
-
-- Tasks, Plan settings, Goals, assignments, diagnostics, and finalized child output are saved in Pi session records and follow the active branch. Each feature restores its own state. Unreadable data remains protected until an explicit reset; read-only queries and view commands do not replace it. Treat session files as potentially sensitive.
-- Child jobs use your configured models and inherit the process environment. Plan and tool selection are execution guards; all processes run with your operating-system permissions.
-- Cancellation and branch navigation do not roll back files, commits, or external requests. Check side effects before continuing work.
-- Restore stops previous children and pauses the Goal. It restores records, not a child execution checkpoint. Partial text that never finalized before a crash may be unavailable.
-- Goal requirements are supplied through current context and recovery checkpoints. Memory summaries and earlier messages are preserved; reports still require verification.
-- Long child reports consume model context and session storage. Diagnostic summaries redact common credential forms, but arbitrary report content should still be reviewed before sharing.
-- The extension sends no telemetry. Model requests use Pi's configured providers. Child usage is recorded separately from the parent; configured costs are estimates, not invoices.
-
-See [Agent communication](docs/COMMUNICATION.md), [Contributing](CONTRIBUTING.md), and the [security policy](SECURITY.md).
-
-## Acknowledgements
-
-Inspired by work in the Pi community, including [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo), [pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode), [Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents), [pi-goal-x](https://github.com/tmonk/pi-goal-x), and [pi-autoresearch](https://github.com/davebcn87/pi-autoresearch).
+- [Agent Communication & Delivery Protocol](docs/COMMUNICATION.md)
+- [Contributing Guidelines](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
 
 ## License
 
-[MIT](LICENSE)
+MIT © [Raix2215](https://github.com/Raix2215)

@@ -1,9 +1,9 @@
 import { stripTerminalSequences, type AutocompleteItem } from '@earendil-works/pi-tui';
 
 /** One supported sub-action of a slash command and its short Chinese hint. */
-export interface CompletionAction { action: string; description: string }
+interface CompletionAction { action: string; description: string }
 /** One dynamic second-token candidate (e.g. a live Todo/Goal/Agent id). */
-export interface CompletionToken { token: string; label?: string; description?: string }
+interface CompletionToken { token: string; label?: string; description?: string }
 export interface CompletionSpec {
   /** Root sub-actions the command accepts. */
   actions: readonly CompletionAction[];

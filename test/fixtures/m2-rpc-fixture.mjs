@@ -5,6 +5,7 @@ let active = false;
 let queued = 0;
 let toolUpdates = 0;
 let stalledDirection;
+let activitySteps = [];
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => {
   buffer += chunk;
@@ -31,6 +32,16 @@ process.stdin.on('data', chunk => {
     }
     else if (command.type === 'clear_queue') { queued=0; response({}); }
     else if (command.type === 'prompt') {
+      if (command.message === 'ACTIVITY ADVANCE' && activitySteps.length) {
+        emit({type:'message_start',message:{role:'user',content:command.message}});
+        emit(activitySteps.shift());
+        response({disposition:'queued'});
+        if (!activitySteps.length) {
+          emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'done'}],stopReason:'stop'}});
+          emit({type:'agent_end',messages:[],willRetry:false}); active=false; emit({type:'agent_settled'});
+        }
+        continue;
+      }
       if (command.message.startsWith('pi-dag-child-control:')) {
         const payload = JSON.parse(command.message.slice('pi-dag-child-control:'.length));
         if (payload.action === 'check') {
@@ -94,6 +105,18 @@ process.stdin.on('data', chunk => {
       } else if (command.message === 'BAD EVENT') emit({type:'message_end',message:{role:'assistant',content:{invalid:true}}});
       else if (command.message === 'BAD JSON') process.stdout.write('not json\n');
       else if (command.message === 'OVERSIZED') process.stdout.write('x'.repeat(1100000));
+      else if (command.message === 'ACTIVITY STEPPED') {
+        activitySteps = [
+          {type:'message_update',assistantMessageEvent:{type:'thinking_delta',delta:'reason'}},
+          {type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'result'}},
+          {type:'tool_execution_start',toolCallId:'one',toolName:'very_long_tool_name'},
+          {type:'tool_execution_start',toolCallId:'two',toolName:'read'},
+          {type:'tool_execution_end',toolCallId:'one',toolName:'very_long_tool_name'},
+          {type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'tool is still active'}},
+          {type:'tool_execution_end',toolCallId:'two',toolName:'read'},
+        ];
+        emit(activitySteps.shift());
+      }
       else if (command.message === 'ACTIVITY') {
         emit({type:'message_update',assistantMessageEvent:{type:'thinking_delta',delta:'reason'}});
         emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'result'}});
@@ -104,6 +127,24 @@ process.stdin.on('data', chunk => {
         setTimeout(()=> { emit({type:'tool_execution_end',toolCallId:'two',toolName:'read'}); end('done'); settled(); }, 100);
       }
       else if (command.message === 'HOLD') { /* deliberately no completion */ }
+      // A first attempt that keeps the child open, so a direction can start a real second attempt.
+      else if (command.message === 'WAIT DIRECTION') end('earlier attempt output');
+      // The second attempt: it consumes the direction (moving outputStart) and reports nothing.
+      else if (command.message === 'QUIET') {
+        emit({type:'message_start',message:{role:'user',content:command.message}});
+        end('   '); settled();
+      }
+      else if (command.message === 'BLANK') { end('   '); settled(); }
+      // A report event whose payload is only whitespace, plus a blank final assistant message.
+      else if (command.message === 'BLANK NOTICE') {
+        emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-message:   \n  '});
+        end('   '); settled();
+      }
+      // A real report event; the final assistant message is still blank.
+      else if (command.message === 'REAL NOTICE') {
+        emit({type:'extension_ui_request',method:'notify',message:'pi-dag-child-message:verified the change'});
+        end('   '); settled();
+      }
       else if (command.message.startsWith('ENV:')) { end(`env ${command.message.slice(4)}=${process.env[command.message.slice(4)] ?? ''}`); settled(); }
       else { end(command.message); settled(); }
     } else response({});

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { AgentRuntime } from '../src/agents/runtime.ts';
-import { ProfileStore } from '../src/agents/profiles.ts';
-import { registerGoal } from '../src/goal/register.ts';
-import { emptyState, type Todo } from '../src/todos/state.ts';
+import { AgentRuntime } from "../src/agents/domain/runtime.ts";
+import { ProfileStore } from "../src/agents/domain/profiles.ts";
+import { registerGoal } from "../src/goal/commands/register.ts";
+import { emptyState } from "../src/todos/domain/state.ts";
+import type { Todo } from "../src/shared/task-types.ts";
 
 function measure(fn: () => void, samples = 200) {
   for (let i = 0; i < 20; i++) fn();

@@ -1,260 +1,224 @@
-import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { truncateToWidth } from '@earendil-works/pi-tui';
-import type { TodoFilter, TodoParams, WorkflowState } from '../todos/state.ts';
-import type { PresetStore, Preset } from '../todos/presets.ts';
-import type { registerAgents } from '../agents/register.ts';
-import type { registerGoal } from '../goal/register.ts';
-import type { registerRetry } from '../retry/register.ts';
-import type { registerCheckpoints } from '../todos/checkpoints.ts';
-import { PLAN_TYPE, emptyPlanState, restorePlanState } from '../plan/state.ts';
-import { emptyViewPreferences, restoreViewPreferences, VIEW_TYPE } from '../ui/preferences.ts';
-import { LEGACY_WORKFLOW_TYPE as STATE_TYPE } from '../shared/state-types.ts';
-import { passiveMessage } from '../shared/passive-message.ts';
-import { clean, notify, renderDag, renderTasks, renderWidget, widgetHeightBudget } from '../ui/render.ts';
-import { bindMenuDisplay, menuDisplayOpen, readView } from '../ui/menu.ts';
-import { noFeatures, type Feature } from './features.ts';
-import { loadConfig, loadLocale, configPaths, type WorkflowConfig } from '../shared/config.ts';
+import { TODO_FILTERS, type TodoFilter, type WorkflowState } from '../shared/task-types.ts';
+import type { TodoParams } from "../shared/task-schema.ts";
+import type { attachTodos } from '../todos/index.ts';
+import type { attachPlan } from '../plan/index.ts';
+import type { registerAgents } from "../agents/commands/register.ts";
+import type { registerGoal } from "../goal/commands/register.ts";
+import type { registerRetry } from '../retry/commands/register.ts';
+import type { createWorkflowView } from './commands/view.ts';
+import { noFeatures, type Feature } from './domain/features.ts';
+import { createWorkflowIO } from './io/session.ts';
+import { createViewOwner } from './domain/view-owner.ts';
+import { createPanelRegistry } from './commands/connect.ts';
+import { loadConfig, loadDisplaySettings, loadLocale, writeConfig, type WorkflowConfig } from '../shared/config.ts';
+import { backgroundProcess } from '../team/domain/launcher.ts';
+import { choose, panelOptions } from '../shared/ui/menu.ts';
+import { notify } from '../shared/terminal.ts';
+import type { IconStyle } from '../shared/ui/symbols.ts';
 import { createTranslator } from '../shared/i18n.ts';
-import { latestBoundJobs, taskFilterStatus } from '../ui/filter.ts';
+import { glyph } from '../shared/ui/symbols.ts';
 
-const WIDGET = 'pi-dag-workflow.todos';
-/** A runtime-owned rendezvous, not a store for every feature's persisted state. */
 export function createWorkflow(initialApi: ExtensionAPI) {
-  const msg = createTranslator(loadLocale());
-  const modules = noFeatures(), attached = new Set<Feature>();
-  const owners = new Map<Feature, ExtensionAPI>();
+  const msg = createTranslator(loadLocale()), io = createWorkflowIO();
+  const modules = noFeatures(), attached = new Set<Feature>(), owners = new Map<Feature, ExtensionAPI>();
   const started = new WeakSet<object>(), restored = new WeakSet<object>(), stopped = new WeakSet<object>();
-  let dispose = () => {};
-  const emptyState = (): WorkflowState => ({ version: 1, tasks: [], nextId: 1, plan: false, planTools: [], visible: true, view: 'list', treeStyle: 'paths' });
-  let tasks = emptyState(), plan = emptyPlanState(), preferences = emptyViewPreferences();
-  let legacyPlanFields: { plan?: unknown; planTools?: unknown } = {};
-  let todoError: string | undefined, planError: string | undefined;
-  let todoApi: typeof import('../todos/state.ts') | undefined, presets: PresetStore | undefined;
-  let presetList: Preset[] = [];
-  let generation = 0, warnedEphemeral = false;
-  let branchCache: { manager: ExtensionContext['sessionManager']; leaf: string | null; entries: ReturnType<ExtensionContext['sessionManager']['getBranch']> } | undefined;
-  const readBranch = (ctx: ExtensionContext) => {
-    const manager = ctx.sessionManager, leaf = typeof manager.getLeafId === 'function' ? manager.getLeafId() : undefined;
-    if (leaf !== undefined && branchCache?.manager === manager && branchCache.leaf === leaf) return branchCache.entries;
-    const entries = manager.getBranch();
-    if (leaf !== undefined) branchCache = { manager, leaf, entries };
-    return entries;
-  };
-  // Only a surviving resource may carry an idle message after project filtering/reload.
+  let dispose = () => {}, generation = 0, unbindMenu: (() => void) | undefined, displayAttached = false;
+  let todos: Awaited<ReturnType<typeof attachTodos>> | undefined, plan: Awaited<ReturnType<typeof attachPlan>> | undefined;
+  let agents: ReturnType<typeof registerAgents> | undefined, goals: ReturnType<typeof registerGoal> | undefined, retry: ReturnType<typeof registerRetry> | undefined;
+  let view: ReturnType<typeof createWorkflowView>;
+  const userPrompts = new Set<string>();
+  const panelLabels = { todos: 'Todos', plan: 'Plan', goal: 'Goal', agents: 'Agents', team: 'Team', retry: 'Retry', display: 'Display' };
+  let display: { iconStyle: IconStyle; modelLabelWidth: number; language: 'auto' | 'en' | 'zh-CN' } = { iconStyle: 'nerd-font', modelLabelWidth: 18, language: 'auto' };
+  const anyModule = () => Object.values(modules).some(Boolean);
+  const panels = createPanelRegistry(Object.keys(panelLabels), id => id === 'display' ? anyModule() : modules[id as Feature] === true, () => generation, () => { const tasks = state().tasks.filter(task => task.status !== 'deleted'); return `(${tasks.filter(task => task.status === 'completed').length}/${tasks.length})`; });
   const api = () => [...owners.values()][0] ?? initialApi;
+  const readBranch = io.branch;
   const configs = new Map<string, Promise<WorkflowConfig>>();
   const readConfig = (domain: 'goal' | 'plan') => { const loaded = configs.get(domain) ?? loadConfig(msg, domain); configs.set(domain, loaded); return loaded; };
-  let agents: ReturnType<typeof registerAgents> | undefined, goals: ReturnType<typeof registerGoal> | undefined, retry: ReturnType<typeof registerRetry> | undefined;
-  let checkpoints: ReturnType<typeof registerCheckpoints> | undefined;
   const activeAgents = () => modules.agents ? agents : undefined;
   const activeGoal = () => modules.goal ? goals : undefined;
   const activeRetry = () => modules.retry ? retry : undefined;
   const jobs = () => activeAgents()?.summaries() ?? [];
+  const empty = (): WorkflowState => ({ version: 1, tasks: [], nextId: 1, plan: false, planTools: [], visible: true, view: 'list', treeStyle: 'paths' });
   const noTasks: WorkflowState['tasks'] = [];
-  // This read-only projection is the cross-feature contract; each feature restores its own record.
-  const state = (): WorkflowState => ({ ...tasks, tasks: modules.todos && !todoError ? tasks.tasks : noTasks, plan: modules.plan && plan.enabled, planTools: modules.plan ? plan.tools : [] });
-  const visible = (feature: Feature) => modules[feature] && (feature === 'todos' ? tasks.visible : preferences.visible[feature] !== false);
+  const state = (): WorkflowState => {
+    const tasks = todos?.state() ?? empty(), planning = plan?.state();
+    return { ...tasks, tasks: modules.todos && !todos?.protected() ? tasks.tasks : noTasks, plan: modules.plan && !!planning?.enabled, planTools: modules.plan ? planning!.tools : [] };
+  };
+  const views = createViewOwner({ api, branch: readBranch, paint });
+  const visible = (feature: Feature) => modules[feature] && (feature === 'todos' ? (todos?.state().visible ?? true) : views.state().visible[feature] !== false);
+  function paint(ctx: ExtensionContext) { view.paint(ctx); }
   const retryScope = () => { const goal = activeGoal()?.recoveryGoal(); return createHash('sha256').update(JSON.stringify([state().plan, goal ? [goal.id, goal.title, goal.description, goal.status, goal.modelPause, goal.autoresearch] : null])).digest('hex'); };
-  let unbindMenu: (() => void) | undefined;
-  const userPrompts = new Set<string>();
-  let lastPaint: { tasks: WorkflowState['tasks']; key: string; ui: ExtensionContext['ui']; theme: ExtensionContext['ui']['theme'] } | undefined;
-  let planNotice = false;
-  const guidance = passiveMessage('pi-dag-workflow.guidance', () => planNotice && modules.plan ? state().plan
-    ? `Plan: read/search/ask${modules.todos ? ' and edit Todo definitions' : ''} only. No implementation, shell, task start/complete or dispatch; only the user may /plan off.${modules.goal ? ' Goal is paused.' : ''}`
-    : `Normal:${modules.todos ? ' continue the existing Todo list.' : ' implementation is available.'}${modules.goal ? ' Goal stays paused until explicitly enabled.' : ''}` : undefined, readBranch, () => { planNotice = false; });
-
-  function paint(ctx: ExtensionContext) {
-    if (!ctx.hasUI || !Object.values(modules).some(Boolean)) return;
-    if (menuDisplayOpen(ctx)) { lastPaint = undefined; ctx.ui.setWidget(WIDGET, undefined); return; }
-    const snapshotJobs = visible('agents') ? jobs() : [];
-    const projected = { ...state(), tasks: visible('todos') ? state().tasks : noTasks, plan: visible('plan') && state().plan };
-    const goalTitle = visible('goal') ? activeGoal()?.title() : undefined;
-    const recovery = visible('retry') ? activeRetry()?.snapshot() : undefined;
-    const retryLine = recovery?.enabled && recovery.phase !== 'armed' ? msg`重试 · ${recovery.phase} · ${recovery.attempts}/${recovery.count ?? msg('不限')}` : undefined;
-    const now = Date.now();
-    const jobKey = snapshotJobs.map((job) => [job.id, job.todoId, job.status, job.reportDelivery, job.taskReportStale, job.dismissed, job.label, job.activity?.kind, job.activity?.tool, job.activity?.since, job.activity?.since ? Math.floor((now - job.activity.since) / 1000) : undefined]);
-    const key = JSON.stringify([modules, projected.plan, tasks.visible, preferences, tasks.view, tasks.treeStyle, tasks.filter, goalTitle, retryLine, todoError, planError, jobKey]);
-    if (lastPaint?.tasks === projected.tasks && lastPaint.key === key && lastPaint.ui === ctx.ui && lastPaint.theme === ctx.ui.theme) return;
-    lastPaint = { tasks: projected.tasks, key, ui: ctx.ui, theme: ctx.ui.theme };
-    if (!projected.tasks.some((task) => task.status !== 'deleted') && !projected.plan && !todoError && !planError && !goalTitle && !snapshotJobs.length && !retryLine) { ctx.ui.setWidget(WIDGET, undefined); return; }
-    const lines = (width: number, rows = 36) => {
-      const error = todoError ?? planError, budget = widgetHeightBudget(rows);
-      const result = renderWidget(projected, width, Math.max(0, budget - (error ? 1 : 0) - (retryLine ? 1 : 0)), { ...(!visible('todos') ? { maxRows: 0 } : {}), theme: ctx.ui.theme, jobs: snapshotJobs, goalTitle, msg });
-      if (retryLine) result.push(truncateToWidth(clean(retryLine), width));
-      if (error) result.push(truncateToWidth(clean(msg`恢复失败：${error}；受影响功能保持保护`), width));
-      return result.slice(0, budget);
-    };
-    if (ctx.mode === 'tui') ctx.ui.setWidget(WIDGET, (tui) => {
-      let width = -1, rows = -1, rendered: string[] = [];
-      return { render(next: number) { const height = tui?.terminal?.rows ?? 36; if (width !== next || rows !== height) { rendered = lines(next, height); width = next; rows = height; } return rendered; }, invalidate() { width = -1; } };
-    }); else ctx.ui.setWidget(WIDGET, lines(80));
-  }
   function warnEphemeral(ctx: ExtensionContext) {
-    const file = ctx.sessionManager.getSessionFile();
-    if (!warnedEphemeral && (!file || !existsSync(file))) { warnedEphemeral = true; ctx.ui.notify(msg(file ? 'Pi 尚未创建会话文件：发送一条消息后，当前工作流状态才会随会话保存。' : '当前为临时会话，退出后工作流状态不保存。'), 'warning'); }
+    const warning = io.ephemeral(ctx);
+    if (warning) ctx.ui.notify(warning.file ? msg('Pi 尚未创建会话文件：发送一条消息后，当前工作流状态才会随会话保存。') : msg('当前为临时会话，退出后工作流状态不保存。'), 'warning');
   }
-  function commit(next: WorkflowState, ctx: ExtensionContext, source: 'tool' | 'command' = 'command') {
-    if (todoError) throw new Error(msg`状态恢复失败，不能修改：${todoError}`);
-    if (next.tasks === tasks.tasks && next.nextId === tasks.nextId && next.visible === tasks.visible && next.view === tasks.view && next.treeStyle === tasks.treeStyle && next.filter === tasks.filter) return;
-    const changed = next.tasks !== tasks.tasks;
-    const before = tasks;
-    // Until a dedicated Plan entry exists, its migration source is this legacy record.
-    // Todo writes must preserve those unrelated fields, including protected bad data.
-    api().appendEntry(STATE_TYPE, { ...next, plan: legacyPlanFields.plan ?? false, planTools: legacyPlanFields.planTools ?? [] });
-    tasks = { ...next, plan: false, planTools: [] };
-    if (source === 'command' && changed) {
-      const previous = new Map(before.tasks.map((task) => [task.id, task]));
-      checkpoints?.changed([...new Set([...next.tasks.filter((task) => previous.get(task.id) !== task).map((task) => task.id), ...before.tasks.filter((task) => !next.tasks.some((item) => item.id === task.id)).map((task) => task.id)])]);
-    }
-    paint(ctx); warnEphemeral(ctx);
-  }
-  function commitPlan(next: WorkflowState, ctx: ExtensionContext) {
-    if (planError) throw new Error(planError);
-    if (next.plan === plan.enabled && next.planTools === plan.tools) return;
-    const changedMode = next.plan !== plan.enabled;
-    const value = { version: 1 as const, enabled: next.plan, tools: [...next.planTools] };
-    api().appendEntry(PLAN_TYPE, value); plan = value;
-    if (changedMode) { activeRetry()?.cancel(msg('模式已改变，旧计时已取消')); planNotice = true; guidance.mark(); checkpoints?.changed(); }
-    paint(ctx); warnEphemeral(ctx);
-  }
-  function setSummary(feature: Feature, show: boolean, ctx: ExtensionContext) {
-    if (feature === 'todos') { commit({ ...tasks, visible: show }, ctx); return; }
-    if ((preferences.visible[feature] !== false) === show) return;
-    const next = { ...preferences, visible: { ...preferences.visible, [feature]: show } };
-    api().appendEntry(VIEW_TYPE, next); preferences = next; paint(ctx);
-  }
-  function restoreTodo(ctx: ExtensionContext) {
-    legacyPlanFields = {};
-    try {
-      const saved = readBranch(ctx).findLast((item) => item.type === 'custom' && item.customType === STATE_TYPE);
-      const legacy = saved?.type === 'custom' ? structuredClone(saved.data as WorkflowState) : todoApi!.restoreState(readBranch(ctx), msg);
-      legacyPlanFields = { plan: legacy?.plan, planTools: legacy?.planTools };
-      const value = { ...legacy, plan: false, planTools: [] };
-      todoApi!.validateState(value, msg); tasks = value; todoError = undefined;
-    } catch (cause) { tasks = emptyState(); todoError = String(cause); notify(ctx, msg`工作流状态恢复失败：${todoError}。保留原记录，修改已禁用；/todos clear 可明确重置。`, 'error'); }
-  }
-  function restorePlan(ctx: ExtensionContext) {
-    try { plan = restorePlanState(readBranch(ctx), msg); planError = undefined; }
-    catch (cause) { plan = { ...emptyPlanState(), enabled: true }; planError = String(cause); notify(ctx, msg('Plan 状态不可读，保持只读保护；/plan settings 可查看'), 'error'); }
-    planNotice = plan.enabled || readBranch(ctx).some((entry) => entry.type === 'custom' && entry.customType === PLAN_TYPE);
-    guidance.reset(planNotice);
-  }
-  async function refreshPresets() { if (presets) { await presets.load(); presetList = presets.list(); } }
-  async function restorePresets(ctx: ExtensionContext) { const own = generation; try { await refreshPresets(); if (own === generation) paint(ctx); } catch (cause) { if (own === generation) notify(ctx, msg`Todo 片段（preset）配置无效：${String(cause)}`, 'error'); } }
   function mutate(params: TodoParams, ctx: ExtensionContext, source: 'tool' | 'command' = 'tool') {
     if (!modules.todos) throw new Error(msg('未启用 Todos，不能使用任务关联'));
-    if (todoError && !['list', 'get', 'status', 'presets'].includes(params.action)) throw new Error(msg`状态恢复失败，不能修改：${todoError}`);
-    if (params.action === 'clear') {
-      todoApi!.validateTodoFields(params, msg);
-      const before = state(), scope = params.scope ?? 'all';
-      const latest = latestBoundJobs(jobs());
-      const outcomes = new Map(before.tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, taskFilterStatus(task, latest.get(task.id))]));
-      const result = todoApi!.clearTodoRecords(before, scope, activeAgents()?.cleanupProtection(before.tasks) ?? new Set(), outcomes, msg);
-      commit(result.state, ctx, source);
-      const removed = activeAgents()?.cleanupRecords(scope, before.tasks, tasks.tasks) ?? 0;
-      return { ...result, text: `${result.text}\n${msg`已清理 ${removed} 个已结束子 Agent 记录；运行及待交付／核验记录保留`}` };
-    }
-    if (params.action !== 'batch') activeAgents()?.assertTodoMutation(params);
-    const before = state(), result = todoApi!.applyTodo(before, params, msg, presets);
-    // Read-only projections must not write back a protected state's empty task view.
-    // No-op mutations still run job-ownership guards and explicit main takeover.
-    if (['list', 'get', 'status', 'presets'].includes(params.action)) return result;
-    if (result.operations) for (const operation of result.operations) activeAgents()?.assertTodoMutation(operation);
-    const ready = todoApi!.newlyReady(before, result.state); commit(result.state, ctx, source);
-    if (result.operations) {
-      const updates = new Map<number, TodoParams>();
-      for (const operation of result.operations) if (operation.action === 'update' && operation.id !== undefined) { const previous = updates.get(operation.id); updates.set(operation.id, { ...previous, ...operation, addBlockedBy: [...previous?.addBlockedBy ?? [], ...operation.addBlockedBy ?? []], removeBlockedBy: [...previous?.removeBlockedBy ?? [], ...operation.removeBlockedBy ?? []] }); }
-      for (const operation of updates.values()) activeAgents()?.afterTodoMutation(operation, before);
-    } else activeAgents()?.afterTodoMutation(params, before);
-    if (ready.length) {
-      const names = ready.slice(0, 5).map((task) => `#${task.id} ${truncateToWidth(clean(task.subject), 24)}`).join('、');
-      result.text += `\n${msg`前置已完成，可开始：${names}${ready.length > 5 ? msg` 等 ${ready.length} 项` : ''}`}`;
-    }
-    return result;
+    return todos!.mutate(params, ctx, source);
   }
-  async function show(ctx: ExtensionContext, view: 'list' | 'dag', filter?: TodoFilter) {
-    const selection = filter ?? tasks.filter ?? 'full';
-    const lines = (width: number) => view === 'dag' ? renderDag(state(), width, ctx.ui.theme, activeGoal()?.title(), jobs(), { msg, filter: selection }) : renderTasks(state(), width, { maxRows: Infinity, theme: ctx.ui.theme, jobs: jobs(), goalTitle: activeGoal()?.title(), msg, filter: selection });
-    const own = generation;
-    await readView(ctx, view === 'dag' ? 'DAG' : msg('任务清单'), lines(Math.max(16, (process.stdout.columns ?? 80) - 4) - 2).join('\n') || msg('暂无任务'), { msg, isCurrent: () => own === generation });
+  /** The modules that really draw a section in the shared widget: Team has none, so it is not offered. */
+  const widgetFeatures = ['todos', 'plan', 'goal', 'agents', 'retry'] as const;
+  const widgetLabel = (feature: typeof widgetFeatures[number]) => ({ todos: msg('Todos 小组件'), plan: msg('Plan 小组件'), goal: msg('Goal 小组件'), agents: msg('Agents 小组件'), retry: msg('Retry 小组件') })[feature];
+  /**
+   * What hiding each section really costs, per module: the widget is one shared block, so the row has to name
+   * that module's own business instead of a generic "tasks, Goal or subprocesses" sentence that is wrong for
+   * Plan, Retry and the others.
+   */
+  /** The five filter names the `todo` command accepts, in one place so both surfaces read the same labels. */
+  const filterLabel = (filter: string): string => filter === 'pending' ? msg('待执行') : filter === 'completed' ? msg('已完成') : filter === 'failed' ? msg('失败') : filter === 'cancelled' ? msg('取消') : msg('全部');
+  const widgetNote = (feature: typeof widgetFeatures[number]) => ({
+    todos: msg('只控制 Todos 区（任务清单与完成进度）在这个常驻小组件里的显示；任务本身、状态与执行不受影响。'),
+    plan: msg('只控制 Plan 区（当前 Plan 模式与条目）的显示；Plan 是否启用、是否拦截写入不受影响。'),
+    goal: msg('只控制 Goal 区（当前目标与轮次进度）的显示；目标焦点、续跑与预算不受影响。'),
+    agents: msg('只控制 Agents 区（子 Agent 任务与状态）的显示；子进程的派发与运行不受影响。'),
+    retry: msg('只控制 Retry 区（重试状态与尝试次数）的显示；Retry 的开关与重试行为不受影响。'),
+  })[feature];
+  async function displayMenu(ctx: ExtensionContext, nav: ReturnType<typeof panels.module>): Promise<void> {
+    const epoch = generation;
+    while (epoch === generation) {
+      const items = [
+        { id: 'icon-style', kind: 'cycle' as const, icon: glyph('display'), choices: [msg('Nerd Font'), msg('纯文本')], label: msg('图标风格'), value: display.iconStyle === 'plain' ? msg('纯文本') : msg('Nerd Font'), description: msg('切换后立即生效；纯文本模式省略图标。') },
+        { id: 'language', kind: 'cycle' as const, icon: glyph('send'), choices: [msg('自动'), msg('简体中文'), 'English'], label: msg('语言'), value: display.language === 'en' ? 'English' : display.language === 'zh-CN' ? msg('简体中文') : msg('自动'), description: msg('保存后重新加载插件生效。') },
+        { id: 'model-width', kind: 'input' as const, icon: glyph('models'), input: { title: msg('模型名最大宽度（6–18）'), value: String(display.modelLabelWidth), validate: (value: string) => /^\d+$/.test(value.trim()) && Number(value) >= 6 && Number(value) <= 18 ? undefined : msg('输入 6–18 的整数') }, run: async (value: unknown) => { const width = Number(String(value).trim()); if (!Number.isInteger(width) || width < 6 || width > 18) return; await writeConfig({ modelLabelWidth: width }, msg); display.modelLabelWidth = width; paint(ctx); }, label: msg('模型名最大宽度'), value: String(display.modelLabelWidth), description: msg('常驻小组件里的模型名按此上限截断。') },
+        ...widgetFeatures.filter(feature => modules[feature]).map(feature => ({ id: `widget:${feature}`, kind: 'toggle' as const, icon: glyph('display'), label: widgetLabel(feature), checked: visible(feature), value: visible(feature) ? msg('开启') : msg('关闭'), description: widgetNote(feature) })),
+        // The Todos view is part of the workflow state the `todo` command already owns, so these rows commit
+        // through that same owner instead of keeping a second copy of the setting. Only Todos draws a list, so
+        // the rows exist only while Todos is enabled.
+        ...(modules.todos ? [
+          { id: 'todos-view', kind: 'cycle' as const, icon: glyph('mode'), choices: [msg('列表'), msg('依赖图')], label: msg('Todos 视图'), value: todos!.state().view === 'dag' ? msg('依赖图') : msg('列表'), valueTone: 'muted' as const, description: msg('设置常驻小组件的 list/dag 视图，与 /todos view 共用显示状态；不会打开已隐藏的小组件。') + '\n' + msg('只改展示，不改任务定义或依赖。') },
+          { id: 'todos-filter', kind: 'cycle' as const, icon: glyph('filter'), choices: TODO_FILTERS.map(filterLabel), label: msg('Todos 筛选'), value: filterLabel(todos!.state().filter ?? 'full'), valueTone: 'muted' as const, description: msg('设置常驻小组件的筛选：全部、待执行、已完成、失败、取消；不改变 Todos 面板的临时筛选。') + '\n' + msg('只改展示范围，不改任务状态。') },
+          { id: 'todos-tree', kind: 'cycle' as const, icon: glyph('graph'), choices: [msg('路径树'), msg('平铺')], label: msg('Todos 树样式'), value: todos!.state().treeStyle === 'flat' ? msg('平铺') : msg('路径树'), valueTone: 'muted' as const, description: msg('设置列表的路径树或平铺样式，与 /todos paths、/todos flat 共用 treeStyle；不修改任务或依赖，也不打开已隐藏的小组件。'), },
+        ] : []),
+      ];
+      const selected = await choose(ctx, msg('显示'), items, { msg, panel: { ...panelOptions(nav, { id: 'display', label: panelLabels.display }, 'root', []), single: true }, isCurrent: () => epoch === generation });
+      if (epoch !== generation) return;
+      if (selected === undefined) return;
+      try {
+        if (selected === 'icon-style') { const next: IconStyle = display.iconStyle === 'plain' ? 'nerd-font' : 'plain'; await writeConfig({ iconStyle: next }, msg); display.iconStyle = next; continue; }
+        if (selected === 'language') { const order = ['auto', 'zh-CN', 'en'] as const; const next = order[(order.indexOf(display.language) + 1) % order.length]!; await writeConfig({ language: next }, msg); display.language = next; notify(ctx, msg('语言已保存；重新加载插件后生效。'), 'info'); continue; }
+        if (selected === 'model-width') continue;
+        if (selected.startsWith('widget:')) { const feature = selected.slice('widget:'.length) as Feature; setSummary(feature, !visible(feature), ctx); paint(ctx); continue; }
+        // The three Todos rows write the same workflow state the `todo` command writes, through its own commit.
+        if (selected === 'todos-view') { const current = todos!.state(); todos!.commit({ ...current, view: current.view === 'dag' ? 'list' : 'dag' }, ctx); paint(ctx); continue; }
+        if (selected === 'todos-filter') { const current = todos!.state(); const at = TODO_FILTERS.indexOf(current.filter ?? 'full'); const filter = TODO_FILTERS[(at + 1) % TODO_FILTERS.length]!; todos!.commit({ ...current, filter }, ctx); paint(ctx); continue; }
+        if (selected === 'todos-tree') { const current = todos!.state(); todos!.commit({ ...current, treeStyle: current.treeStyle === 'flat' ? 'paths' : 'flat' }, ctx); paint(ctx); continue; }
+      } catch (cause) { notify(ctx, cause instanceof Error ? cause.message : String(cause), 'error'); }
+    }
   }
+  function setSummary(feature: Feature, show: boolean, ctx: ExtensionContext) {
+    if (feature === 'todos') { todos!.commit({ ...todos!.state(), visible: show }, ctx); return; }
+    views.set(feature, show, ctx);
+  }
+  const show = (ctx: ExtensionContext, kind: 'list' | 'dag', filter?: TodoFilter) => view.show(ctx, kind, filter);
   function lifecycle(owner: ExtensionAPI, feature: Feature) {
     owner.on('session_start', async (event, ctx) => {
-      if (!started.has(event)) { started.add(event); Object.assign(modules, noFeatures()); owners.clear(); generation++; branchCache = undefined; configs.clear(); warnedEphemeral = false; lastPaint = undefined; tasks = emptyState(); plan = emptyPlanState(); todoError = undefined; planError = undefined; guidance.reset(); preferences = emptyViewPreferences(); }
+      if (!started.has(event)) {
+        started.add(event); Object.assign(modules, noFeatures()); owners.clear(); generation++; io.reset(); configs.clear(); view.invalidate();
+        todos?.shutdown(); plan?.reset(); views.reset();
+      }
       modules[feature] = true; owners.set(feature, owner);
-      if (!unbindMenu) unbindMenu = bindMenuDisplay(ctx, () => { lastPaint = undefined; paint(ctx); });
-      if (feature === 'todos') { restoreTodo(ctx); await restorePresets(ctx); }
-      if (feature === 'plan') restorePlan(ctx);
-      try { preferences = restoreViewPreferences(readBranch(ctx)); } catch { preferences = emptyViewPreferences(); }
-      paint(ctx);
+      if (!unbindMenu) unbindMenu = view.bind(ctx);
+      if (feature === 'todos') { todos!.restore(ctx); await todos!.restorePresets(ctx); }
+      if (feature === 'plan') plan!.restore(ctx);
+      views.restore(ctx); paint(ctx);
     });
     owner.on('session_tree', async (event, ctx) => {
-      if (restored.has(event)) return; restored.add(event); generation++; branchCache = undefined; configs.clear(); lastPaint = undefined;
-      if (modules.todos) restoreTodo(ctx); if (modules.plan) restorePlan(ctx);
-      try { preferences = restoreViewPreferences(readBranch(ctx)); } catch { preferences = emptyViewPreferences(); }
-      if (modules.todos) await restorePresets(ctx); paint(ctx);
+      if (restored.has(event)) return;
+      restored.add(event); generation++; io.invalidate(); configs.clear(); view.invalidate();
+      if (modules.todos) todos!.restore(ctx);
+      if (modules.plan) plan!.restore(ctx);
+      views.restore(ctx);
+      if (modules.todos) await todos!.restorePresets(ctx);
+      paint(ctx);
     });
     owner.on('session_shutdown', (event, ctx) => {
-      if (stopped.has(event)) return; stopped.add(event); generation++; unbindMenu?.(); unbindMenu = undefined; dispose(); owners.clear();
-      tasks = emptyState(); plan = emptyPlanState(); preferences = emptyViewPreferences(); todoError = undefined; planError = undefined; guidance.reset(); lastPaint = undefined;
-      if (ctx.hasUI) ctx.ui.setWidget(WIDGET, undefined);
+      if (stopped.has(event)) return;
+      stopped.add(event); generation++; unbindMenu?.(); unbindMenu = undefined; dispose(); owners.clear();
+      todos?.shutdown(); plan?.reset(); views.reset(); view.invalidate();
+      if (ctx.hasUI) ctx.ui.setWidget('pi-dag-workflow.todos', undefined);
     });
     if (feature !== 'plan') return;
-    owner.on('before_agent_start', (event, ctx) => { const message = guidance.take(ctx, event); if (message) return { message }; });
-    owner.on('turn_end', (event, ctx) => { const message = guidance.take(ctx, event); if (message) return { entries: [...event.entries, { type: 'custom_message' as const, ...message }] }; });
-    owner.on('agent_before_settle', (event, ctx) => { const message = guidance.take(ctx, event); if (message) return { entries: [...event.entries, { type: 'custom_message' as const, ...message }] }; });
-    owner.on('session_compact', (_event, ctx) => { if (modules.plan && (plan.enabled || readBranch(ctx).some((entry) => entry.type === 'custom' && entry.customType === PLAN_TYPE))) { planNotice = true; guidance.mark(true); } });
-    owner.on('context', (event, ctx) => { const message = guidance.recover(event.messages, ctx, event); if (message) return { messages: [...event.messages, message] }; });
+    owner.on('before_agent_start', (event, ctx) => { const message = plan!.take(ctx, event); if (message) return { message }; });
+    owner.on('turn_end', (event, ctx) => { const message = plan!.take(ctx, event); if (message) return { entries: [...event.entries, { type: 'custom_message' as const, ...message }] }; });
+    owner.on('agent_before_settle', (event, ctx) => { const message = plan!.take(ctx, event); if (message) return { entries: [...event.entries, { type: 'custom_message' as const, ...message }] }; });
+    owner.on('session_compact', (_event, ctx) => { if (modules.plan) plan!.compact(ctx); });
+    owner.on('context', (event, ctx) => { const message = plan!.recover(event.messages, ctx, event); if (message) return { messages: [...event.messages, message] }; });
   }
   return {
     onDispose(off: () => void) { dispose = off; },
     async attach(feature: Feature | 'ui', owner: ExtensionAPI) {
       if (feature === 'ui') return;
+      if (!displayAttached) {
+        displayAttached = true;
+        display = loadDisplaySettings();
+        const nav = panels.module({ id: 'display', label: panelLabels.display }, () => display.iconStyle);
+        nav.register(ctx => displayMenu(ctx, nav));
+        owner.registerCommand?.('dag-display', { description: msg('显示：图标风格、语言、常驻小组件与模型名宽度'), handler: async (args: string, ctx: ExtensionContext) => {
+          if (!args.trim() && ctx.mode === 'tui' && anyModule()) { await nav.open(ctx); return; }
+          notify(ctx, msg`图标风格：${display.iconStyle} · 模型名宽度：${display.modelLabelWidth} · 语言：${(await loadConfig(msg)).language}`, 'info');
+        } });
+      }
       if (attached.has(feature)) throw new Error(msg`重复加载工作流模块：${feature}`);
-      attached.add(feature); lifecycle(owner, feature);
+      attached.add(feature);
+      const { createWorkflowView } = await import('./commands/view.ts');
+      view ??= createWorkflowView({ msg, state, todo: () => todos?.state() ?? empty(), modules: () => modules, preferences: views.state, visible, jobs, goalTitle: () => activeGoal()?.title(), retry: () => activeRetry()?.snapshot(), errors: () => ({ todoError: todos?.error(), planError: plan?.error() }), generation: () => generation, iconStyle: () => display.iconStyle, modelMax: () => display.modelLabelWidth });
+      owner = io.resource(owner); lifecycle(owner, feature);
+      const panel = panels.module({ id: feature, label: panelLabels[feature] }, () => display.iconStyle);
       if (feature === 'todos') {
-        const [toolModule, checkpointModule, values, presetModule] = await Promise.all([import('../todos/register.ts'), import('../todos/checkpoints.ts'), import('../todos/state.ts'), import('../todos/presets.ts')]);
-        todoApi = values; presets = new presetModule.PresetStore({ path: configPaths().preset });
-        checkpoints = checkpointModule.registerCheckpoints(owner, { state, jobs, protected: () => !!todoError, branch: readBranch });
-        toolModule.registerTodos(owner, { msg, state, mutate, commit, show, jobs, protected: () => !!todoError,
-          previewClear: (scope) => { const current = state(), latest = latestBoundJobs(jobs()); const outcomes = new Map(current.tasks.filter((task) => task.status !== 'deleted').map((task) => [task.id, taskFilterStatus(task, latest.get(task.id))])); const preview = todoApi!.clearTodoRecords(current, scope, activeAgents()?.cleanupProtection(current.tasks) ?? new Set(), outcomes, msg); return `${msg`预计清理 ${preview.removedIds.length} 项，保留 ${preview.keptIds.length} 项`}\n${msg('运行、待交付、待核验和依赖必需记录保留；不修改文件、Goal或对话历史。')}`; }, presets: () => presetList, refreshPresets,
-          retryStatus: () => activeRetry()?.snapshot(), userPrompt: async (title, run) => { userPrompts.add(title); try { return await run(); } finally { userPrompts.delete(title); } },
-          reset: (ctx) => { todoError = undefined; commit(emptyState(), ctx); } });
+        const { attachTodos } = await import('../todos/index.ts');
+        todos = await attachTodos(owner, { msg, panel, api, branch: readBranch, plan: () => modules.plan ? plan!.state() : { enabled: false, tools: [] }, jobs, paint, saved: warnEphemeral,
+          assertMutation: params => activeAgents()?.assertTodoMutation(params), afterMutation: (params, before) => activeAgents()?.afterTodoMutation(params, before),
+          cleanupProtection: tasks => activeAgents()?.cleanupProtection(tasks) ?? new Set(), cleanupRecords: (scope, before, after) => activeAgents()?.cleanupRecords(scope, before, after) ?? 0,
+          show, spawn: async (task, ctx) => { const agent = activeAgents(); if (!agent) throw new Error(msg('未启用 Agents，不能派发子任务')); await agent.spawn({ task: [task.subject, task.description].filter(Boolean).join('\n'), todoId: task.id }, undefined, ctx); }, retryStatus: () => activeRetry()?.snapshot(), userPrompt: async (title, run) => { userPrompts.add(title); try { return await run(); } finally { userPrompts.delete(title); } } });
       }
       if (feature === 'plan') {
-        const { registerPlan } = await import('../plan/register.ts');
-        registerPlan(owner, { msg, state, commit: commitPlan, protected: () => !!planError, loadConfig: () => readConfig('plan'), assertCanEnter: () => activeAgents()?.assertPlanEntry(), onEnter: (ctx) => activeGoal()?.pause(msg('进入 Plan'), ctx), summary: () => visible('plan'), setSummary: (show, ctx) => setSummary('plan', show, ctx) });
+        const { attachPlan } = await import('../plan/index.ts');
+        plan = await attachPlan(owner, { msg, panel, api, branch: readBranch, todos: () => modules.todos, goal: () => modules.goal, paint, saved: warnEphemeral,
+          modeChanged: () => { activeRetry()?.cancel(msg('模式已改变，旧计时已取消')); todos?.checkpoints.changed(); },
+          state, loadConfig: () => readConfig('plan'), assertCanEnter: () => activeAgents()?.assertPlanEntry(), onEnter: ctx => activeGoal()?.pause(msg('进入 Plan'), ctx), summary: () => visible('plan'), setSummary: (show, ctx) => setSummary('plan', show, ctx) });
       }
       if (feature === 'agents') {
-        const { registerAgents } = await import('../agents/register.ts');
-        agents = registerAgents(owner, { msg, state, mutate, paint,
-          userPrompt: async (title, run) => { userPrompts.add(title); try { return await run(); } finally { userPrompts.delete(title); } }, protected: () => !!planError, ui: () => visible('agents'), branch: readBranch,
+        const { registerAgents } = await import("../agents/commands/register.ts");
+        agents = registerAgents(owner, { msg, panel, state, mutate, paint,
+          validateDispatch: (before, id) => todos!.validateDispatch(before, id), resetTasks: params => todos!.resetTasks(params),
+          userPrompt: async (title, run) => { userPrompts.add(title); try { return await run(); } finally { userPrompts.delete(title); } }, protected: () => plan?.protected() ?? false, ui: () => visible('agents'), branch: readBranch,
           summary: () => visible('agents'), setSummary: (show, ctx) => setSummary('agents', show, ctx),
           holdingRecovery: () => activeRetry()?.pending() ?? false,
           canWake: () => !activeRetry()?.pending() && (!modules.goal || (activeGoal()?.canWake() ?? false)),
-          reserveWake: (ctx) => !activeRetry()?.pending() && (!modules.goal || (activeGoal()?.reserveWake(ctx, true) ?? false)),
-          pauseAuto: (ctx) => activeGoal()?.pause(msg('用户暂停自动工作'), ctx), resumeAuto: () => !modules.goal || (activeGoal()?.resumeAgentReports() ?? false),
-          beforeWake: (ctx) => { if (activeGoal()) activeGoal()!.beforeWake(ctx); else { checkpoints?.beforeWake(ctx); guidance.beforeWake(ctx, (message) => api().sendMessage(message, { triggerTurn: false })); } },
+          reserveWake: ctx => !activeRetry()?.pending() && (!modules.goal || (activeGoal()?.reserveWake(ctx, true) ?? false)),
+          pauseAuto: ctx => activeGoal()?.pause(msg('用户暂停自动工作'), ctx), resumeAuto: () => !modules.goal || (activeGoal()?.resumeAgentReports() ?? false),
+          beforeWake: ctx => { if (activeGoal()) activeGoal()!.beforeWake(ctx); else { todos?.checkpoints.beforeWake(ctx); plan?.beforeWake(ctx, message => api().sendMessage(message, { triggerTurn: false })); } },
           compacting: () => activeGoal()?.isCompacting() ?? false });
       }
       if (feature === 'goal') {
-        const { registerGoal } = await import('../goal/register.ts');
-        goals = registerGoal(owner, { msg, state, jobs, paint, protected: () => !!planError, branch: readBranch, loadConfig: () => readConfig('goal'),
-          pauseAgents: () => activeAgents()?.pauseAutomatic(), resumeAgents: () => activeAgents()?.resumeAutomatic(), onSaved: (ctx) => { activeRetry()?.refreshScope(ctx); warnEphemeral(ctx); },
+        const { registerGoal } = await import("../goal/commands/register.ts");
+        goals = registerGoal(owner, { msg, panel, state, jobs, paint, protected: () => plan?.protected() ?? false, branch: readBranch, loadConfig: () => readConfig('goal'),
+          pauseAgents: () => activeAgents()?.pauseAutomatic(), resumeAgents: () => activeAgents()?.resumeAutomatic(), onSaved: ctx => { activeRetry()?.refreshScope(ctx); warnEphemeral(ctx); },
           summary: () => visible('goal'), setSummary: (show, ctx) => setSummary('goal', show, ctx),
-          retryEnabled: () => activeRetry()?.snapshot().enabled ?? false, cancelRecovery: () => activeRetry()?.cancel(), retryStatus: () => activeRetry()?.snapshot(),
-          isUserPrompt: (title) => title !== undefined && (userPrompts.has(title) || activeRetry()?.isPrompt(title) === true),
-          beforeWake: (ctx) => { checkpoints?.beforeWake(ctx); guidance.beforeWake(ctx, (message) => api().sendMessage(message, { triggerTurn: false })); } });
+          retryEnabled: () => activeRetry()?.snapshot().enabled ?? false, retryConfigured: () => activeRetry()?.snapshot().intervals !== undefined, retryResumeAfterCompaction: () => activeRetry()?.snapshot().resumeAfterCompaction === true, cancelRecovery: () => activeRetry()?.cancel(), retryStatus: () => activeRetry()?.snapshot(),
+          isUserPrompt: title => title !== undefined && (userPrompts.has(title) || activeRetry()?.isPrompt(title) === true),
+          beforeWake: ctx => { todos?.checkpoints.beforeWake(ctx); plan?.beforeWake(ctx, message => api().sendMessage(message, { triggerTurn: false })); } });
+      }
+      if (feature === 'team') {
+        const { registerTeam } = await import('../team/commands/register.ts');
+        registerTeam(owner, {
+          msg, panel,
+          retrying: () => activeRetry()?.pending() ?? false,
+          background: () => backgroundProcess(),
+          // Liveness is probed, never assumed: a dead pid must read as offline, not as a phantom holder.
+          alive: (candidate: number) => { try { process.kill(candidate, 0); return true; } catch (cause) { return (cause as NodeJS.ErrnoException).code === 'EPERM'; } },
+        });
       }
       if (feature === 'retry') {
-        const { registerRetry } = await import('../retry/register.ts');
-        retry = registerRetry(owner, { msg, branch: readBranch, scope: retryScope, mode: () => state().plan ? 'plan' : activeGoal()?.recoveryGoal() ? 'goal' : 'normal', protected: () => !!planError,
-          failed: (ctx, waiting) => activeGoal()?.failedRequest(ctx, waiting), prepare: (ctx) => activeGoal()?.prepareErrorRecovery(ctx) ?? true, undoPrepare: (ctx) => activeGoal()?.undoErrorRecovery(ctx),
-          beforeRetry: (ctx) => { if (activeGoal()) activeGoal()!.beforeWake(ctx); else { checkpoints?.beforeWake(ctx); guidance.beforeWake(ctx, (message) => owner.sendMessage(message, { triggerTurn: false })); } },
+        const [{ registerRetry }, { safeDiagnostic }] = await Promise.all([import('../retry/commands/register.ts'), import("../agents/domain/diagnostics.ts")]);
+        retry = registerRetry(owner, { msg, panel, diagnostic: safeDiagnostic, branch: readBranch, scope: retryScope, mode: () => state().plan ? 'plan' : activeGoal()?.recoveryGoal() ? 'goal' : 'normal', protected: () => plan?.protected() ?? false,
+          failed: (ctx, waiting) => activeGoal()?.failedRequest(ctx, waiting), prepare: ctx => activeGoal()?.prepareErrorRecovery(ctx) ?? true, undoPrepare: ctx => activeGoal()?.undoErrorRecovery(ctx),
+          beforeRetry: ctx => { if (activeGoal()) activeGoal()!.beforeWake(ctx); else { todos?.checkpoints.beforeWake(ctx); plan?.beforeWake(ctx, message => owner.sendMessage(message, { triggerTurn: false })); } },
           onChanged: paint, summary: () => visible('retry'), setSummary: (show, ctx) => setSummary('retry', show, ctx) });
-        owner.on('session_start', (_event, ctx) => retry?.restore(ctx)); owner.on('session_tree', (_event, ctx) => retry?.restore(ctx));
+        owner.on('session_start', (_event, ctx) => retry?.restore(ctx));
       }
     },
   };

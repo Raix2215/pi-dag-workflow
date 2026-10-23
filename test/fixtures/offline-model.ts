@@ -17,6 +17,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
   pi.registerFlag('dag-test-context-metrics', { type: 'boolean', description: 'Offline test-only size measurements of the provider-facing context' });
   pi.registerFlag('dag-test-context-export', { type: 'boolean', description: 'Offline test-only full normalized context and provider output in non-model custom entries' });
   pi.registerFlag('dag-test-important-progress', { type: 'boolean', description: 'Offline controlled workload: write every Goal round, update only verified milestone rounds' });
+  pi.registerFlag('dag-test-bootstrap-tool', { type: 'boolean', description: 'Offline test: try a forbidden tool during Team startup acknowledgement' });
   pi.registerFlag('dag-test-retry-failures', { type: 'string', description: 'Offline /retry test: fail a RETRY-TEST request and its recoveries this many times' });
   let contextExportSequence = 0;
   const prefix = Date.now();
@@ -67,7 +68,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
           const relevant = context.messages.filter((item) => {
             if (item.role !== 'user') return true;
             const text = typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
-            return !['Workflow state checkpoint', 'Goal state checkpoint', 'Goal contract (', 'No active Goal. Do not continue automatically.', 'Plan: read/search/ask', 'Normal:', 'Available Todo presets (', 'No Todo presets are available.', 'Profile and fragment guidance for this child run.'].some((prefix) => text.startsWith(prefix)) && !/^Goal #\d+ paused/.test(text);
+            return !['Workflow state checkpoint', 'Goal state checkpoint', 'Goal contract (', 'No active Goal. Do not continue automatically.', 'Plan: read/search/ask', 'Normal:', 'Available Todo presets (', 'No Todo presets are available.', 'Profile and fragment guidance for this child run.', 'Team membership ('].some((prefix) => text.startsWith(prefix)) && !/^Goal #\d+ paused/.test(text);
           });
           const messageText = (item: { content?: unknown }): string => {
             if (typeof item.content === "string") return item.content;
@@ -111,7 +112,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
             if (goalWork && workPrompt.includes('永久故障测试')) throw new Error('429 insufficient_quota: billing limit exhausted');
             if (goalWork && workPrompt.includes('认证故障测试')) throw new Error('401 invalid_api_key: authentication failed');
             if (goalWork && workPrompt.includes('provider断流测试') && flaky++ === 0) {
-              message.stopReason = 'aborted'; message.errorMessage = 'provider stream disconnected';
+              message.stopReason = 'aborted'; message.errorMessage = workPrompt.includes('empty-error') ? '' : 'provider stream disconnected';
               stream.push({ type: 'error', reason: 'aborted', error: message }); stream.end(); return;
             }
             const round = Number(/^Goal #\d+ (\d+)\//.exec(workPrompt)?.[1] ?? 0);
@@ -177,6 +178,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
             if (plainGoalPhase === 2 && last.toolName === 'goal') { calls.push({ name: 'write', arguments: { path: 'objective-evidence.txt', content: 'GOAL-CONTINUED\n' } }); plainGoalPhase++; }
             else if (plainGoalPhase === 3 && last.toolName === 'write') { calls.push({ name: 'goal', arguments: { action: 'complete', id: 1 } }); plainGoalPhase++; }
           }
+          if (prompt.startsWith('Team startup confirmation.') && pi.getFlag('dag-test-bootstrap-tool') === true && last?.role !== 'toolResult') calls.push({ name: 'write', arguments: { path: 'forbidden-bootstrap.txt', content: 'must not be written' } });
           for (const requested of calls) {
             const index = message.content.length;
             const call: ToolCall = { type: "toolCall", id: `dag-test-${prefix}-${++sequence}`, name: requested.name, arguments: {} };
@@ -190,7 +192,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
             message.content.push({ type: "text", text: "" });
             stream.push({ type: "text_start", contentIndex: 0, partial: message });
             const hadOriginal = relevant.some((item) => item.role === 'user' && (typeof item.content === 'string' ? item.content : item.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n')) === 'CONTROL LONG CALL');
-            const text = prompt === 'INHERIT SETTINGS SNAPSHOT' ? JSON.stringify({ model: model.id, thinking: options?.reasoning ?? 'off' }) : prompt === 'CONTROL REDIRECT' ? `CONTROL-REDIRECT-SUCCESS original-context=${hadOriginal}` : prompt === 'CONTROL REDIRECT QUESTION' ? 'CONTROL-QUESTION-REDIRECTED' : last?.role === "toolResult" ? `离线模拟已收到工具结果：${last.content.filter((item) => item.type === "text").map((item) => item.text).join("\n")}` : "离线模拟：仅支持验收用语，不进行真实模型推理。";
+            const text = prompt.startsWith('Team startup confirmation.') ? prompt.includes('Simplified Chinese') ? '已收到，等待任务。' : 'Received; awaiting a task.' : prompt === 'INHERIT SETTINGS SNAPSHOT' ? JSON.stringify({ model: model.id, thinking: options?.reasoning ?? 'off' }) : prompt === 'CONTROL REDIRECT' ? `CONTROL-REDIRECT-SUCCESS original-context=${hadOriginal}` : prompt === 'CONTROL REDIRECT QUESTION' ? 'CONTROL-QUESTION-REDIRECTED' : last?.role === "toolResult" ? `离线模拟已收到工具结果：${last.content.filter((item) => item.type === "text").map((item) => item.text).join("\n")}` : "离线模拟：仅支持验收用语，不进行真实模型推理。";
             message.content[0] = { type: "text", text };
             stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
             stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });

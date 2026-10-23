@@ -6,469 +6,205 @@
 
 [English](README.md) | 简体中文
 
-为 [Pi](https://pi.dev) 提供任务依赖、只读规划、子 Agent 和目标续跑。在当前会话维护一份任务清单，查看实时执行状态，核验结果后再完成任务。
+为 [Pi](https://pi.dev) 提供会话级任务 DAG、只读规划、子代理、目标自动续跑、容错重试与多会话团队协作。在当前会话中维护唯一权威任务列表，实时追踪后台 Agent 动态，并在验收实证充分后将任务标记为完成。
 
-## 安装
+![简体中文界面的任务依赖总览](assets/overview.zh-CN.png)
+
+*图中为真实面板渲染的示例数据；制作预览未调用模型。*
+
+## 核心特性
+
+- **前置依赖编排** — 通过 `blockedBy` 约束执行顺序。前置任务未全部验收完成前，后续任务不可启动、完成或派发。
+- **只读规划模式** — 先阅读代码、检索符号并梳理任务，再切回执行模式进行实施与派发。
+- **并行子代理** — 派发最多 8 个独立的 Pi 子进程处理解耦任务，支持工具白名单、Skill 挂载、有界上下文摘要与同任务接续。
+- **目标跨轮续跑** — 通过 `/goal` 跨模型轮次推进长线任务，支持灵活暂停策略、持续研究模式及暂停态进度笔记。
+- **错误自动重试** — 遇到接口错误、配额耗尽或网络异常时，在启用状态下按指定间隔自动重试，并支持备选模型轮换。
+- **多会话团队协作** — 汇聚同一代码库下的独立 Pi 会话，提供点对点信箱、真实 PID 进程探活与会话级运行配置热切换。
+
+## 安装指南
+
+直接在 Pi 中安装本扩展包：
 
 ```bash
 pi install https://github.com/Raix2215/pi-dag-workflow
 ```
 
-重启 Pi 或执行 `/reload`，再用 `pi config` 选择所需模块。
+安装后重启 Pi 或在会话中执行 `/reload`。随时可通过 `pi config` 独立启用或关闭各功能模块。
 
-要求 **Pi 1.0.0+**、**Node.js 22.19.0+**。子 Agent 需要基于 Node 的 Pi 宿主。建议使用 Nerd Font 显示面板图标。界面支持英文和简体中文。
+### 兼容性与运行环境
 
-对于 `todo`、`/plan`、`/goal`、`/retry`、`subagent_spawn` 等同名入口，只启用一个提供它的扩展。
+- **Pi 版本**：`1.3.0` 或更高（Pi 1.0–1.2 不在本次发布验证范围内）。
+- **Node.js**：`>= 22.19.0`（包规范要求；子 Agent 功能需要 Node 运行时环境的 Pi 宿主）。
+- **终端字体**：推荐使用 [Nerd Font](https://www.nerdfonts.com/) 终端字体以获得完整图标支持。
+- **界面语言**：支持英文与简体中文界面（可在设置中指定 `auto`、`en` 或 `zh-CN`）。
+- **Team 启动**：启动方式取决于已安装终端。Windows 仅支持受支持桌面终端的直接 argv 启动；基于 shell 的 tmux、后台、复制命令与自定义模板启动会被拒绝。
 
-## 菜单操作
-
-裸 `/todos`、`/goal`、`/agents`、`/retry` 使用 Pi 原生带边框管理菜单，裸 `/dag` 打开分页依赖图。带参数的快捷命令直接执行或输出可读文字，不另开管理菜单。根菜单内保留目录分页、搜索、正文阅读、输入编辑及必要的操作确认；每页最多八项，短屏自动减少。
-
-- ↑/↓ 选择，Enter 打开或确认所选项。
-- 选择“上一页”“下一页”或“搜索…”浏览目录。
-- Esc 返回上一级，主菜单 Esc 退出；取消搜索保留当前筛选。
-- 菜单或编辑器打开期间，本插件摘要临时隐藏。整个菜单流程退出后恢复，不改变原有显示设置。
-
-编号、警告和重要操作适度加粗，并按含义上色；设置行的实际值使用主题 dim 颜色，与操作文字区分。失败和破坏性操作醒目，已完成历史降低亮度；正文不整段加粗。
-
-Goal 根页单击开关后原地刷新。设置持续研究不会启动目标，实际运行状态单独显示；该模式下明确显示生效的“禁止模型中断／不限轮数”。草稿取消不保存。裸 `/plan` 直接切换只读模式，`/plan settings` 只输出设置。各功能独立控制摘要显示，可在菜单或通过 show/hide 操作。
+> **提示**：为避免命令与工具冲突，请勿同时装载提供同名入口的其他扩展（如独立的 `todo`、`/plan`、`/goal`、`/retry` 或 `subagent_spawn`）。
 
 ## 快速上手
 
-直接让 Pi 整理并执行任务：
+典型工作流涵盖“只读规划 -> 结构化执行 -> 跨轮自治推进”：
 
-> 用 Todo 记录调查、实现和测试；实现依赖调查。把独立工作交给子 Agent，检查结果后再完成任务。
+1. **先只读规划**：
+   ```text
+   /plan start
+   ```
+   要求 Pi 分析仓库并梳理依赖图：
+   > “分析鉴权接口改造需求，拆解为带回归测试的任务 DAG，明确依赖先后关系。”
 
-```text
-/plan start
-```
+2. **退出规划并检视任务图谱**：
+   ```text
+   /plan off
+   /todos
+   /dag
+   ```
+   `/todos` 打开交互式贴靠面板（可用 `/todos paths` 或 `/todos flat` 切换树/平铺视图）；`/dag` 打开可滚动依赖全景图。
 
-只读探索项目并整理 Todo。准备实施时：
+3. **跨轮自主推进核心目标**：
+   ```text
+   /goal new 实现 Refresh Token 并通过端到端测试验收
+   /goal enable #1
+   ```
 
-```text
-/plan off
-/todos
-/dag
-```
+---
 
-需要跨模型回合持续推进的工作：
+## 核心模块详解
 
-```text
-/goal new 添加 CSV 导出并通过测试
-/goal enable #1
-```
+### 1. 任务与依赖图 (`todo`)
 
-需要持续工作时才创建 Goal。重要发现或决定改变了后续行动时记录进展；普通活动由任务和工具结果承载。
-
-## 功能
-
-- **任务依赖**：`blockedBy` 关联前置任务。开始、完成或派发下游任务前，前置必须已完成。
-- **只读 Plan**：阅读、搜索、提问和编辑任务定义；实施与派发需先 `/plan off`。
-- **并行子 Agent**：最多八个独立 Pi 进程，支持明确派发、问题答复、报告、Profile 和原任务接续。
-- **Goal 续跑**：一次聚焦一个目标，支持用户控制的中断策略和持续研究模式。
-- **错误恢复**：用户通过 `/retry` 控制 Normal、Plan 和 Goal 主会话重试；间隔循环，可限制次数并按指定顺序替换模型。
-- **实时进度**：任务树或 DAG 预览、子进程活动、待交付和待核验状态；完整视图可滚动。
-- **会话持久化**：任务、Goal 和 Job 记录跟随 Pi 当前分支。恢复时自动工作保持暂停，原有子进程保持停止。
-
-## 任务与依赖
-
-模型通过 `todo` 管理任务。以下 batch 原子创建两个依赖任务：
+模型通过 `todo` 工具管理会话任务图。支持在单次批量操作中原子提交 1–50 个定义变更：
 
 ```json
 {
   "action": "batch",
   "operations": [
-    { "action": "create", "ref": "build", "subject": "实现 CSV 导出" },
-    { "action": "create", "subject": "核验 CSV 导出", "blockedBy": ["@build"] }
+    { "action": "create", "ref": "audit", "subject": "审计鉴权接口端点" },
+    { "action": "create", "subject": "实现 Refresh Token 鉴权逻辑", "blockedBy": ["@audit"] }
   ]
 }
 ```
 
-batch 接受 **1–50 个定义操作**：创建 pending 任务，或修改任务定义。`@ref` 引用本次调用中更早创建的任务。任一操作无效时，整个清单保持不变。
+- **原子事务**：批处理支持通过 `@ref` 引用同批已经创建的任务。若其中任一步骤校验失败，整个列表状态完整回滚。
+- **状态流转**：任务状态包括 `pending`、`in_progress`、`completed`、`failed`、`cancelled`、`deleted`。前置依赖完成后才可执行。已完成任务不能重开；返工需新建任务。
+- **高频查询**：
+  - `{"action": "list", "ready": true, "limit": 50}`：仅列出前置已完成、可立即执行的任务（单页最多 200 条，支持游标续页）。
+  - `{"action": "get", "id": 1}`：查看任务完整定义、直接前置与下游受阻任务（`blocks`）。
+  - `{"action": "status"}`: 获取紧凑只读摘要（规划模式、任务计数、保护项及重试状态）。
+- **交付不等于验收**：子进程完成报告交付只代表执行结束；主会话必须在独立检查代码修改和测试证据后，才显式将任务标记为 `completed`。
 
-常用查询：
+### 2. 只读规划模式 (`/plan`)
 
-```json
-{"action":"list","ready":true,"limit":50}
-{"action":"get","id":2}
-{"action":"status"}
-```
+通过 `/plan start` 开启、`/plan off` 退出（可通过 `/plan settings` 查看设置，`/plan tools` 查看只读工具）：
+- 严格拦截文件写入、编辑以及一切 Shell 执行工具（`bash`、`powershell`）。
+- 严禁子进程派发，禁止将任务标记为进行中或已完成。
+- 允许文件阅读、代码符号检索、用户结构化提问以及创建或调整任务定义。
 
-list 默认返回 50 项，每页最多 200 项。使用结果中的完整续页参数，保持同一筛选条件。get 返回完整任务、直接后继 `blocks` 和未满足前置 `unmetPrerequisites`。status 返回模式、任务计数、保护及重试状态的简短只读摘要；goal get 也附带重试状态。
+### 3. 并行子代理 (`agents`)
 
-任务状态为 `pending`、`in_progress`、`completed`、`failed`、`cancelled`、`deleted`。单条 create 接受 pending，也可在依赖允许时创建为 in_progress；batch 创建 pending 任务。失败和取消的尝试不能满足前置依赖。
+派发独立的后台 Pi 子进程执行高内聚、可独立验收的子任务：
+- **严格单层结构**：主会话派发子 Agent；子 Agent 严禁进一步派发下层进程（无孙子代理）。
+- **配置确定性解析**：参数按“父配置基线 -> 具名 Profile -> 显式单次调用参数（`model`、`thinking`、`tools`、`skills`）”依次覆盖。
+- **有界上下文摘要**：开启 `context: true` 时提供前置状态和产物引用的有界摘要，上限 2,000 字符；不替代完整任务要求。
+- **Skill 挂载**：支持引用最多 8 个本地 Markdown 文件（单文件 <= 64 KiB）；要求子进程可用工具集中包含 `read` 工具（继承或显式声明均可）。Skill 只作为本地文件引用，不增加工具或权限。
+- **动态指导与接续**：通过 `subagent_inspect` 监视状态，`subagent_send` 发送指令或预检替换工具集，或使用 `resumeFrom` 在保留同任务绑定的前提下继续未完工作。
+- **隔离与沙盒边界**：Profile `isolate` 限制 Team／手工会话启动时的扩展装载，子 Agent 的工具选择限制其所选工具；两者均不构成操作系统沙盒或凭据隔离层，亦无法自动回滚文件修改等外部副作用。
 
-核验后只需更新状态：
+完整通信与报告交付协议参见 [docs/COMMUNICATION.md](docs/COMMUNICATION.md)。
 
-```json
-{"action":"update","id":1,"status":"completed"}
-```
+### 4. 目标跨轮续跑 (`goal`)
 
-description 保存任务要求和必要上下文。验收摘要放在会话答复中，或给出产物路径；状态变更不需要再把报告写进任务描述。
+通过 `/goal` 及模型工具 `goal` 驱动多轮长期目标：
+- **安全启动**：创建 Goal 不会自动激活；会话重载或恢复后保持暂停，必须由用户通过 `/goal enable` 显式开启。
+- **暂停态笔记**：在 Goal 暂停期间，模型仍可记录已验证的里程碑（`progress`）或调整下一步计划（`nextStep`），不影响暂停状态。
+- **控制开关**：
+  - `nopause`：运行中禁止向用户发起常规确认提问，但**不代表**无限错误重试。
+  - `nolimit`：解除默认 32 轮续跑上限，不影响已设定的错误重试阈值。
+  - `autoresearch`：开启持续自主探索模式，不自动将 Goal 标记为完成。
 
-### 视图与清理
+### 5. 错误自动重试 (`retry`)
 
-任务树展示当前工作与执行者：
+通过 `/retry` 配置应对模型调用失败、配额耗尽、鉴权错误或网络中断：
+- **默认关闭**：错误重试默认处于关闭状态（`off`）。
+- **用户自定义间隔**：启用后按用户指定的等待时长序列循环重试（例如 `/retry when-error 5s,15s,30s count 3`）。`count` 为可选参数，省略时允许按该间隔列表持续重试，不设固定断点。配额与鉴权失败同样遵循该间隔配置。
+- **恢复只由一方负责**：Retry 开启时，Goal 将失败移交给它；否则 Goal 使用自己的有界错误退避，两者次数独立记账。
+- **备选模型轮换**：配置备选模型列表（`/retry models provider-b/backup-model`；将占位名称替换为实际注册模型）。当当前模型连续用尽 `after` 次插件重试尝试（默认 2 次；初始请求失败与宿主原生重试不计入 `after`）后，按顺序切换至下一个候选模型，所有重试共享总 `count` 次数额度。若总 `count` 额度耗尽，重试完全停止，不会换模型继续。
+- **压缩续接控制**：当错误发生后紧接会话压缩时，恢复逻辑遵循 `resumeAfterCompaction` 设置与用户暂停控制，受控恢复而非无条件续接。
+- **安全恢复机制**：会话分支恢复时保留配置但回到 `armed/off` 状态，不会在后台自动复活旧计时器。
 
-```text
-●  Todo (1/3)
-└─ #1       ✓ 检查解析器                                     [主会话] [已完成]
-   └─ #2    ◐ 实现 CSV 导出                           [a1 · worker] [󰥔 运行中]
-      └─ #3 ○ 测试 CSV 导出                                  [主会话] [待执行]
-```
+### 6. 多会话团队协作 (`team`)
 
-`/dag` 绘制同一份任务的依赖关系：
+打开 `/team` 创建团队，再展开团队条目，选择加入当前对话或新建成员会话。新建成员不会改变本会话的归属。
 
-```text
-●  Todo (1/3) DAG
-          ┌───────────────────────────────┐
-          │ ✓ #1 检查解析器               │
-          │ [主会话]                      │
-          │ [已完成]                      │
-          └──────────────┬────────────────┘
-                         └─┐
-                           │
-                           │
-          ┌────────────────┴──────────────┐
-          │ ◐ #2 实现 CSV 导出            │
-          │ [a1 · worker]                 │
-          │ [󰥔 运行中]                    │
-          └──────────────┬────────────────┘
-                         └─┐
-                           │
-                           │
-          ┌────────────────┴──────────────┐
-          │ ○ #3 测试 CSV 导出            │
-          │ [主会话]                      │
-          │ [待执行]                      │
-          └───────────────────────────────┘
-```
+将同一工作区下的多个独立 Pi 会话编组协作：
+- **精简模型接口**：仅向模型暴露两个工具：`team_send`（点对点投递）与 `team_inspect`（`scope: "team"` 查询本会话所属团队，而非面板正在查看的团队，单页 <= 20 人 / 4 KiB；默认查自己。成员快照 <= 2 KiB，回复预览 240 字符，活动默认 3 条最多 10 条）。
+- **消息安全准则**：团队消息通过 user-role 传输通道投递。**Agent 所发团队消息绝不代表人类授权，亦不能藉此扩展权限。**
+- **基于真实 PID 探活**：成员存活按系统 PID 探测，活动来自真实事件，不按心跳超时判断进程死亡。解散团队仅作状态归档，不终止进程，不删除会话文件。
+- **运行配置热调整**：用户可在 Team 面板直接调整目标成员的模型或思考级别；目标成员忙时需等待当前回复与工具批次结束，下一轮请求前生效；提交仅为请求，以目标运行时实际回执为准；切换提供商后后续请求自动发送至该提供商。已有运行中的会话进程需手动执行 `/reload` 方能加载新能力。
+- **名称与生命周期**：成员名与 Pi 会话名独立修改，按完整 SID 寻址。停止／移出保留会话与信箱；删除会话及信箱是单独的确认操作。
+- **纯净空白启动**：新建空白会话仅执行首轮收到确认，不调用工具或执行任务；普通加入、恢复已有会话及 `/reload` 均不重复执行该确认。
+- **只读历史查看**：通过 Pi 原生 TreeSelector 只读翻阅会话历史记录（按 `Enter` 查看选中条目正文，按 `Esc` 返回树列表，再次按 `Esc` 退出历史并返回 Team 面板）。
 
-`/todos` 打开任务菜单，可编辑要求、修改状态及读取完整详情，根菜单的“Todo 片段”可分页搜索并阅读步骤；裸 `/dag` 打开可滚动依赖图，`/dag full` 等带筛选命令输出文字。`/todos list full` 显示完整文本清单，`paths` 按依赖树展示，`flat` 平铺预览。编辑器上方的预览随终端高度收缩，最多 12 行，优先显示需要关注的工作。放不下的图形用依赖列表展示。隐藏 Todos 不影响其他功能的摘要。
+![简体中文界面的 Team 运行配置](assets/team.zh-CN.png)
 
-筛选：`full`、`pending`、`completed`、`failed`、`cancelled`。
+---
 
-- pending 包含待核验工作。
-- completed 表示 Todo 已验收。
-- failed／cancelled 参考当前最新子执行尝试；中断属于 cancelled 分组。
-- 明确退役的尝试保留在 Job 历史；未完成 Todo 回到 pending，可继续执行。
+## 交互式面板与键盘操控
 
-`/todos clear` 打开确认菜单。工具支持 `scope: "completed"`、`"closed"`、`"all"`。清理保留活动工作、待交付报告、待核验任务和必要依赖记录；编号不会复用。
+执行 `/todos`、`/plan`、`/goal`、`/agents`、`/team`、`/retry` 或 `/dag-display` 即可在输入框上方展开贴靠面板。六个扩展模块可通过 `pi config` 独立选择；Display 是共享界面，不是第七个扩展，标签栏省略未启用的模块。
 
-## 子 Agent
+### 键盘快捷键一览
 
-给子任务提供输入路径、范围和预期证据：
-
-```json
-{
-  "task": "检查 CSV 解析器的边界情况，报告文件路径与行号，不修改文件。",
-  "todoId": 1,
-  "tools": ["read", "grep", "find", "ls"]
-}
-```
-
-通过 `subagent_spawn` 调用。todoId 可选；关联任务必须可执行。子 Agent 在同一工作目录中使用独立模型上下文，加载工作区规则，并收到本次任务、选中的 Profile 指导及可选任务简报。
-
-可临时指定 model、thinking、tools、skills，无需保存 Profile；`subagent_inspect models:true` 按需发现准确模型名称。工具和 Skills 整表替换，skills:[] 关闭，所需 read 不自动添加。完整参数关系见[子 Agent 通信](docs/COMMUNICATION.md)。
-
-### 前置简报
-
-关联 Job 设置 context:true，可附上任务要求摘要、直接前置状态和当前有效报告摘要。片段任务还包含步骤位置和片段状态。简报最多2,000字符，不复制主会话历史，不采用过期报告；普通任务简报注明省略的输入。
-
-在 Todo 的 metadata.artifacts 记录明确产物引用：
-
-```json
-{"action":"update","id":1,"metadata":{"artifacts":["build/results.csv","test-results.json"]}}
-```
-
-引用是未核验输入，不是完成证据或权限。实际派发说明仍需自包含，提供简报省略但本次必需的路径和要求。
-
-### 查询、收集与调整
-
-使用 `subagent_inspect`：
-
-```json
-{"jobId":"a1"}
-{"jobId":"a1","output":true,"timeout":0}
-{"jobId":"a1","output":true,"until":"finish","timeout":30}
-```
-
-默认返回简要状态、活动和待答复问题编号。output:true 收集输出和问题，必须指定 jobId，支持：
-
-- timeout:0：立即快照。
-- until:update：等待新报告、问题或结束，默认最多 5 秒。
-- until:finish：等待执行结束或问题，默认最多 30 秒。
-- after：等待已有 reportVersion 之后的新结果。
-
-等待最长 300 秒，问题会提前返回。超时或取消只结束等待；停止子进程请用 `subagent_cancel`。
-
-使用 `subagent_send`：
-
-```json
-{"recipient":"a1","message":"请包含引号字段和空行的检查。"}
-{"requestId":"request-id","message":"按已记录的 CSV 规则处理。"}
-```
-
-普通方向信息在安全边界消费。对 recipient 使用 interrupt:true，会中止当前本地回合、清除过期方向和问题，再在同一子上下文继续。送达确认不代表指令已被执行。
-
-调整 tools 必须使用 recipient+interrupt:true，不能与 requestId 混用。主会话依据用户授权决定，子侧预检通过后在原进程应用；失败返回阶段、状态和影响。问题及外部副作用不自动回滚，工具选择不是沙箱。
-
-### 接续中断的任务
-
-先查看诊断，核对已有文件及外部操作，再对同一 Todo 开始新尝试：
-
-```json
-{
-  "resumeFrom": "a1",
-  "profile": "research",
-  "task": "检查已有结论，继续剩余的解析器审查，不重复已完成工作。"
-}
-```
-
-resumeFrom 保留原 Todo 关联和派发说明，默认沿用上次实际配置，不重读旧 Profile。显式 Profile 和本次字段逐层覆盖，profile:inherit 重置到当前主配置。Todo 定义变化时需新自包含派发；旧记录缺完整任务时，task 必须提供完整指示。
-
-明确取消失败或中断尝试后，它从当前面板退役，历史仍可查询，未完成任务显示“可接续”。主会话状态更新表示接管；新子尝试显示自己的活动。
-
-子任务错误包含有界根因摘要和恢复建议。先处理账户或网络问题，核验部分产物，再明确接续。子模型请求不自动重试。Job 默认执行期限为 600 秒，timeout 最多可设 86,400 秒。
-
-### 验收结果
-
-执行、报告交付和验收分别进行：
-
-```text
-子 Agent 结束 → 报告交付 → 主会话核验 → Todo 完成
-```
-
-成功子任务在关联的未完成任务行先显示“待交付”，交付后显示“待核验”。主会话检查工作后再完成 Todo。取消已经成功的 Job 会保留其待交付报告；remove:true 明确移除记录。
-
-交付时机和中断细节见[子 Agent 通信](docs/COMMUNICATION.md)。
-
-## Goal
-
-Goal 保存目标、范围和核验要求。创建后保持暂停，`/goal enable` 开始续跑；普通目标的原始要求全部核验通过后才完成。
-
-| 控制 | 行为 |
+| 按键 | 导航与操作说明 |
 |---|---|
-| `/goal enable [#id]` | 启动或恢复所选 Goal；仍运行但空闲的目标使用剩余额度继续 |
-| `/goal disable [#id]` | 暂停 Goal，子进程仍可独立控制 |
-| `/goal nopause [#id] [on\|off]` | 直接切换；on 禁止模型暂停，off 允许，已有权限不扩大 |
-| `/goal nolimit [#id] [on\|off]` | 直接切换；on 不限续跑，off 使用额度，保留已用计数 |
-| `/goal autoresearch [#id] [on\|off]` | 直接切换；on 持续研究，off 普通目标，设置不启动工作 |
-| `/goal complete #id` | 记录已核验结果；持续研究目标只能由用户完成 |
+| `Tab` / `Shift+Tab` | 在已启用的模块标签页之间就地切换 |
+| `j` / `k` 或 `↓` / `↑` | 上下移动当前光标所在行 |
+| `g` / `G` | 快速跳转至上区 / 下区首行 |
+| `←` / `→` | 当前区域按整屏向上 / 向下翻页 |
+| `h` / `l` | 就地折叠 / 展开选中条目的详细信息 |
+| `Enter` | 切换开关、轮转选项、行内编辑文本或触发动作 |
+| **双击 `Enter`** | **原位红字确认**破坏性操作（无独立弹出页，无需放大窗口） |
+| `/` | 激活实时过滤与关键词检索 |
+| `Esc` | 取消正在进行的编辑、折叠层级或关闭停靠面板 |
 
-自动 Goal 回合和子报告唤醒共享默认 **32** 次额度，统计插件请求的续跑，不是全部 API 请求或工具结果 follow-up。常规模式八轮未记录工作进展时先重新规划，再一轮仍无进展才暂停。nopause 继续尝试，但用户停止、预算和错误保护仍有效。
+面板高度自动适配终端尺寸，无 17 行硬性上限；用户的输入与确认流程不会被后台周期刷新打断。面板展开期间，输入框上方的状态挂件自动暂时隐藏，关闭后无损恢复。
 
-progress 只记录重要验收结果、可复现发现、决定或阻塞变化。nextStep 仅在下一步实质改变时更新。工作笔记不改变原目标或权限。
+### 界面与显示设置 (`/dag-display`)
 
-Goal 请求错误收尾后，开启 /retry 时等待恢复，否则暂停。Goal 恢复使用剩余续跑额度；nolimit 控制该额度，不控制 /retry 设置。
+通过 `/dag-display` 或面板中的 **Display** 标签定制界面风格：
+- **图标风格**：支持在 Nerd Font 图标与纯文本 ASCII 符号间切换。
+- **界面语言**：可选择 `auto`（随系统区域环境）、`en` 或 `zh-CN`。
+- **状态挂件**：独立控制 Todos、Plan、Goal、Agents、Retry 在输入框上方的常驻状态条显隐。
+- **模型名显示宽度**：自定义状态行与列表中模型名称的最大截断列宽。
 
-### 持续研究
+---
 
-```text
-/goal new 在 src/parser 范围内持续改善解析器正确性和性能
-/goal autoresearch #1 on
-/goal enable #1
-```
+## 命令与模型工具速查
 
-也可在 `/goal` 根管理页直接切换“持续研究”。快捷开关省略 on/off 时反转，明确 on/off 时重复执行不反转；省略编号使用当前目标。模型核验阶段成果后，继续选择原范围内的下一个假设、实验或证据检查；不能完成、停用、删除或切换整个 Goal，不能提问或交还工作。独立 Todo 仍可核验后完成。
+| 模块 | 斜杠命令 | 注册的模型工具 | 简要说明 |
+|---|---|---|---|
+| **Todos** | `/todos`, `/dag` | `todo` | 任务 DAG 依赖编排、状态管理、批量事务、`/todos paths` 树视图、`/todos flat` 平铺视图 |
+| **Plan** | `/plan` (`start`, `off`, `status`, `settings`, `tools`) | — | 只读规划模式切换、Shell/写入拦截与只读白名单查看 |
+| **Agents** | `/agents` | `subagent_spawn`, `subagent_inspect`, `subagent_send`, `subagent_cancel` | 单层子进程派发、状态探查、动态指令与验收管理 |
+| **Goal** | `/goal` | `goal` | 多轮目标自主续跑、`nopause` 模式、`autoresearch` 持续探索 |
+| **Retry** | `/retry` (`when-error`, `models`, `on`, `off`, `status`) | — | 错误阶梯退避、重试阈值与候选模型故障轮换 |
+| **Team** | `/team` | `team_send`, `team_inspect` | 同仓库多独立会话协作、信箱流转与运行配置热改 |
+| **Display** | `/dag-display` | — | 显示语言、图标风格、模型名宽度与常驻挂件显隐 |
 
-该模式有效启用不限续跑和自主决定，但保留原 nolimit／nopause 设置；关闭后恢复原值，不清已用轮数。goal get 的 goal 保存原设置，controls 显示实际生效值。关闭模式不是停止命令；用 /goal disable 停止后续续跑，或中断 Pi 来中止当前工作。
+---
 
-研究可以量化，也可以按事实和核验结果判断。不会新增实验工具、自动 Git 提交或额外权限；保留用户改动，只撤销本次实验自己的无效修改。用户停止、Plan、资源不可用、重试次数及压缩保护仍有效。错误等待期间改变策略或范围，会取消旧恢复并可能暂停 Goal，需明确恢复。重载后始终保持暂停。
+## 状态与权限边界
 
-持续工作可能无限消耗模型用量；无人值守前先设置服务商费用上限。
+- **系统模型指令英文统一与多语言 UI**：插件自编的系统提示与模型指令统一采用 **英文**。面板与交互菜单提供完整的英文与简体中文本地化支持。
+- **分支权威与持久化**：任务、目标及子进程记录紧密绑定当前 Pi 会话分支。分支回滚不会自动复活已退出的外部进程，亦不回滚工作区文件修改。Team 名册和信箱不随会话分支回滚。
+- **Profile 隔离边界**：Profile `isolate` 限制 Team／手工会话启动的扩展装载，工具选择限制所选工具；两者均不构成操作系统级进程沙盒，无法自动撤销工具执行带来的外部副作用。
+- **隐私边界**：本扩展不添加分析统计或追踪请求；模型调用和你安装的其他扩展仍遵循各自的提供方与网络配置。
 
-## 错误恢复
+## 公开参考链接
 
-`/retry` 打开用户菜单，也可直接输入：
+- [Agent 通信与报告交付规范](docs/COMMUNICATION.md)
+- [贡献指南 (CONTRIBUTING)](CONTRIBUTING.md)
+- [安全策略 (SECURITY)](SECURITY.md)
 
-```text
-/retry when-error 5m,30s,10m count 3
-/retry when-error 3m
-/retry off
-/retry status
-```
+## 开源协议
 
-恢复**默认关闭**，用于 Normal、Plan 和 Goal 的主会话，等待 Pi 原生恢复结束后处理错误。开启后覆盖已收尾的模型请求错误，包括额度和鉴权失败；原因未解决时可用 /retry off 停止重复尝试。
-
-- 间隔使用正整数和 s／m／h，以逗号分隔，序列循环。
-- count 限制一轮连续错误中的实际重试次数；省略不限。成功回合重置连续错误计数和间隔位置。
-- 到期时 Pi 仍忙，则再等同一间隔；不扣次数，也不推进序列。
-- 用户取消、模式或 Goal 范围改变、Goal 完成、导航和压缩会取消过期工作；Goal 额度与 Plan 只读限制仍有效。
-- 重载后设置保留、恢复保持关闭，需明确重新开启。不重试子 Agent 或 shell 工具。
-
-菜单直接显示当前恢复状态，提供“重试设置”“替代模型”和“显示摘要”。子页返回或 Esc 回上一级，“退出菜单”或主菜单 Esc 关闭菜单。保存和开关操作后返回主菜单；非法输入保留供修改，取消不保存。无变化不重启倒计时；只改总次数保留剩余等待和已用次数。
-
-### 替代模型
-
-```text
-/retry models
-/retry models provider-b/model-b provider-c/model-c
-/retry models after 2
-/retry models off
-```
-
-`/retry models` 仅输出当前设置。示例占位符需替换为 Pi 已注册名称，也可从 `/retry` 根菜单进入“替代模型”分页搜索。候选顺序在草稿中编辑：添加、上移／下移、移除，最后保存。最多八个不同模型。设置候选会启用模型替代，不会开启自动重试；恢复仍通过 /retry when-error 开启。候选和每模型次数的修改需要交互确认。/retry models off 关闭替代，保留普通重试。
-
-每轮连续错误先尝试当前模型，再按顺序使用候选并去重。每模型默认最多两次插件尝试；间隔序列和总 count 跨模型共用，切换不增加等待，也不跳过下一次等待。初始失败和 Pi 原生重试不扣插件次数。已不存在、未配置鉴权或不支持当前图像输入的候选会跳过，不发探测请求。
-
-成功的替代模型保留在当前会话，不修改全局默认。即使总 count 不限，候选耗尽也会停止恢复。重载保留候选设置，自动重试仍关闭。手动选择模型取消旧恢复；已发起的模型选择调用仍可能收尾，取消后应核对当前模型。不会自动恢复已取消的请求。
-
-**跨服务商会把当前上下文发送给所选服务，也可能增加费用和缓存开销。** 保存候选前先确认服务范围。上下文处理由 Pi 负责；插件不自行删除历史以适配模型。
-
-Pi 1.1+ 在最终收尾区分 provider 中止和用户取消；缺少该信号的宿主不自动恢复无法鉴别的 provider-aborted 请求。重试设置由用户控制，模型工具只能查询，不能配置。
-
-## 工具与命令
-
-以下是模型工具，上文 JSON 展示其参数。
-
-| 工具 | 用途 |
-|---|---|
-| `todo` | 任务、分页查询、只读状态、依赖校验、片段和原子定义批量操作 |
-| `goal` | 目标、重要进展、续跑和核验完成 |
-| `subagent_spawn` | 新子 Job 与 resumeFrom 接续尝试 |
-| `subagent_inspect` | 状态、可选输出／等待、Profile 和模型目录发现 |
-| `subagent_send` | 方向调整和子问题答复 |
-| `subagent_cancel` | 停止或明确移除子记录 |
-
-| 命令组 | 常用操作 |
-|---|---|
-| `/todos` | `add`、`start`、`done`、`pending`、`failed`、`cancelled`、`edit`、`delete`、`clear`、`paths`、`flat`、`view`、`show`、`hide`、`presets`、`apply`、`reset` |
-| `/dag` | `[full/pending/completed/failed/cancelled]` |
-| `/plan` | 裸命令切换；`start`、`off`、`status`、`settings`、`tools 名称1,名称2`、`show`、`hide` |
-| `/goal` | `new`、`enable`、`disable`、`complete`、`delete`、`edit`、`get`、`list`、`nopause`、`nolimit`、`autoresearch`、`config`、`reset` |
-| `/agents` | `list`、`wait`、`send`、`reply`、`cancel`、`remove`、`pause`、`resume`、`profiles`、`profile`、`unprofile`、`reset` |
-| `/retry` | 菜单、`when-error 间隔 [count N]`、`off`、`status`、`models` |
-
-/todos、/plan、/goal、/agents 的 help 显示具体语法；/retry 打开菜单。`/agents wait a1` 向用户展示输出；模型用 subagent_inspect 的 output:true 收集报告。
-
-## 配置
-
-文件位于 Pi agent 目录下，通常为 `~/.pi/agent/pi-dag-workflow/`。`/goal config` 显示路径。支持 Pi 选择的 agent 目录，包括 `PI_CODING_AGENT_DIR` 覆盖。
-
-### 设置
-
-可选 `pi-dag-workflow-config.json`：
-
-```json
-{
-  "language": "auto",
-  "goalMaxTurns": 32,
-  "goalNoProgressLimit": 8,
-  "planTools": [],
-  "goalNoPauseTools": ["ask_user_question"]
-}
-```
-
-| 设置 | 取值 |
-|---|---|
-| language | auto、en、zh-CN；auto 跟随终端 locale |
-| goalMaxTurns | 1–200，新 Goal 的默认额度 |
-| goalNoProgressLimit | 1–100，重新规划前允许的无进展轮数 |
-| planTools | 最多 16 个可信额外只读工具名 |
-| goalNoPauseTools | 最多 16 个 nopause／持续研究运行时禁用的主会话工具 |
-
-确认额外 Plan 工具只读后再信任它们。编辑、shell 和派发仍受限制。修改设置后 `/reload` 生效。
-
-### Profile
-
-可选 `pi-dag-workflow-profile.json`：
-
-```json
-{
-  "profiles": [
-    {
-      "name": "research",
-      "thinking": "off",
-      "tools": ["read", "grep", "find", "ls"],
-      "instructions": "阅读指定输入，报告发现和对应文件路径、行号。"
-    }
-  ]
-}
-```
-
-新任务省略 profile 或指定 inherit，捕获主会话模型、思考和受支持的活动内置工具。命名 Profile 覆盖明确字段，本次 model/thinking/tools/skills 再覆盖。model 使用准确已注册的 provider/id；隐式思考等级按能力适配，显式不支持的等级会被拒绝。
-
-支持 read、grep、find、ls、edit、write、bash、powershell，最多8项；继承的父扩展工具被过滤并通过回执告知。shell 工具还需要对应执行环境，子进程另有父会话通信工具。只读派发应明确选择只读工具。
-
-Profile 指导作为任务上下文交付。用 subagent_inspect 发现：
-
-```json
-{"profiles":"summary"}
-{"profile":"research"}
-```
-
-摘要包含设置、不含 instructions；命名查询返回一个完整 Profile，profiles:true 请求完整目录。Profile 名称 1–48 字符，最多 8 个工具，instructions 最多 2,000 字符；文件最多 64 个 Profile、64 KiB。`/agents profile` 使用仅属主读写权限保存，保留选定的技能入口。
-
-Profile 或单次派发可选 skills 指定本地 Markdown 文件；单次参数不需要保存 Profile：
-
-```json
-{"name":"csv-review","tools":["read","grep"],"skills":["skills/csv-review/SKILL.md"]}
-```
-
-最多八个文件，支持绝对路径、~/、相对于派发工作目录的路径。派发时每个文件必须可读、非空、不超过64 KiB；所选工具中必须已有 read。入口作为任务引用一次性交付，子任务按需读取正文。技能文本不会启用工具、扩展或 MCP，不授予脚本权限，也不覆盖本次任务要求。
-
-### 任务片段
-
-可选 `pi-dag-workflow-preset.json`：
-
-```json
-{
-  "presets": [
-    {
-      "name": "verify-change",
-      "description": "审查并测试已完成的修改",
-      "steps": [
-        { "key": "review", "subject": "审查实现" },
-        { "key": "test", "subject": "测试 {target}", "after": ["review"] }
-      ]
-    }
-  ]
-}
-```
-
-通过 todo 发现和应用：
-
-```json
-{"action":"presets"}
-{"action":"presets","preset":"verify-change"}
-{"action":"apply","preset":"verify-change","vars":{"target":"CSV 导出"}}
-```
-
-目录查询返回名称、简介和步骤数；命名查询返回完整定义。每次 apply 创建新实例和新编号。reset 重开实例或指定步骤及其仍存在的后继；活动子绑定保护相关任务。绑定片段任务时，context:true 提供有界片段简报。
-
-每个片段 1–32 步；after 指定前置步骤键，description／activeForm 提供任务指示，owner 是展示标签。可选 skill 是建议加载的技能名称。文件最多 64 个片段、64 KiB。个人配置保持仅属主可读，并放在源代码管理之外。
-
-### 模块
-
-通过 pi config 选择：
-
-| 资源 | 功能 |
-|---|---|
-| `src/todos/index.ts` | Todo 工具、/todos、/dag、任务菜单和预览 |
-| `src/plan/index.ts` | Plan 命令、设置、只读限制和摘要 |
-| `src/agents/index.ts` | 子 Job、消息、Profile 和任务菜单 |
-| `src/goal/index.ts` | Goal 记录、续跑、设置和摘要 |
-| `src/retry/index.ts` | /retry、错误恢复、模型选择和摘要 |
-
-各功能独立运行，自带摘要及用户入口，GUI 在根命令集中管理。可选 Todo＋Plan 规划和执行、Goal 持续研究，或仅 Retry 处理错误恢复。关联任务和任务图需要 Todos；Agents 也可独立运行、不关联任务。重载后模块选择生效。
-
-## 安全与持久化
-
-- 任务、Plan 设置、Goal、派发说明、诊断和已完成的子输出保存在 Pi 会话记录中，跟随活动分支。各功能恢复自己的状态；不可读记录保留保护，需明确重置，只读查询和视图命令不会覆盖它。会话文件可能含敏感信息。
-- 子进程使用已配置模型并继承进程环境。Plan 和工具选择是执行限制，所有进程仍使用你的操作系统权限。
-- 取消和分支导航不回滚文件、提交或已发出的外部请求。接续前先检查副作用。
-- 恢复时原有子进程停止、Goal 暂停；恢复的是记录，不是子执行断点。崩溃前尚未封口的流式文本可能没有保留。
-- Goal 原始要求通过当前上下文和恢复检查点交付，保留记忆摘要和早期消息；报告仍需验收。
-- 长报告消耗模型上下文和会话存储。诊断摘要会脱敏常见凭据形式，分享前仍应检查任意报告正文。
-- 插件不上报遥测；模型请求使用 Pi 已配置的 provider。子用量单独记录，配置价格估算不是账单。
-
-参见[子 Agent 通信](docs/COMMUNICATION.md)、[贡献指南](CONTRIBUTING.md)和[安全政策](SECURITY.md)。
-
-## 致谢
-
-受到 Pi 社区项目的启发，包括 [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)、[pi-plan-mode](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-plan-mode)、[Pi Subagents](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-subagents)、[pi-goal-x](https://github.com/tmonk/pi-goal-x)和 [pi-autoresearch](https://github.com/davebcn87/pi-autoresearch)。
-
-## 许可证
-
-[MIT](LICENSE)
+MIT © [Raix2215](https://github.com/Raix2215)

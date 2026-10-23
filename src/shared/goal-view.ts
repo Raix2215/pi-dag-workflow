@@ -1,0 +1,2 @@
+export interface GoalView { id: number; title: string; description?: string; status: 'active' | 'paused' | 'completed' | 'deleted'; maxTurns: number; createdAt: number; completedAt?: number; modelPause?: 'allow' | 'deny'; nolimit?: boolean; autoresearch?: boolean }
+export interface GoalRunView { paused: boolean; used: number; stalled: number; reason?: string; progress?: string; nextStep?: string; errorRetries?: number; pendingWake?: { id: string; goalId: number; usedBefore: number; nextStep?: string } }

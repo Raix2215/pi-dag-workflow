@@ -1,10 +1,43 @@
+/** CLI priority: PI_DAG_TEST_CLI → managed host Pi (~/.pi/agent/install/current-version) → repository-locked CLI. */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm, mkdir, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FEATURE_NAMES } from "./public-records.ts";
 
 export interface RpcRecord { type: string; id?: string; command?: string; success?: boolean; data?: unknown; error?: string; [key: string]: unknown }
+
+/**
+ * The core five entries every non-package test loads with `-e`. It is a *subset* on purpose — the shipped
+ * package declares six (see `sourcePackage`), so a test that needs the real selection matrix must use the
+ * package, not this list.
+ */
+export const sourceEntries = ['todos', 'plan', 'agents', 'goal', 'retry'].map(name => fileURLToPath(new URL(`../../src/${name}/index.ts`, import.meta.url)));
+
+/** Native package filters exercise source resources independently of the publication manifest. */
+export async function sourcePackage(root: string): Promise<string> {
+  const directory = join(root, 'source-package');
+  await mkdir(directory);
+  await symlink(fileURLToPath(new URL('../../src/', import.meta.url)), join(directory, 'src'), 'dir');
+  // The package declares every module the product has, derived from the same list the matrix iterates: a
+  // hand-written subset here silently made the Team combinations load nothing at all.
+  await writeFile(join(directory, 'package.json'), JSON.stringify({ name: 'pi-dag-workflow-source-test', type: 'module', pi: { extensions: FEATURE_NAMES.map(name => `./src/${name}/index.ts`) } }));
+  return directory;
+}
+
+function testCli(): string {
+  const override = process.env.PI_DAG_TEST_CLI?.trim();
+  if (override) return override;
+  const install = join(homedir(), '.pi', 'agent', 'install');
+  const current = join(install, 'current-version');
+  if (existsSync(current)) {
+    const cli = join(install, 'releases', readFileSync(current, 'utf8').trim(), 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
+    if (existsSync(cli)) return cli;
+  }
+  return fileURLToPath(new URL('../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', import.meta.url));
+}
 
 /** Opt-in live tests require a caller-selected model; no personal provider defaults. */
 export function liveModel() {
@@ -42,14 +75,13 @@ export class IsolatedClient {
     child.on("error", () => { for (const listener of this.listeners) listener(); });
     child.on("close", () => { for (const listener of this.listeners) listener(); });
   }
-  static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = [], configuredPackage = false, entries?: string[], language = 'zh-CN'): Promise<IsolatedClient> {
+  static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = [], configuredPackage = false, entries?: string[], language = 'zh-CN', sessionDir?: string): Promise<IsolatedClient> {
     const home = root ?? await mkdtemp(join(tmpdir(), "pi-dag-m1-"));
-    const cli = process.env.PI_DAG_TEST_CLI?.trim() || resolve(fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url)));
-    const entry = fileURLToPath(new URL("../../", import.meta.url));
+    const cli = testCli();
     const model = fileURLToPath(new URL("./offline-model.ts", import.meta.url));
-    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", ...configuredPackage ? [] : ['--no-extensions', ...(entries ?? [entry]).flatMap((path) => ['-e', path])], "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", ...extraArgs.includes('--approve') ? [] : ['--no-approve'], "--session-id", session, "--provider", "dag-test", "--model", "scripted", "-e", model, ...extraExtensions.flatMap((path) => ["-e", path]), ...extraArgs], {
+    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", ...configuredPackage ? [] : ['--no-extensions', ...(entries ?? sourceEntries).flatMap((path) => ['-e', path])], "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", ...extraArgs.includes('--approve') ? [] : ['--no-approve'], ...sessionDir ? ["--session-dir", sessionDir] : [], "--session-id", session, "--provider", "dag-test", "--model", "scripted", "-e", model, ...extraExtensions.flatMap((path) => ["-e", path]), ...extraArgs], {
       cwd: home,
-      env: { PATH: process.env.PATH ?? "", HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_CODING_AGENT_SESSION_DIR: join(home, "sessions"), PI_OFFLINE: "1", TERM: "xterm-256color", LANGUAGE: language },
+      env: { PATH: process.env.PATH ?? "", HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_CODING_AGENT_SESSION_DIR: sessionDir ?? join(home, "sessions"), PI_OFFLINE: "1", TERM: "xterm-256color", LANGUAGE: language },
       stdio: "pipe",
     });
     const client = new IsolatedClient(child, home);
@@ -59,7 +91,7 @@ export class IsolatedClient {
   static async startFlash(extraTools: string[] = [], extraExtensions: string[] = []): Promise<IsolatedClient> {
     const model = liveModel();
     const root = await mkdtemp(join(tmpdir(), "pi-dag-live-"));
-    const cli = process.env.PI_DAG_TEST_CLI?.trim() || fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url));
+    const cli = testCli();
     const entry = fileURLToPath(new URL("../../", import.meta.url));
     const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--session-dir", join(root, "sessions"), "--provider", model.provider, "--model", model.id, "--thinking", model.thinking, "--tools", ["todo", "read", "grep", "find", "ls", "write", ...extraTools].join(","), "-e", entry, ...extraExtensions.flatMap((path) => ['-e', path])], {
       cwd: root,
