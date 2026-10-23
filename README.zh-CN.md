@@ -31,6 +31,8 @@ pi install https://github.com/Raix2215/pi-dag-workflow
 
 安装后重启 Pi 或在会话中执行 `/reload`。随时可通过 `pi config` 独立启用或关闭各功能模块。
 
+Todos、Plan、Agents、Goal、Retry、Team 六个模块可通过 `pi config` 独立启用或组合使用；Display 由任一已启用模块提供，不单独启用。
+
 ### 兼容性与运行环境
 
 - **Pi 版本**：`1.3.0` 或更高（Pi 1.0–1.2 不在本次发布验证范围内）。

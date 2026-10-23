@@ -31,6 +31,8 @@ pi install https://github.com/Raix2215/pi-dag-workflow
 
 Restart Pi or execute `/reload`. Enable or disable specific modules anytime using `pi config`.
 
+Enable Todos, Plan, Agents, Goal, Retry and Team independently or in combination via `pi config`; Display is provided by any enabled module, not enabled separately.
+
 ### Compatibility & Requirements
 
 - **Pi**: `1.3.0` or newer (Pi 1.0–1.2 are outside verified compatibility).
