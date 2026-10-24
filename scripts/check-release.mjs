@@ -7,33 +7,32 @@
 // release files. Findings are reported as file and rule only: the matched value
 // is never printed.
 //
+// Required public entry points are derived from package.json `pi.extensions`, so a
+// newly declared entry becomes mandatory without editing this script.
+//
 // Usage:
 //   node scripts/check-release.mjs            # metadata + pack + content scan
 //   node scripts/check-release.mjs --history  # also scan commit metadata and historical file content
 //
-// This file is skipped when scanning so its own rule patterns never flag it.
+// This file is scanned like any other file: its rules are written so that the
+// rule definitions themselves do not match, and there is no path-wide waiver.
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const SELF = 'scripts/check-release.mjs';
 
 const ALLOWED_HOME_NAMES = new Set(['user', 'runner', 'example', 'node', 'app', 'me', 'you', 'ci']);
 const EMAIL_ALLOW = [/@example\.(com|org|net)$/i, /^noreply@/i, /@users\.noreply\.github\.com$/i, /@localhost$/i];
 
-const REQUIRED_PACK_FILES = [
+export const REQUIRED_PACK_FILES = [
   'package.json',
   'README.md',
   'README.zh-CN.md',
   'LICENSE',
   'CHANGELOG.md',
   'docs/COMMUNICATION.md',
-  'src/todos/index.ts',
-  'src/plan/index.ts',
-  'src/agents/index.ts',
-  'src/goal/index.ts',
   'src/ui/index.ts',
 ];
 const REQUIRED_PACKAGE_FILES = ['src', 'README.md', 'README.zh-CN.md', 'LICENSE', 'CHANGELOG.md', 'docs'];
@@ -147,14 +146,54 @@ export function checkMetadata(manifest) {
   return { errors, warnings };
 }
 
-/** Tarball rules for the file list produced by `npm pack --dry-run --json`. */
-export function checkPack(files) {
+/** Normalize one `pi.extensions` entry to a package-relative path, or null when it is unusable. */
+export function normalizeExtensionEntry(entry) {
+  if (typeof entry !== 'string' || entry !== entry.trim()) return null;
+  const trimmed = entry.trim();
+  if (trimmed.length === 0 || trimmed.startsWith('/')) return null;
+  if (/^[A-Za-z]:/.test(trimmed)) return null;
+  const normalized = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed;
+  const segments = normalized.split('/');
+  if (normalized.length === 0 || segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return null;
+  return normalized;
+}
+
+/**
+ * The manifest declaration is the single source of required public entry points;
+ * there is deliberately no second hardcoded entry list to drift from it.
+ */
+export function declaredExtensionEntries(manifest) {
+  const errors = [];
+  const declared = manifest?.pi?.extensions;
+  if (!Array.isArray(declared) || declared.length === 0) {
+    errors.push('package.json must declare pi.extensions with at least one entry');
+    return { errors, entries: [] };
+  }
+  const entries = [];
+  declared.forEach((entry, index) => {
+    const normalized = normalizeExtensionEntry(entry);
+    if (!normalized) {
+      errors.push(`package.json pi.extensions[${index}] is not a relative file declaration`);
+      return;
+    }
+    if (!entries.includes(normalized)) entries.push(normalized);
+  });
+  return { errors, entries };
+}
+
+/** Tarball rules for the file list produced by `npm pack --dry-run --json` and the manifest that declares entries. */
+export function checkPack(files, manifest) {
   const errors = [];
   const paths = new Set(files.map((file) => (typeof file === 'string' ? file : file.path)));
   for (const required of REQUIRED_PACK_FILES) {
     if (!paths.has(required)) errors.push(`packed tarball is missing ${required}`);
   }
   if (!paths.has('docs/RELEASING.md')) errors.push('packed tarball is missing docs/RELEASING.md');
+  const declarations = declaredExtensionEntries(manifest);
+  errors.push(...declarations.errors);
+  for (const entry of declarations.entries) {
+    if (!paths.has(entry)) errors.push(`packed tarball is missing declared extension ${entry}`);
+  }
   for (const path of paths) {
     if (FORBIDDEN_PACK_PREFIXES.some((prefix) => path.startsWith(prefix))) {
       errors.push(`packed tarball must not include ${path}`);
@@ -197,7 +236,6 @@ function packFiles() {
 async function scanRepo(paths) {
   const findings = [];
   for (const path of paths) {
-    if (path === SELF) continue; // rule definitions must not flag themselves
     let text;
     try {
       text = await readFile(resolve(root, path), 'utf8');
@@ -236,7 +274,7 @@ function checkHistoricalContent() {
   for (const line of types.trim().split('\n')) {
     const [object, type] = line.split(' ');
     const path = names.get(object);
-    if (type !== 'blob' || !path || path === SELF) continue;
+    if (type !== 'blob' || !path) continue;
     if (/(^|\/)AGENTS\.md$/i.test(path)) findings.push({ file: `history:${path}`, line: 1, rule: 'private-context-file' });
     const text = execFileSync('git', ['cat-file', 'blob', object], { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
     if (!text.includes('\u0000')) findings.push(...scanText(text).map((finding) => ({ file: `history:${path}@${object.slice(0, 12)}`, ...finding })));
@@ -260,7 +298,7 @@ async function main() {
   } catch (error) {
     errors.push(`could not run npm pack dry run: ${error instanceof Error ? error.message : String(error)}`);
   }
-  errors.push(...checkPack(packed).errors);
+  errors.push(...checkPack(packed, manifest).errors);
 
   const tracked = gitTrackedFiles();
   if (tracked.includes('AGENTS.md')) errors.push('AGENTS.md must not be tracked');

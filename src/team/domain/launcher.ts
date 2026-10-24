@@ -57,7 +57,9 @@ export interface LaunchRequest {
    * its mailbox exactly this session, so a same-named or concurrent record can never stand in for it.
    */
   createSessionId?: string;
-  /** Member name (`--name`); defaults to the plugin's own naming rule. */
+  /** Initial team member name (`--team-member`), independent from the native session name. */
+  memberName?: string;
+  /** Native Pi session name (`--name`); omitted leaves the host default. */
   name?: string;
   /** `provider/id`, optionally already carrying a `:thinking` suffix. */
   model?: string;
@@ -222,6 +224,7 @@ const memberTokens = (request: LaunchRequest, profile?: LaunchProfileLike): Toke
   if (request.sessionId) args.push(flag('--session'), data(request.sessionId));
   else if (request.createSessionId) args.push(flag('--session-id'), data(request.createSessionId));
   else if (request.resume) args.push(flag('--continue'));
+  if (request.memberName) args.push(flag('--team-member'), data(request.memberName));
   if (request.name) args.push(flag('--name'), data(request.name));
   const settings = launchSettings(request, profile);
   args.push(...profileTokens(profile, request.teamExtension), ...modelTokens(settings.model, settings.thinking), ...toolsTokens(settings.tools));

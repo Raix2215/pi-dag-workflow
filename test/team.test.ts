@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, mkdir, open, readdir, readFile, realpath, rm, stat, symlink, writeFile, access } from 'node:fs/promises';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { fileURLToPath as pathFromUrl } from 'node:url';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -16,6 +17,8 @@ import { cleanupRuntime, launchTeam, teamExtensionPath } from '../src/team/io/la
 import { readLaunchProfile } from '../src/shared/profile-launch.ts';
 import { ProfileStore } from '../src/agents/domain/profiles.ts';
 import { IsolatedClient } from './fixtures/isolated-client.ts';
+import { codexModelsJson, fakeCodexJwt, loopbackModelsJson, startCodexLoopback, startLoopbackProvider } from './fixtures/loopback-provider.ts';
+import { evidenceDir, persistEvidence, startTui, tuiEnabled, type TuiSession } from './fixtures/tui-session.ts';
 import { ownsRuntimePath, prepareRuntimeRoot, readRuntimePid, removeMemberRuntime, removeOwnedRuntime, runtimeEvidence, runtimePairFor, writeRuntimePid } from '../src/team/io/runtime.ts';
 import { piLaunchTarget } from '../src/shared/pi-cli.ts';
 import { assignLead, claimOwnership, createTeam, dissolveTeam, joinTeam, leaveTeam, listTeams, markMemberOffline, noteMemberEvent, readMembers, readTeam, releaseMember, removeMember, renameMember, renameTeam, restoreMember, setAutoMessages, setMemberRuntime, teamsRoot, updateTeam } from '../src/team/io/registry.ts';
@@ -270,6 +273,35 @@ test('the extension joins from the --team flag, persists the session pointer and
   assert.ok(host.notices.some(item => item.message.includes('已退出团队')));
   await registration.join(host.ctx, 'Alpha');
   assert.equal((await readMembers(team.id))[0]!.name, 'Kept member name', 'leaving and rejoining the same team preserves the actual member name, not the old pointer label');
+});
+
+test('ticket75 an initial member flag never overwrites a saved renamed member', async t => {
+  const root = await agentDir(t);
+  assert.equal(teamsRoot(), join(root, 'pi-dag-workflow/teams'));
+  const team = await createTeam({ name: 'LaunchNames', workspaceRoot: workspace });
+  const host = teamHost(workspace, 'named-session');
+  host.flags.set('value:team', team.name);
+  host.flags.set('value:team-member', 'Initial member');
+  host.ctx.sessionManager.getSessionName = () => 'Initial session';
+  const registration = registerTeam(host.pi, { msg: createTranslator('en') });
+  t.after(() => host.fire('session_shutdown'));
+  assert.equal((host.flags.get('team-member') as { type: string } | undefined)?.type, 'string', 'the sole initial-member flag must be registered as text');
+  assert.equal((host.flags.get('team-member') as { description: string }).description, 'Initial team member name, independent from the native --name session name', 'the public initial-member flag help must be localized');
+  await host.fire('session_start');
+  assert.equal((await readMembers(team.id))[0]!.name, 'Initial member', 'a fresh member uses the explicit initial flag');
+  assert.equal((await readMembers(team.id))[0]!.sessionId, 'named-session', 'an initial name preference never substitutes session identity');
+  await renameMember(team.id, 'named-session', 'Kept member');
+  host.flags.set('value:team-member', 'Replacement member');
+  host.ctx.sessionManager.getSessionName = () => 'Renamed session';
+  await registration.join(host.ctx, team.name);
+  assert.equal((await readMembers(team.id))[0]!.name, 'Kept member', 'rejoining the existing SID preserves the actual renamed record');
+  await registration.leave(host.ctx, { authorized: true });
+  assert.deepEqual(await readMembers(team.id), [], 'leaving really removes the member before the pointer is restored');
+  await registration.join(host.ctx, team.name);
+  const restored = (await readMembers(team.id))[0]!;
+  assert.equal(restored.name, 'Kept member', 'the saved pointer wins over a new initial member flag after leaving');
+  assert.equal(restored.sessionId, 'named-session', 'name preferences never replace session identity');
+  assert.equal(restored.sessionName, 'Renamed session', 'restoring the member name does not rename the native session');
 });
 
 test('a stale pointer to a dissolved team is cleared with an actionable notice', async t => {
@@ -2529,9 +2561,11 @@ test('ticket46 a value that starts with -- stays one argv word in a real POSIX s
   const script = join(root, 'record-argv.mjs');
   await writeFile(script, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)));\n`);
   const hostile = `--worker; : > ${marker} #`;
+  const memberMarker = join(root, 'member-marker');
+  const hostileMember = `--member-worker; : > ${memberMarker} #`;
   // The request carries the interpreter that really runs, so the recorded first word is that same path on any
   // Node build; a hardcoded /usr/bin/node would only agree with this process where both happen to match.
-  const request = { ...desktopRequest({ name: hostile, teamName: 'Alpha Team', execPath: process.execPath }), cwd: root };
+  const request = { ...desktopRequest({ name: hostile, memberName: hostileMember, teamName: 'Alpha Team', execPath: process.execPath }), cwd: root };
   const launched = await launchTeam('desktop', request, {
     adapters: { tmux: false, graphical: true, desktopTemplate: `${JSON.stringify(process.execPath)} ${script} {command}`, platform: 'linux' },
     spawn: nodeSpawn,
@@ -2540,8 +2574,12 @@ test('ticket46 a value that starts with -- stays one argv word in a real POSIX s
   // The template ran through the real shell; wait for the recorder to write its argv.
   for (let attempt = 0; attempt < 200; attempt++) { try { await access(record); break; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); } }
   const argv = JSON.parse(await readFile(record, 'utf8')) as string[];
+  const memberAt = argv.indexOf('--team-member');
+  assert.notEqual(memberAt, -1, 'the separate initial member flag must reach the shell recorder');
+  assert.equal(argv[memberAt + 1], hostileMember, 'the initial member name stays one literal argv value in the real shell');
+  await assert.rejects(access(memberMarker), 'the member-name injection never runs');
   const at = argv.indexOf('--name');
-  assert.notEqual(at, -1, `the member name reached the program: ${JSON.stringify(argv)}`);
+  assert.notEqual(at, -1, `the native session name reached the program: ${JSON.stringify(argv)}`);
   assert.equal(argv[at + 1], hostile, 'the whole name arrives as a single argv word');
   assert.equal(argv.filter((value) => value === '--worker').length, 0, 'it is never split into a bare option');
   await assert.rejects(access(marker), 'the injected command never runs');
@@ -2914,6 +2952,78 @@ test('actual Pi: one blank-session acknowledgement persists its SID; remote sett
   assert.equal(await readFile(join(root, 'agent/settings.json'), 'utf8'), settingsBefore, 'runtime controls leave global defaults unchanged');
   assert.equal(client.records.some(record => record.type === 'extension_error'), false);
 });
+test('ticket75 actual Pi resume and reload keep the saved member, native title and SID', { timeout: 18_000 }, async t => {
+  const { root, team, cleanup } = await setup(t), clients: IsolatedClient[] = [], snapshots: unknown[] = [];
+  cleanup(async () => {
+    try {
+      await persistEvidence(evidenceDir(`saved-names-${Date.now()}`), [
+        { name: 'snapshots.json', text: JSON.stringify(snapshots, null, 2) },
+        ...clients.flatMap((client, index) => [{ name: `rpc-${index}.jsonl`, text: client.records.map(record => JSON.stringify(record)).join('\n') }, { name: `stderr-${index}.log`, text: client.stderrText }]),
+      ]);
+    } finally {
+      for (const client of clients.reverse()) if (client.child.exitCode === null && client.child.signalCode === null) await client.close(false);
+    }
+  });
+  const reloader = join(root, 'reload.ts');
+  await writeFile(reloader, `export default function(pi) { pi.registerCommand('test-reload', { handler: async (_args, ctx) => { await ctx.reload(); } }); }`);
+  let bodyFailure: unknown;
+  try {
+    const first = await IsolatedClient.start(root, 'saved-name-sid', [reloader], ['--team', team.name, '--team-member', 'Initial member', '--name', 'Saved title'], false, [teamExtensionPath()]);
+    clients.push(first);
+    await first.prompt('Persist this isolated fixture session.');
+    const original = (await first.send('get_state')).data as any;
+    assert.equal(original.sessionName, 'Saved title');
+    assert.equal(typeof original.sessionFile, 'string', 'a real saved session must exist before restoration');
+    await access(original.sessionFile);
+    await renameMember(team.id, 'saved-name-sid', 'Saved member');
+    await first.close(false);
+    const resumed = await IsolatedClient.start(root, 'resume-driver', [reloader], ['--team-member', 'Replacement member'], false, [teamExtensionPath()]);
+    clients.push(resumed);
+    await resumed.send('switch_session', { sessionPath: original.sessionFile });
+    const checkSavedNames = async (stage: string) => {
+      const state = (await resumed.send('get_state')).data as any;
+      const members = await readMembers(team.id), entries = await resumed.entries() as any[];
+      const pointer = entries.filter(entry => entry.customType === 'pi-dag-workflow.team-pointer').at(-1)?.data;
+      snapshots.push({ stage, state, members, pointer });
+      assert.deepEqual(members.map(member => ({ sid: member.sessionId, name: member.name })), [{ sid: 'saved-name-sid', name: 'Saved member' }], `${stage}: the new CLI preference must not rename or duplicate the saved SID`);
+      assert.equal(state.sessionName, 'Saved title', `${stage}: omitting native --name preserves the saved session title`);
+      assert.equal(state.sessionId, 'saved-name-sid', `${stage}: this must be the original native session`);
+      assert.deepEqual(pointer, { teamId: team.id, memberName: 'Saved member' }, `${stage}: the saved pointer must follow the authoritative member, not the new flag`);
+    };
+    await checkSavedNames('resume');
+    await resumed.prompt('/test-reload');
+    await checkSavedNames('reload');
+  } catch (error) { bodyFailure = error; }
+  for (const client of clients) {
+    assert.equal(client.records.some(record => record.type === 'extension_error'), false);
+    assert.doesNotMatch(client.stderrText, /TypeError|SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Unhandled|uncaught/i);
+  }
+  if (bodyFailure !== undefined) throw bodyFailure;
+});
+test('ticket75 actual Pi rejects a duplicate initial member name instead of silently renaming it', { timeout: 15_000 }, async t => {
+  const { root, team, cleanup } = await setup(t), clients: IsolatedClient[] = [];
+  cleanup(async () => {
+    await persistEvidence(evidenceDir(`duplicate-name-${Date.now()}`), [
+      { name: 'members.json', text: JSON.stringify(await readMembers(team.id), null, 2) },
+      ...clients.flatMap((client, index) => [{ name: `rpc-${index}.jsonl`, text: client.records.map(record => JSON.stringify(record)).join('\n') }, { name: `stderr-${index}.log`, text: client.stderrText }]),
+    ]);
+  });
+  let bodyFailure: unknown;
+  try {
+    for (const [sid, name] of [['first-name', 'First title'], ['duplicate-name', 'Other title']] as const) {
+      const client = await IsolatedClient.start(root, sid, [], ['--team', team.name, '--team-member', 'Shared member', '--name', name], false, [teamExtensionPath()]);
+      clients.push(client); cleanup(() => client.close(false));
+      assert.equal(((await client.send('get_state')).data as any).sessionName, name, 'native --name stays independent even when joining is refused');
+    }
+    assert.deepEqual((await readMembers(team.id)).map(member => ({ sid: member.sessionId, name: member.name })), [{ sid: 'first-name', name: 'Shared member' }], 'a second SID with the same explicit member name must not join under another name');
+    assert.equal(clients[1]!.records.some(record => JSON.stringify(record).includes('已被另一个会话使用')), true, 'the rejected real host must report the naming conflict');
+  } catch (error) { bodyFailure = error; }
+  for (const client of clients) {
+    assert.equal(client.records.some(record => record.type === 'extension_error'), false);
+    assert.doesNotMatch(client.stderrText, /TypeError|SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Unhandled|uncaught/i);
+  }
+  if (bodyFailure !== undefined) throw bodyFailure;
+});
 test('actual Pi: startup acknowledgement blocks an attempted file write', { timeout: 8000 }, async t => {
   const { root, team, cleanup } = await setup(t);
   const entry = fileURLToPath(new URL('../src/team/index.ts', import.meta.url));
@@ -2925,3 +3035,769 @@ test('actual Pi: startup acknowledgement blocks an attempted file write', { time
   assert.equal(client.records.some(record => record.type === 'extension_error'), false);
 });
 }
+
+// Ticket 74 stage A: the idle target must run the SDK's own HTTP adapter against a local endpoint, so the bytes
+// it really serializes are observable. The delivery wrapper has to be inside them for the production
+// confirmation rule (`before_provider_request`) to mark the message read, which is what `team_inspect` then
+// reports. Nothing here injects a prompt into the target, calls the extension's private poll, or hand-builds a
+// payload that would satisfy the confirmation on its own.
+test('ticket74 普通 team_send 唤醒真实空闲目标', { timeout: 120_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-team-wakeup-')), previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
+  await mkdir(join(root, 'agent'), { recursive: true });
+  const loopback = await startLoopbackProvider();
+  const team = await createTeam({ name: 'Wakeup', workspaceRoot: root });
+  // A provider written to disk with a loopback base URL: the real host process uses the native adapter.
+  await writeFile(join(root, 'agent/models.json'), loopbackModelsJson(loopback.baseUrl));
+  const clients: IsolatedClient[] = [];
+  t.after(async () => {
+    try { for (const client of clients.reverse()) await client.close(false); }
+    finally { await loopback.close(); if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(root, { recursive: true, force: true }); }
+  });
+  const entry = teamExtensionPath();
+  const target = await IsolatedClient.start(root, 'wakeup-target', [], ['--team', 'Wakeup'], false, [entry], 'zh-CN', undefined, { provider: 'loopback74', id: 'scripted-loopback', offlineModel: false });
+  clients.push(target);
+  const sender = await IsolatedClient.start(root, 'wakeup-sender', [], ['--team', 'Wakeup'], false, [entry]);
+  clients.push(sender);
+  // A load error is never a semantic red: both processes must stay free of host errors and fatal stderr.
+  const refuseHostErrors = (stage: string) => {
+    for (const [label, client] of [['target', target], ['sender', sender]] as const) {
+      const errors = client.records.filter(record => record.type === 'extension_error');
+      assert.deepEqual(errors, [], `${label} raised a host error (${stage}): ${JSON.stringify(errors)}`);
+      assert.doesNotMatch(client.stderrText, /\bTypeError\b|\bSyntaxError\b|Unhandled|uncaught/i, `${label} stderr carried a fatal error (${stage}): ${client.stderrText}`);
+    }
+  };
+  refuseHostErrors('startup');
+  const members = async () => readMembers(team.id);
+  const joined = async () => (await members()).filter(member => ['wakeup-target', 'wakeup-sender'].includes(member.sessionId)).length === 2;
+  const joinDeadline = Date.now() + 20_000;
+  while (!await joined()) {
+    assert.equal(Date.now() < joinDeadline, true, 'both real hosts must join the team before the send');
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const targetName = (await members()).find(member => member.sessionId === 'wakeup-target')!.name;
+  refuseHostErrors('joined');
+  assert.equal(target.records.some(record => record.type === 'agent_start'), false, 'the target must be idle before the send');
+  assert.equal(loopback.requests.length, 0, 'an idle target makes no provider request before a message exists');
+  const before = target.records.length, token = `TICKET74-${process.pid}-${Date.now()}`, sentAt = Date.now();
+  // The sender's model is the offline scripted provider: the prompt names the tool and its arguments, and the
+  // tool call itself is executed by the real host, not by the test.
+  await sender.prompt(`TEST CALL team_send ${JSON.stringify({ to: targetName, body: `阶段A反馈环 ${token}`, kind: 'message' })}`);
+  const sent = sender.records.filter(record => record.type === 'message_end' && (record.message as any)?.role === 'toolResult' && (record.message as any)?.toolName === 'team_send');
+  assert.equal(sent.length, 1, 'the real team_send tool ran exactly once');
+  assert.equal(Boolean((sent[0]!.message as any).isError), false, `team_send must accept the message: ${JSON.stringify((sent[0]!.message as any).content)}`);
+  // Every exit path — assertion pass, assertion failure, or watchdog timeout — must still prove that the two real
+  // hosts stayed healthy from startup, so a behaviour red can never be disguised as, or hidden behind, a load red.
+  let observed: { elapsed: number; unread: number; turn: string } | undefined, bodyFailure: unknown;
+  try {
+    let woke = false, failure = '';
+    try { await target.until(() => target.records.slice(before).some(record => record.type === 'agent_start'), 35_000); woke = true; }
+    catch (error) { failure = error instanceof Error ? error.message : String(error); }
+    assert.equal(woke, true, `the idle target must start a turn within the production poll window; elapsed=${Date.now() - sentAt}ms; stderr=${failure}`);
+    await target.until(() => target.records.slice(before).some(record => record.type === 'agent_settled'), 20_000);
+    const elapsed = Date.now() - sentAt;
+    // The real request: one turn, one serialized body, and the delivered text is inside it.
+    assert.equal(loopback.requests.length, 1, `the wakeup turn must make exactly one provider request: ${JSON.stringify(loopback.requests.map(request => request.body.slice(0, 160)))}`);
+    assert.equal(loopback.requests[0]!.body.includes(token), true, 'the serialized provider request must carry the delivered body');
+    assert.equal(loopback.requests[0]!.authorization, 'Bearer loopback-test-key', 'the native adapter used the configured provider credentials');
+    // Consumption is read through the public tool: the production confirmation rule matched the wrapper above,
+    // so the one message this member was sent is no longer unread.
+    await sender.prompt(`TEST CALL team_inspect ${JSON.stringify({ name: targetName })}`);
+    const inspect = sender.records.filter(record => record.type === 'message_end' && (record.message as any)?.role === 'toolResult' && (record.message as any)?.toolName === 'team_inspect').at(-1);
+    assert.ok(inspect, 'the public team_inspect tool must run');
+    const text = ((inspect!.message as any).content as { text: string }[]).map(part => part.text).join('');
+    const snapshot = JSON.parse(text);
+    assert.equal(snapshot.unread, 0, `the confirmed delivery must leave nothing unread: ${text}`);
+    assert.equal(snapshot.member?.sessionId, 'wakeup-target', `the snapshot must describe the addressed member: ${text}`);
+    observed = { elapsed, unread: snapshot.unread, turn: target.records.slice(before).map(record => record.type).filter(type => type.startsWith('agent')).join(',') };
+  } catch (error) { bodyFailure = error; }
+  // Runs on both paths; a host error here wins, because it means the assertions above proved nothing.
+  refuseHostErrors('final');
+  if (bodyFailure !== undefined) throw bodyFailure;
+  assert.ok(observed, 'the feedback loop must be observed');
+  t.diagnostic(`wakeup elapsed=${observed!.elapsed}ms requests=${loopback.requests.length} records=${target.records.length - before} turn=${observed!.turn} unread=${observed!.unread}`);
+});
+
+for (const sample of [
+  { label: 'launches a real member with independent member and session names', memberName: '编码', sessionName: '发布检查器', expectedMember: '编码', expectedSession: '发布检查器' },
+  { label: 'member-only leaves the native session name at its default', memberName: '编码', sessionName: '', expectedMember: '编码', expectedSession: undefined },
+  { label: 'session-only retains the legacy initial member-name fallback', memberName: '', sessionName: '发布检查器', expectedMember: '发布检查器', expectedSession: '发布检查器' },
+  { label: 'both blank allocate the next member without naming the native session', memberName: '', sessionName: '', expectedMember: 'member-2', expectedSession: undefined },
+  { label: 'whitespace inputs are omitted rather than becoming either name', memberName: '   ', sessionName: '   ', expectedMember: 'member-2', expectedSession: undefined },
+  { label: 'keeps both names and their guidance localized in English', memberName: 'Writer', sessionName: 'Release checks', expectedMember: 'Writer', expectedSession: 'Release checks', language: 'en' },
+]) test(`ticket75 production panel ${sample.label}`, { timeout: 120_000, skip: tuiEnabled() ? false : 'set PI_DAG_TEST_TUI=1 for the real launch panel' }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-team-names-')), previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
+  await mkdir(join(root, 'agent'), { recursive: true });
+  await mkdir(join(root, 'sessions'), { recursive: true });
+  assert.equal(teamsRoot(), join(root, 'agent/pi-dag-workflow/teams'), 'the real launcher may only write inside this test agent directory');
+  const loopback = await startLoopbackProvider('ready for a task');
+  const team = await createTeam({ name: 'LaunchNames', workspaceRoot: root });
+  let tui: TuiSession | undefined;
+  const captures: { name: string; text: string }[] = [];
+  const evidence = evidenceDir(`names-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  const children = async () => (await readMembers(team.id)).filter(member => member.sessionId !== 'names-operator');
+  t.after(async () => {
+    try {
+      const files = [...captures,
+        { name: 'final-plain.txt', text: tui?.text() ?? '' }, { name: 'final-ansi.txt', text: tui?.ansi() ?? '' },
+        { name: 'operator.stderr.log', text: tui?.stderrText() ?? '' },
+        { name: 'members.json', text: JSON.stringify(await readMembers(team.id), null, 2) },
+        { name: 'requests.json', text: JSON.stringify(loopback.requests, null, 2) },
+      ];
+      for (const child of await children()) {
+        if (child.runtime?.log) files.push({ name: `child-${child.sessionId}.log`, text: await readFile(child.runtime.log, 'utf8') });
+      }
+      const manifest = await persistEvidence(evidence, files);
+      await writeFile(join(evidence, 'manifest.json'), JSON.stringify(manifest, null, 2));
+      t.diagnostic(`launch evidence=${evidence}`);
+    } finally {
+      try {
+        for (const child of await children()) {
+          // The test created this isolated workspace; require the production runtime binding as PID evidence.
+          assert.equal(child.runtime?.pid, child.holder.pid, 'cleanup needs the PID bound by this launch');
+          assert.ok(child.runtime!.log.startsWith(join(teamsRoot(), team.id, 'runtime/')), 'cleanup is limited to this test runtime');
+          const pid = child.holder.pid;
+          assert.ok(Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid, 'never signal a process group or this test runner');
+          try { process.kill(pid, 'SIGTERM'); } catch (error: any) { if (error.code !== 'ESRCH') throw error; }
+          const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+          const deadline = Date.now() + 3000;
+          while (alive() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+          if (alive()) process.kill(pid, 'SIGKILL');
+        }
+      } finally {
+        await tui?.close(); await loopback.close();
+        if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+  await writeFile(join(root, 'agent/models.json'), loopbackModelsJson(loopback.baseUrl));
+  const labels = sample.language === 'en'
+    ? { joined: 'Joined team', team: 'Team', create: /a new session/, member: /Member name/, session: /Session name/, model: /model/, launch: /Start in/, background: /Launch in background/, memberHint: /This member’s initial name in the team/, sessionHint: /The Pi session name is independent/ }
+    : { joined: '已加入团队', team: '团队', create: /新建会话/, member: /成员名/, session: /会话名/, model: /模型/, launch: /启动方式/, background: /后台启动/, memberHint: /新成员在团队中的名称/, sessionHint: /Pi 会话名称，与成员名独立/ };
+  // Give the operator an explicit native name: a broken blank-name fallback must affect the child,
+  // not make parent and child collide before the final naming assertion can run.
+  tui = await startTui({ root, sessionId: 'names-operator', entries: [teamExtensionPath()], args: ['--team', team.name, '--name', 'member-1'], language: sample.language ?? 'zh-CN' });
+  const focused = () => tui!.text().split('\n').find(line => /^\s*(?:│\s*)*>\s/.test(line)) ?? '';
+  const focus = (pattern: RegExp, label: string, direction = 'j') => {
+    for (let step = 0; step < 35; step++) {
+      if (pattern.test(focused())) return;
+      tui!.press(direction);
+    }
+    assert.fail(`the production panel never focused ${label}: ${JSON.stringify(focused())}`);
+  };
+  const healthy = async () => {
+    assert.doesNotMatch(tui!.stderrText(), /TypeError|SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|extension_error|Unhandled|uncaught/i, 'the real panel host must load without fatal errors');
+    for (const child of await children()) {
+      if (child.runtime?.log) assert.doesNotMatch(await readFile(child.runtime.log, 'utf8'), /TypeError|SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|extension_error|Unhandled|uncaught/i, 'the launched Pi must load without fatal errors');
+    }
+  };
+  let bodyFailure: unknown;
+  try {
+    await tui.until(screen => screen.includes(labels.joined), 45_000, 'the operator to join');
+    await healthy();
+    tui.sendText('/team'); tui.press('Enter');
+    await tui.until(screen => screen.includes(labels.team) && screen.includes(team.name), 20_000, 'the production team panel');
+    focus(/LaunchNames/, 'the team'); tui.press('l');
+    focus(labels.create, 'new session'); tui.press('l');
+    captures.push({ name: 'inputs-plain.txt', text: tui.text() }, { name: 'inputs-ansi.txt', text: tui.ansi() });
+    focus(labels.member, 'the independent member-name input');
+    assert.match(tui.text(), labels.memberHint, 'the member-name guidance must be localized in the real panel');
+    captures.push({ name: 'member-hint-plain.txt', text: tui.text() }, { name: 'member-hint-ansi.txt', text: tui.ansi() });
+    if (sample.memberName) { tui.press('Enter'); tui.sendText(sample.memberName); tui.press('Enter'); }
+    focus(labels.session, 'the separate native session-name input');
+    assert.match(tui.text(), labels.sessionHint, 'the native session-name guidance must be localized in the real panel');
+    captures.push({ name: 'session-hint-plain.txt', text: tui.text() }, { name: 'session-hint-ansi.txt', text: tui.ansi() });
+    if (sample.sessionName) { tui.press('Enter'); tui.sendText(sample.sessionName); tui.press('Enter'); }
+    focus(labels.model, 'model'); tui.press('Enter'); tui.sendText('loopback74/scripted-loopback'); tui.press('Enter');
+    captures.push({ name: 'configured-plain.txt', text: tui.text() }, { name: 'configured-ansi.txt', text: tui.ansi() });
+    focus(labels.launch, 'launch mode'); tui.press('l'); focus(labels.background, 'background launch'); tui.press('Enter');
+    const deadline = Date.now() + 35_000;
+    let launched: TeamMember | undefined;
+    while (Date.now() < deadline) {
+      launched = (await children()).find(member => member.runtime && member.bootstrap === 'confirmed');
+      if (launched) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.ok(launched, 'the production panel must launch and confirm a real child Pi, not just display a command');
+    assert.equal(launched.name, sample.expectedMember, 'the member name must reach the new Pi through the production launch chain');
+    assert.equal(launched.sessionName, sample.expectedSession, 'the native session name must remain independent from the member name');
+    assert.equal(launched.state, 'headless', 'the requested background adapter must actually be used');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.equal(loopback.requests.length, 1, 'launch must make one startup acknowledgement, not an extra work turn');
+    assert.equal(loopback.requests[0]!.body.includes(sample.expectedMember), true, 'the real provider must receive this child member identity');
+    assert.equal(loopback.requests[0]!.body.includes(launched.sessionId), true, 'startup membership must identify the child SID, not the operator');
+  } catch (error) { bodyFailure = error; }
+  await healthy();
+  if (bodyFailure !== undefined) throw bodyFailure;
+});
+
+// Opt-in: the panel only exists in the interactive surface, so this run needs tmux. The default suite must
+// not, and an explicit run must fail rather than skip — hence the gate, and the error inside startTui.
+test('ticket74 面板「投递并处理」唤醒手动收信的真实目标', { timeout: 240_000, skip: tuiEnabled() ? false : 'set PI_DAG_TEST_TUI=1 to drive the real TUI panel (tmux)' }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-team-panel-')), previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
+  await mkdir(join(root, 'agent'), { recursive: true });
+  await mkdir(join(root, 'sessions'), { recursive: true });
+  const loopback = await startLoopbackProvider();
+  const team = await createTeam({ name: 'PanelWake', workspaceRoot: root });
+  await writeFile(join(root, 'agent/models.json'), loopbackModelsJson(loopback.baseUrl));
+  const clients: IsolatedClient[] = [];
+  const interactive: { session?: TuiSession } = {};
+  t.after(async () => {
+    try { await interactive.session?.close(); for (const client of clients.reverse()) await client.close(false); }
+    finally { await loopback.close(); if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(root, { recursive: true, force: true }); }
+  });
+  const entry = teamExtensionPath();
+  const target = await IsolatedClient.start(root, 'panel-target', [], ['--team', 'PanelWake'], false, [entry], 'zh-CN', undefined, { provider: 'loopback74', id: 'scripted-loopback', offlineModel: false });
+  clients.push(target);
+  const peer = await IsolatedClient.start(root, 'panel-peer', [], ['--team', 'PanelWake'], false, [entry]);
+  clients.push(peer);
+  // A load error is never a semantic red. The interactive host has no RPC records, so its stderr file is the
+  // surface that answers the same question for it.
+  const refuseHostErrors = (stage: string) => {
+    for (const [label, client] of [['target', target], ['peer', peer]] as const) {
+      const errors = client.records.filter(record => record.type === 'extension_error');
+      assert.deepEqual(errors, [], `${label} raised a host error (${stage}): ${JSON.stringify(errors)}`);
+      assert.doesNotMatch(client.stderrText, /\bTypeError\b|\bSyntaxError\b|Unhandled|uncaught/i, `${label} stderr carried a fatal error (${stage}): ${client.stderrText}`);
+    }
+    const stderr = interactive.session?.stderrText() ?? '';
+    assert.doesNotMatch(stderr, /\bTypeError\b|\bSyntaxError\b|Unhandled|uncaught|extension_error/i, `the TUI host stderr carried a fatal error (${stage}): ${stderr}`);
+  };
+  refuseHostErrors('startup');
+  const members = async () => readMembers(team.id);
+  const joined = async () => (await members()).filter(member => ['panel-target', 'panel-peer'].includes(member.sessionId)).length === 2;
+  const joinDeadline = Date.now() + 25_000;
+  while (!await joined()) {
+    assert.equal(Date.now() < joinDeadline, true, 'both real hosts must join the team before the panel acts');
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const targetName = (await members()).find(member => member.sessionId === 'panel-target')!.name;
+  // The interactive host joins last: the roster rows the panel shows are then stable from its first frame.
+  interactive.session = await startTui({ root, sessionId: 'panel-op', entries: [entry], args: ['--team', 'PanelWake'] });
+  const tui = interactive.session;
+  const FOCUS = /^\s*(?:│\s*)*>\s/;
+  const focusedLine = (screen: string) => screen.split('\n').find(line => FOCUS.test(line)) ?? '';
+  const moveTo = async (pattern: RegExp, what: string, key: 'j' | 'k' = 'j', attempts = 18) => {
+    for (let step = 0; step < attempts; step++) {
+      const screen = tui.text();
+      if (pattern.test(focusedLine(screen))) return screen;
+      tui.press(key);
+    }
+    throw new Error(`the panel never focused ${what}; focused=${JSON.stringify(focusedLine(tui.text()))} pane=${JSON.stringify(tui.text().slice(-1000))}`);
+  };
+  let observed: { elapsed: number; unread: number; policy: string } | undefined, bodyFailure: unknown;
+  try {
+    await tui.until(screen => screen.includes('已加入团队'), 60_000, 'the TUI to start and join the team');
+    tui.sendText('/team'); tui.press('Enter');
+    await tui.until(screen => screen.includes('成员') && screen.includes(targetName), 30_000, 'the team panel');
+    // Every step below is a keystroke a user would make: the seam is the production menu, not a test record.
+    await moveTo(new RegExp(targetName), 'the target member row');
+    tui.press('l');
+    await moveTo(/成员管理/, 'the member-management row');
+    tui.press('l');
+    await moveTo(/收信策略/, 'the auto-message policy row');
+    // The off precondition: the target is put on manual delivery *through the menu*, so any wakeup later can
+    // only come from the panel request, never from the background poll.
+    for (let step = 0; step < 4 && !/\[手动\]/.test(focusedLine(tui.text())); step++) tui.press('Enter');
+    assert.match(focusedLine(tui.text()), /收信策略.*\[手动\]/, 'the menu must show the manual policy the user picked');
+    assert.equal((await members()).find(member => member.sessionId === 'panel-target')!.autoMessages, 'off', 'the menu wrote the manual policy to the member registry');
+    refuseHostErrors('manual');
+    const before = target.records.length, token = `TICKET74-PANEL-${process.pid}-${Date.now()}`;
+    assert.equal(target.records.some(record => record.type === 'agent_start'), false, 'the target must be idle before anything is delivered');
+    // An unread message with the manual policy in force: the background poll must leave it alone.
+    await peer.prompt(`TEST CALL team_send ${JSON.stringify({ to: targetName, body: `阶段A面板 ${token}`, kind: 'message' })}`);
+    await peer.prompt(`TEST CALL team_inspect ${JSON.stringify({ name: targetName })}`);
+    const inspect = () => {
+      const result = peer.records.filter(record => record.type === 'message_end' && (record.message as any)?.role === 'toolResult' && (record.message as any)?.toolName === 'team_inspect').at(-1);
+      assert.ok(result, 'the public team_inspect tool must run');
+      return JSON.parse(((result!.message as any).content as { text: string }[]).map(part => part.text).join(''));
+    };
+    assert.equal(inspect().unread, 1, 'the manual target must keep the new message unread');
+    // The attribution window: a manual target must not be woken *and* the message must not even be claimed.
+    // Both halves matter — the poll can claim a message without a turn ever starting, and then the wakeup
+    // this test observes later would not belong to the panel request.
+    const quiet = Date.now();
+    while (Date.now() - quiet < POLL_MS + 3_000) {
+      const waiting = (await readInbox(team.id, 'panel-target')).filter(message => message.request !== 'deliver');
+      assert.equal(target.records.slice(before).some(record => record.type === 'agent_start'), false, `a manual target must not be woken by the background poll (${Date.now() - quiet}ms)`);
+      assert.equal(waiting.length, 1, `the message must still be there for the panel (${Date.now() - quiet}ms)`);
+      assert.equal(waiting[0]!.readAt, undefined, `a manual target must not be marked read by the background poll (${Date.now() - quiet}ms)`);
+      assert.equal(waiting[0]!.inflight, undefined, `a manual target's message must not be claimed by the background poll (${Date.now() - quiet}ms)`);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    refuseHostErrors('quiet');
+    const unread = (await readInbox(team.id, 'panel-target')).filter(message => message.readAt === undefined && message.request !== 'deliver');
+    assert.equal(unread.length, 1, 'exactly one message waits for the panel request');
+    const messageId = unread[0]!.id;
+    // Reopen the panel: it reads member mailboxes while it is open, so a message that arrived after the
+    // policy change is only in the menu of a freshly opened panel — exactly what a user would see.
+    // Esc collapses one level at a time; keep going until the panel itself is gone, or `/team` would be typed
+    // into the panel's search box instead of the prompt.
+    for (let step = 0; step < 8 && tui.text().includes('Tab 换模块'); step++) tui.press('Escape');
+    assert.equal(tui.text().includes('Tab 换模块'), false, 'the panel must be closed before it is reopened');
+    tui.sendText('/team'); tui.press('Enter');
+    await tui.until(screen => screen.includes('成员') && screen.includes(targetName), 30_000, 'the panel to reopen');
+    await moveTo(new RegExp(targetName), 'the target member row again');
+    if (!tui.text().includes('成员管理')) tui.press('l');
+    await moveTo(/信箱/, 'the mailbox row');
+    if (!tui.text().includes(`投递并处理 #${messageId}`)) tui.press('l');
+    await tui.until(screen => screen.includes(`投递并处理 #${messageId}`), 20_000, 'the deliver row of the unread message');
+    await moveTo(new RegExp(`投递并处理 #${messageId}`), 'the deliver-and-process row');
+    const evidence = tui.text();
+    const sentAt = Date.now();
+    tui.press('Enter');
+    let woke = false, failure = '';
+    try { await target.until(() => target.records.slice(before).some(record => record.type === 'agent_start'), 35_000); woke = true; }
+    catch (error) { failure = error instanceof Error ? error.message : String(error); }
+    assert.equal(woke, true, `the panel request must wake the manual target; elapsed=${Date.now() - sentAt}ms; stderr=${failure}`);
+    await target.until(() => target.records.slice(before).some(record => record.type === 'agent_settled'), 20_000);
+    const elapsed = Date.now() - sentAt;
+    assert.equal(loopback.requests.length, 1, `the panel request must produce exactly one provider request: ${JSON.stringify(loopback.requests.map(request => request.body.slice(0, 160)))}`);
+    assert.equal(loopback.requests[0]!.body.includes(token), true, 'the serialized provider request must carry the message the panel delivered');
+    await peer.prompt(`TEST CALL team_inspect ${JSON.stringify({ name: targetName })}`);
+    assert.equal(inspect().unread, 0, 'the panel request must consume the message it delivered');
+    observed = { elapsed, unread: inspect().unread, policy: (await members()).find(member => member.sessionId === 'panel-target')!.autoMessages ?? '' };
+    const row = evidence.split('\n').find(line => line.includes(`投递并处理 #${messageId}`)) ?? '';
+    // Raw evidence lands on disk before the final host check: what the pane showed and what the three hosts
+    // wrote to stderr must survive the run, not stay in memory. Persistence is not optional, so a failure to
+    // write fails the test instead of silently leaving only a diagnostic line.
+    const target64 = tui.ansi();
+    const evidenceRoot = evidenceDir(`panel-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+    const persisted = await persistEvidence(evidenceRoot, [
+      { name: 'pane-plain.txt', text: tui.text() },
+      { name: 'pane-ansi.txt', text: target64 },
+      { name: 'panel-op.stderr.log', text: tui.stderrText() },
+      { name: 'panel-target.stderr.log', text: target.stderrText },
+      { name: 'panel-peer.stderr.log', text: peer.stderrText },
+    ]);
+    assert.equal(persisted.every(file => file.sha256.length === 64), true, `every evidence file must be hashed: ${JSON.stringify(persisted)}`);
+    assert.equal(persisted.find(file => file.name === 'pane-ansi.txt')!.bytes, Buffer.byteLength(target64), 'the ANSI capture must be stored byte for byte');
+    assert.equal(persisted.find(file => file.name === 'pane-plain.txt')!.bytes > 0, true, 'the plain capture must not be empty');
+    t.diagnostic(`panel menu row=${JSON.stringify(row)} elapsed=${elapsed}ms requests=${loopback.requests.length} unread=${observed.unread} policy=${observed.policy} evidence=${evidenceRoot} ${persisted.map(file => `${file.name}:${file.bytes}B:${file.sha256.slice(0, 12)}`).join(' ')}`);
+  } catch (error) { bodyFailure = error; }
+  refuseHostErrors('final');
+  if (bodyFailure !== undefined) throw bodyFailure;
+  assert.ok(observed, 'the panel feedback loop must be observed');
+});
+
+// Ticket 74 stage A, api axis: the same public seam as the loopback ring above, but on the native Codex adapter
+// (`openai-codex-responses`) over an explicitly configured SSE transport. The preflight records that the two
+// sessions differ in api only; this run tests whether that difference changes the delivery ring, not why.
+test('ticket74 原生 Codex SSE 回环对照：同一公开 seam 的投递反馈环', { timeout: 150_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-team-codex-')), previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
+  await mkdir(join(root, 'agent'), { recursive: true });
+  const loopback = await startCodexLoopback();
+  const jwt = fakeCodexJwt();
+  const team = await createTeam({ name: 'CodexWake', workspaceRoot: root });
+  // Everything the Codex path needs is local: a loopback base URL (the adapter appends /codex/responses), a
+  // structurally valid fake token, and SSE chosen explicitly — 'auto' would try the WebSocket transport first, and
+  // a silent fallback would leave "SSE worked" unproven.
+  await writeFile(join(root, 'agent/models.json'), codexModelsJson(loopback.baseUrl, jwt));
+  await writeFile(join(root, 'agent/settings.json'), `${JSON.stringify({ transport: 'sse' })}\n`);
+  const clients: IsolatedClient[] = [];
+  t.after(async () => {
+    try { for (const client of clients.reverse()) await client.close(false); }
+    finally { await loopback.close(); if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(root, { recursive: true, force: true }); }
+  });
+  const entry = teamExtensionPath();
+  const model = { provider: 'codex74', id: 'codex-loopback', offlineModel: false };
+  // The outbound boundary is a public extension entry: it installs *after* the host's dispatcher has chosen its
+  // global fetch (a preload installed earlier loses that race), forwards the SDK's request untouched, and writes its
+  // install record to a file of its own so request counting can never be padded by an install line.
+  const guardEntry = pathFromUrl(new URL('./fixtures/fetch-guard.ts', import.meta.url));
+  const guardPath = join(root, 'fetch-guard.jsonl');
+  const guardInstallPath = join(root, 'fetch-guard-install.jsonl');
+  const readIfPresent = async (path: string): Promise<string | undefined> => { try { return await readFile(path, 'utf8'); } catch { return undefined; } };
+  const evidenceRoot = evidenceDir(`codex-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  const target = await IsolatedClient.start(root, 'codex-target', [], ['--team', 'CodexWake'], false, [entry, guardEntry], 'zh-CN', undefined, model, {
+    PI_DAG_GUARD_ORIGIN: loopback.baseUrl,
+    PI_DAG_GUARD_LOG: guardPath,
+    PI_DAG_GUARD_INSTALL_LOG: guardInstallPath,
+  });
+  clients.push(target);
+  // The sender stays on the scripted offline provider: it only drives the public tool, and the api axis under
+  // test belongs to the target that has to wake and confirm.
+  const sender = await IsolatedClient.start(root, 'codex-sender', [], ['--team', 'CodexWake'], false, [entry]);
+  clients.push(sender);
+  const refuseHostErrors = (stage: string) => {
+    for (const [label, client] of [['target', target], ['sender', sender]] as const) {
+      const errors = client.records.filter(record => record.type === 'extension_error');
+      assert.deepEqual(errors, [], `${label} raised a host error (${stage}): ${JSON.stringify(errors)}`);
+      assert.doesNotMatch(client.stderrText, /\bTypeError\b|\bSyntaxError\b|Unhandled|uncaught/i, `${label} stderr carried a fatal error (${stage}): ${client.stderrText}`);
+    }
+  };
+  refuseHostErrors('startup');
+  const members = async () => readMembers(team.id);
+  const joinDeadline = Date.now() + 25_000;
+  while ((await members()).filter(member => ['codex-target', 'codex-sender'].includes(member.sessionId)).length < 2) {
+    assert.equal(Date.now() < joinDeadline, true, 'both real hosts must join the team before the send');
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const targetName = (await members()).find(member => member.sessionId === 'codex-target')!.name;
+  refuseHostErrors('joined');
+  assert.equal(target.records.some(record => record.type === 'agent_start'), false, 'the target must be idle before the send');
+  assert.equal(loopback.requests.length, 0, 'an idle target makes no provider request before a message exists');
+  let bodyFailure: unknown;
+  let observed: { elapsed: number; unread: number; encoding?: string } | undefined;
+  try {
+    const before = target.records.length, token = `TICKET74-CODEX-${process.pid}-${Date.now()}`, sentAt = Date.now();
+    await sender.prompt(`TEST CALL team_send ${JSON.stringify({ to: targetName, body: `阶段A Codex 对照 ${token}`, kind: 'message' })}`);
+    const sent = sender.records.filter(record => record.type === 'message_end' && (record.message as any)?.role === 'toolResult' && (record.message as any)?.toolName === 'team_send');
+    assert.equal(sent.length, 1, 'the real team_send tool ran exactly once');
+    assert.equal(Boolean((sent[0]!.message as any).isError), false, `team_send must accept the message: ${JSON.stringify((sent[0]!.message as any).content)}`);
+    let woke = false, failure = '';
+    try { await target.until(() => target.records.slice(before).some(record => record.type === 'agent_start'), 35_000); woke = true; }
+    catch (error) { failure = error instanceof Error ? error.message : String(error); }
+    assert.equal(woke, true, `the Codex target must start a turn within the production poll window; elapsed=${Date.now() - sentAt}ms; stderr=${failure}`);
+    await target.until(() => target.records.slice(before).some(record => record.type === 'agent_settled'), 20_000);
+    const elapsed = Date.now() - sentAt;
+    assert.equal(loopback.requests.length, 1, `the Codex turn must make exactly one provider request: ${JSON.stringify(loopback.requests.map(request => request.path))}`);
+    const request = loopback.requests[0]!;
+    // The Codex path itself: the served route, the token and account headers, and a loopback peer only.
+    assert.equal(request.path, '/codex/responses', 'the adapter must post to the Codex route it derives from the base URL');
+    assert.equal(request.authorization, `Bearer ${jwt}`, 'the fake token must travel as the bearer credential');
+    assert.equal(request.accountId, 'acct-loopback-74', 'the account claim the adapter extracts must reach the header');
+    assert.equal(/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(request.remoteAddress ?? ''), true, `only a loopback peer is served: ${request.remoteAddress}`);
+    // Compression is per capability, so the assertion follows the runtime instead of assuming one: when zstd
+    // exists the wire bytes must be compressed (the decoded body is then the only honest evidence); when it does
+    // not, the identity body is compared directly. Either way the comparison happens on the plain text.
+    const zlib = await import('node:zlib') as { zstdCompressSync?: unknown };
+    if (typeof zlib.zstdCompressSync === 'function') {
+      assert.equal(request.encoding, 'zstd', 'this Node can compress, so the adapter must send a zstd body');
+      assert.equal(request.raw.toString('utf8').includes(token), false, 'the wire bytes must be compressed, not plain JSON');
+    }
+    assert.equal(request.body.includes(token), true, 'the decoded Codex request body must carry the delivered message');
+    // Guard evidence written by the target process itself: it saw the attempt, allowed it, and every attempt it
+    // allowed is one the loopback server actually served. A guard that never loaded would leave no lines at all.
+    const guardRaw = await readFile(guardPath, 'utf8');
+    const guardLines = guardRaw.trim().split('\n').filter(Boolean);
+    const guardEntries = guardLines
+      .map(line => JSON.parse(line) as { url: string; origin: string; method: string; allowed: boolean });
+    assert.ok(guardEntries.length >= 1, 'the fetch guard must have recorded the native request, not stayed dormant');
+    assert.equal(guardEntries.every(entry => entry.allowed), true, `the guard must have refused any other origin: ${JSON.stringify(guardEntries)}`);
+    assert.equal(guardEntries.length, loopback.requests.length, 'every guarded attempt must be one the loopback server served');
+    assert.equal(guardEntries[0]!.url, `${loopback.baseUrl}/codex/responses`, 'the guarded origin must be exactly the loopback Codex route');
+    assert.equal(guardEntries[0]!.method, 'POST', 'the guarded attempt must be the real POST, not a probe');
+    await sender.prompt(`TEST CALL team_inspect ${JSON.stringify({ name: targetName })}`);
+    const inspect = sender.records.filter(record => record.type === 'message_end' && (record.message as any)?.role === 'toolResult' && (record.message as any)?.toolName === 'team_inspect').at(-1);
+    assert.ok(inspect, 'the public team_inspect tool must run');
+    const text = ((inspect!.message as any).content as { text: string }[]).map(part => part.text).join('');
+    const snapshot = JSON.parse(text);
+    assert.equal(snapshot.unread, 0, `the confirmed Codex delivery must leave nothing unread: ${text}`);
+    assert.equal(snapshot.member?.sessionId, 'codex-target', `the snapshot must describe the addressed member: ${text}`);
+    observed = { elapsed, unread: snapshot.unread, ...(request.encoding === undefined ? {} : { encoding: request.encoding }) };
+    t.diagnostic(`codex wakeup elapsed=${elapsed}ms route=${request.path} encoding=${observed.encoding ?? 'identity'} requests=${loopback.requests.length} unread=${observed.unread} bytes=${request.raw.length}`);
+  } catch (error) { bodyFailure = error; } finally {
+    // The evidence exit runs before t.after removes the temp root: a red must still hand over what the target really
+    // received, and a missing guard file is written down as missing instead of erasing the other facts.
+    const files: { name: string; text: string }[] = [];
+    files.push({ name: 'guard.jsonl', text: await readIfPresent(guardPath) ?? 'MISSING: the target recorded no guard request (file absent)\n' });
+    files.push({ name: 'guard-install.jsonl', text: await readIfPresent(guardInstallPath) ?? 'MISSING: the guard extension recorded no install (file absent)\n' });
+    files.push({ name: 'provider-requests.txt', text: loopback.requests.length === 0
+      ? 'MISSING: the loopback server received no provider request\n'
+      : loopback.requests.map((received, index) => [`#${index + 1} ${received.path}`, `authorization=${String(received.authorization)}`, `account=${String(received.accountId)}`, `encoding=${received.encoding ?? 'identity'}`, `remote=${String(received.remoteAddress)}`, `raw-bytes=${received.raw.length}`, `body=${received.body}`, ''].join('\n')).join('\n') });
+    for (const [label, client] of [['target', target], ['sender', sender]] as const) {
+      let stderrText: string;
+      try { stderrText = client.stderrText; } catch (error) { stderrText = `OVERFLOW: ${error instanceof Error ? error.message : String(error)}\n`; }
+      files.push({ name: `${label}-stderr.log`, text: stderrText });
+      files.push({ name: `${label}-extension-errors.json`, text: `${JSON.stringify(client.records.filter(record => record.type === 'extension_error'), null, 2)}\n` });
+    }
+    const persisted = await persistEvidence(evidenceRoot, files);
+    t.diagnostic(`codex evidence=${evidenceRoot} ${persisted.map(file => `${file.name}:${file.bytes}B:${file.sha256.slice(0, 12)}`).join(' ')}`);
+  }
+  refuseHostErrors('final');
+  if (bodyFailure !== undefined) throw bodyFailure;
+  assert.ok(observed, 'the Codex feedback loop must be observed');
+});
+
+// One request-local omission must not strand this live receiver forever. Both subsequent drivers are public:
+// a real team_send, then the real TUI menu. An omitted first request is not evidence that the first mail was read.
+test('ticket74 未确认窗口不阻塞后续自动和面板投递', { timeout: 180_000, skip: tuiEnabled() ? false : 'set PI_DAG_TEST_TUI=1 for the real delivery menu' }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-team-pending-')), previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
+  await mkdir(join(root, 'agent'), { recursive: true });
+  const loopback = await startLoopbackProvider();
+  const clients: IsolatedClient[] = [];
+  let tui: TuiSession | undefined, stage = 'setup';
+  const captures: { name: string; text: string }[] = [];
+  const evidenceRoot = evidenceDir(`pending-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  t.after(async () => {
+    try {
+      const files = [...captures, { name: 'stage.txt', text: stage },
+        { name: 'provider-requests.json', text: JSON.stringify(loopback.requests, null, 2) }];
+      for (const [index, client] of clients.entries()) {
+        files.push({ name: `rpc-${index}.jsonl`, text: client.records.map(record => JSON.stringify(record)).join('\n') + '\n' });
+        files.push({ name: `stderr-${index}.log`, text: client.stderrText });
+      }
+      if (tui) files.push({ name: 'pane-final.txt', text: tui.text() }, { name: 'pane-final-ansi.txt', text: tui.ansi() }, { name: 'tui.stderr.log', text: tui.stderrText() });
+      const persisted = await persistEvidence(evidenceRoot, files);
+      await writeFile(join(evidenceRoot, 'manifest.json'), JSON.stringify(persisted, null, 2));
+      t.diagnostic(`pending evidence=${evidenceRoot} stage=${stage} requests=${loopback.requests.length}`);
+    } finally {
+      try { await tui?.close(); for (const client of clients.reverse()) await client.close(false); }
+      finally { await loopback.close(); if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(root, { recursive: true, force: true }); }
+    }
+  });
+  const team = await createTeam({ name: 'PendingWake', workspaceRoot: root });
+  await writeFile(join(root, 'agent/models.json'), loopbackModelsJson(loopback.baseUrl));
+  const token = `PENDING74-${process.pid}-${Date.now()}`, first = `${token}-FIRST`, second = `${token}-AUTO`, third = `${token}-PANEL`;
+  const dropFile = join(root, 'dropped.jsonl'), entry = teamExtensionPath();
+  const target = await IsolatedClient.start(root, 'pending-target', [pathFromUrl(new URL('./fixtures/drop-team-context-once.ts', import.meta.url))], ['--team', 'PendingWake'], false, [entry], 'zh-CN', undefined, { provider: 'loopback74', id: 'scripted-loopback', offlineModel: false }, { PI_DAG_TEST_DROP_TOKEN: first, PI_DAG_TEST_DROP_RECORD: dropFile });
+  clients.push(target);
+  const sender = await IsolatedClient.start(root, 'pending-sender', [], ['--team', 'PendingWake'], false, [entry]);
+  clients.push(sender);
+  const targetName = (await readMembers(team.id)).find(member => member.sessionId === 'pending-target')!.name;
+  const healthy = () => {
+    for (const client of clients) {
+      assert.deepEqual(client.records.filter(record => record.type === 'extension_error'), [], 'a host error is not a Team semantic red');
+      assert.doesNotMatch(client.stderrText, /\bTypeError\b|\bSyntaxError\b|Unhandled|uncaught/i);
+    }
+    assert.doesNotMatch(tui?.stderrText() ?? '', /\bTypeError\b|\bSyntaxError\b|Unhandled|uncaught|extension_error/i);
+  };
+  const send = async (body: string) => {
+    await sender.prompt(`TEST CALL team_send ${JSON.stringify({ to: targetName, body })}`);
+    const result = sender.records.filter(record => record.type === 'message_end' && (record.message as any)?.toolName === 'team_send').at(-1);
+    assert.ok(result, 'the registered team_send must execute');
+    assert.equal(Boolean((result.message as any).isError), false, JSON.stringify(result));
+  };
+  const inspect = async () => {
+    await sender.prompt(`TEST CALL team_inspect ${JSON.stringify({ name: targetName })}`);
+    const result = sender.records.filter(record => record.type === 'message_end' && (record.message as any)?.toolName === 'team_inspect').at(-1);
+    assert.ok(result, 'the registered team_inspect must execute');
+    return JSON.parse(((result.message as any).content as { text: string }[]).map(part => part.text).join(''));
+  };
+  const received = (body: string) => loopback.requests.some(request => request.body.includes(body));
+  const waitFor = async (body: string) => {
+    try { await target.until(() => received(body), POLL_MS + 5_000); return true; }
+    catch { healthy(); return false; }
+  };
+  try {
+    stage = 'first delivery';
+    await send(first);
+    await target.until(() => target.records.some(record => record.type === 'agent_settled'), 25_000);
+    const dropped = (await readFile(dropFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    captures.push({ name: 'dropped.jsonl', text: JSON.stringify(dropped) });
+    assert.equal(dropped.length, 1, 'exactly one real context event must omit the first message');
+    assert.equal(dropped[0].token, first);
+    assert.equal(loopback.requests.length, 1, 'the first real turn must reach the native provider');
+    assert.equal(received(first), false, 'the first request really omitted the message, not just its confirmation');
+    const pending = await inspect();
+    captures.push({ name: 'first-snapshot.json', text: JSON.stringify(pending) });
+    assert.equal(pending.unread, 1, 'a message excluded from the first provider request must not be called read');
+    healthy();
+
+    stage = 'subsequent ordinary send';
+    await send(second);
+    const autoDelivered = await waitFor(second);
+    captures.push({ name: 'auto-snapshot.json', text: JSON.stringify(await inspect()) });
+    healthy();
+
+    // Exercise the explicit request even when the automatic path is stuck: both results are asserted below.
+    stage = 'subsequent real panel request';
+    tui = await startTui({ root, sessionId: 'pending-op', entries: [entry], args: ['--team', 'PendingWake'] });
+    await tui.until(screen => screen.includes('已加入团队'), 45_000, 'the isolated operator to join');
+    tui.sendText('/team'); tui.press('Enter');
+    await tui.until(screen => screen.includes('成员') && screen.includes(targetName), 20_000, 'the team panel');
+    const moveTo = async (pattern: RegExp, what: string) => {
+      for (let step = 0; step < 30; step++) {
+        const focused = tui!.text().split('\n').find(line => /^\s*(?:│\s*)*>\s/.test(line)) ?? '';
+        if (pattern.test(focused)) return;
+        tui!.press('j');
+      }
+      throw new Error(`the real panel did not focus ${what}: ${tui!.text()}`);
+    };
+    await moveTo(new RegExp(targetName), 'the target member'); tui.press('l');
+    await moveTo(/成员管理/, 'member management'); tui.press('l');
+    await moveTo(/收信策略/, 'the delivery policy');
+    for (let step = 0; step < 4; step++) {
+      const focused = tui.text().split('\n').find(line => /^\s*(?:│\s*)*>\s/.test(line)) ?? '';
+      if (/\[手动\]/.test(focused)) break;
+      tui.press('Enter');
+    }
+    assert.equal((await readMembers(team.id)).find(member => member.sessionId === 'pending-target')!.autoMessages, 'off', 'manual delivery isolates the subsequent panel action from the timer');
+    for (let step = 0; step < 8 && tui.text().includes('Tab 换模块'); step++) tui.press('Escape');
+    assert.equal(tui.text().includes('Tab 换模块'), false);
+    await send(third);
+    const panelMessage = (await readInbox(team.id, 'pending-target')).find(message => message.body === third);
+    assert.ok(panelMessage, 'the third public send must exist before opening its mailbox');
+    tui.sendText('/team'); tui.press('Enter');
+    await tui.until(screen => screen.includes('成员') && screen.includes(targetName), 20_000, 'the reopened team panel');
+    await moveTo(new RegExp(targetName), 'the target member again');
+    if (!tui.text().includes('成员管理')) tui.press('l');
+    await moveTo(/信箱/, 'the mailbox'); tui.press('l');
+    const label = `投递并处理 #${panelMessage.id}`;
+    await tui.until(screen => screen.includes(label), 15_000, 'the explicit delivery row');
+    await moveTo(new RegExp(label), 'the explicit delivery row');
+    captures.push({ name: 'pane-before.txt', text: tui.text() }, { name: 'pane-before-ansi.txt', text: tui.ansi() });
+    tui.press('Enter');
+    const panelDelivered = await waitFor(third);
+    const final = await inspect();
+    captures.push({ name: 'final-snapshot.json', text: JSON.stringify(final) }, { name: 'final-inbox.json', text: JSON.stringify(await readInbox(team.id, 'pending-target')) });
+    healthy();
+    stage = 'semantic assertions';
+    t.diagnostic(`pending autoDelivered=${autoDelivered} panelDelivered=${panelDelivered} unread=${final.unread}`);
+    assert.equal(autoDelivered, true, 'a settled turn that omitted the previous wrapper must not permanently block the next ordinary team_send');
+    assert.equal(panelDelivered, true, 'a settled unconfirmed window must not permanently block a real panel delivery request');
+    assert.equal(final.unread, 0, 'subsequent requests must confirm the messages they actually contain');
+  } finally { healthy(); }
+});
+
+test('ticket74 only a normal idle settlement with an empty native queue releases the window', async t => {
+  await agentDir(t);
+  const team = await createTeam({ name: 'SettlementSafety', workspaceRoot: workspace });
+  const cases = [
+    { name: 'aborted', aborted: true, settledIdle: true, settledQueue: false, pollIdle: true, pollQueue: false },
+    { name: 'busy settlement', aborted: false, settledIdle: false, settledQueue: false, pollIdle: true, pollQueue: false },
+    { name: 'queued settlement', aborted: false, settledIdle: true, settledQueue: true, pollIdle: true, pollQueue: false },
+    { name: 'missing host capability', aborted: false, settledIdle: true, settledQueue: undefined, pollIdle: true, pollQueue: false },
+    { name: 'busy poll', aborted: false, settledIdle: true, settledQueue: false, pollIdle: false, pollQueue: false },
+    { name: 'queued poll', aborted: false, settledIdle: true, settledQueue: false, pollIdle: true, pollQueue: true },
+    { name: 'new turn after settlement', aborted: false, settledIdle: true, settledQueue: false, pollIdle: true, pollQueue: false, startAgain: true },
+  ] as const;
+  let checked = 0;
+  for (const sample of cases) {
+    const id = `safety-${checked}`, host = teamHost(workspace, id);
+    host.flags.set('value:team', 'SettlementSafety');
+    host.ctx.hasPendingMessages = () => false;
+    registerTeam(host.pi, { msg: chinese });
+    t.after(() => host.fire('session_shutdown'));
+    await host.fire('session_start');
+    const member = (await readMembers(team.id)).find(item => item.sessionId === id)!;
+    await sendToMember(team.id, { from: 'Sender', fromId: 'sender', to: member.name, body: sample.name, now: Date.now() });
+    // Drive the registered event through the production poll, not the registration's internal poll helper.
+    await host.fire('turn_end');
+    assert.equal(deliveries(host).length, 1, `${sample.name}: the original window must really exist`);
+    host.setIdle(sample.settledIdle);
+    host.ctx.hasPendingMessages = sample.settledQueue === undefined ? undefined : () => sample.settledQueue;
+    await host.fire('agent_settled', { aborted: sample.aborted });
+    if ('startAgain' in sample) await host.fire('turn_start');
+    host.setIdle(sample.pollIdle);
+    host.ctx.hasPendingMessages = () => sample.pollQueue;
+    await host.fire('turn_end');
+    assert.equal(deliveries(host).length, 1, `${sample.name}: the unsafe boundary must preserve the original window`);
+    assert.equal((await readInbox(team.id, id))[0]!.readAt, undefined, `${sample.name}: no provider confirmation may be invented`);
+    host.setIdle(true);
+    host.ctx.hasPendingMessages = () => false;
+    await host.fire('agent_settled', { aborted: false });
+    await host.fire('turn_end');
+    assert.equal(deliveries(host).length, 2, `${sample.name}: a later valid settlement must actually unlock the retry`);
+    checked++;
+  }
+  assert.equal(checked, 7, 'all seven safety boundaries must execute, including their negative and positive assertions');
+});
+
+test('ticket74 same-scope tree navigation preserves the exhausted automatic retry budget', async t => {
+  await agentDir(t);
+  const team = await createTeam({ name: 'NavigationBudget', workspaceRoot: workspace });
+  const host = teamHost(workspace, 'navigation-budget');
+  host.flags.set('value:team', 'NavigationBudget');
+  host.ctx.hasPendingMessages = () => false;
+  registerTeam(host.pi, { msg: chinese });
+  t.after(() => host.fire('session_shutdown'));
+  await host.fire('session_start');
+  const member = (await readMembers(team.id))[0]!;
+  await sendToMember(team.id, { from: 'Sender', fromId: 'sender', to: member.name, body: 'keep unread across navigation', now: Date.now() });
+  await host.fire('turn_end');
+  await host.fire('agent_settled', { aborted: false });
+  await host.fire('turn_end');
+  assert.equal(deliveries(host).length, 2, 'the automatic retry must really have been delivered');
+  await host.fire('agent_settled', { aborted: false });
+  await host.fire('turn_end');
+  assert.equal(deliveries(host).length, 2, 'the exhausted automatic retry must already be paused');
+  assert.ok(host.notices.some(item => item.message.includes('自动投递已暂停')), 'the pause must be observable before navigation');
+  await host.fire('session_tree');
+  await host.fire('turn_end');
+  assert.equal(deliveries(host).length, 2, 'same-scope navigation must not reset a paused automatic retry budget');
+  assert.equal((await readInbox(team.id, 'navigation-budget'))[0]!.readAt, undefined, 'navigation is not provider confirmation');
+});
+
+test('ticket74 连续遗漏仅自动补投一次且面板仍可重试', { timeout: 180_000, skip: tuiEnabled() ? false : 'set PI_DAG_TEST_TUI=1 for the real retry menu' }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-team-retry-cap-')), previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
+  await mkdir(join(root, 'agent'), { recursive: true });
+  const loopback = await startLoopbackProvider(), clients: IsolatedClient[] = [];
+  let tui: TuiSession | undefined;
+  const evidenceRoot = evidenceDir(`retry-cap-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  t.after(async () => {
+    try {
+      const files = [{ name: 'provider-requests.json', text: JSON.stringify(loopback.requests, null, 2) }];
+      for (const [index, client] of clients.entries()) files.push(
+        { name: `rpc-${index}.jsonl`, text: client.records.map(record => JSON.stringify(record)).join('\n') + '\n' },
+        { name: `stderr-${index}.log`, text: client.stderrText });
+      if (tui) files.push({ name: 'pane-plain.txt', text: tui.text() }, { name: 'pane-ansi.txt', text: tui.ansi() }, { name: 'tui.stderr.log', text: tui.stderrText() });
+      const persisted = await persistEvidence(evidenceRoot, files);
+      await writeFile(join(evidenceRoot, 'manifest.json'), JSON.stringify(persisted, null, 2));
+      t.diagnostic(`retry-cap evidence=${evidenceRoot} requests=${loopback.requests.length}`);
+    } finally {
+      try { await tui?.close(); for (const client of clients.reverse()) await client.close(false); }
+      finally { await loopback.close(); if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(root, { recursive: true, force: true }); }
+    }
+  });
+  const team = await createTeam({ name: 'RetryCap', workspaceRoot: root });
+  await writeFile(join(root, 'agent/models.json'), loopbackModelsJson(loopback.baseUrl));
+  const token = `CAP74-${process.pid}-${Date.now()}`, later = `${token}-LATER`, entry = teamExtensionPath();
+  const target = await IsolatedClient.start(root, 'cap-target', [pathFromUrl(new URL('./fixtures/drop-team-context-once.ts', import.meta.url))], ['--team', 'RetryCap'], false, [entry], 'zh-CN', undefined, { provider: 'loopback74', id: 'scripted-loopback', offlineModel: false }, { PI_DAG_TEST_DROP_TOKEN: token, PI_DAG_TEST_DROP_COUNT: '2', PI_DAG_TEST_DROP_RECORD: join(root, 'dropped.jsonl') });
+  clients.push(target);
+  const sender = await IsolatedClient.start(root, 'cap-sender', [], ['--team', 'RetryCap'], false, [entry]);
+  clients.push(sender);
+  const targetName = (await readMembers(team.id)).find(member => member.sessionId === 'cap-target')!.name;
+  const healthy = () => {
+    for (const client of clients) {
+      assert.deepEqual(client.records.filter(record => record.type === 'extension_error'), [], 'a host error cannot satisfy the retry cap');
+      assert.doesNotMatch(client.stderrText, /\bTypeError\b|\bSyntaxError\b|Unhandled|uncaught/i);
+    }
+    assert.doesNotMatch(tui?.stderrText() ?? '', /\bTypeError\b|\bSyntaxError\b|Unhandled|uncaught|extension_error/i);
+  };
+  const send = async (body: string) => {
+    await sender.prompt(`TEST CALL team_send ${JSON.stringify({ to: targetName, body })}`);
+    const result = sender.records.filter(record => record.type === 'message_end' && (record.message as any)?.toolName === 'team_send').at(-1);
+    assert.ok(result); assert.equal(Boolean((result.message as any).isError), false);
+  };
+  try {
+    await send(token);
+    await target.until(() => target.records.filter(record => record.type === 'agent_settled').length >= 2, 30_000);
+    assert.equal(loopback.requests.length, 2, 'the first omission must receive exactly one automatic retry');
+    assert.equal(loopback.requests.every(request => !request.body.includes(token)), true, 'both real provider inputs must actually omit the message');
+    const drops = (await readFile(join(root, 'dropped.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(drops.length, 2, 'the public context fixture must run exactly twice');
+    assert.equal(drops[1].removed, 2, 'the retry request omits both the historical and redelivered copies');
+    await send(later);
+    const quiet = Date.now();
+    while (Date.now() - quiet < 2 * POLL_MS + 2_000) {
+      healthy();
+      assert.equal(loopback.requests.length, 2, 'a repeated omission must pause automatic delivery, not make a third model request');
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    assert.ok(target.records.some(record => record.type === 'extension_ui_request' && record.method === 'notify' && String(record.message).includes('自动投递已暂停')), 'the receiver must visibly explain the pause');
+    await sender.prompt(`TEST CALL team_inspect ${JSON.stringify({ name: targetName })}`);
+    const result = sender.records.filter(record => record.type === 'message_end' && (record.message as any)?.toolName === 'team_inspect').at(-1);
+    assert.ok(result);
+    assert.equal(JSON.parse(((result.message as any).content as { text: string }[]).map(part => part.text).join('')).unread, 2, 'neither omitted mail nor the later mail may be faked read');
+    const message = (await readInbox(team.id, 'cap-target')).find(item => item.body === token)!;
+    assert.equal(message.inflight, undefined, 'a settled rejected retry must be available for an explicit panel request');
+    tui = await startTui({ root, sessionId: 'cap-op', entries: [entry], args: ['--team', 'RetryCap'] });
+    await tui.until(screen => screen.includes('已加入团队'), 45_000, 'the retry operator to join');
+    tui.sendText('/team'); tui.press('Enter');
+    await tui.until(screen => screen.includes('成员') && screen.includes(targetName), 20_000, 'the retry panel');
+    const moveTo = (pattern: RegExp) => {
+      for (let step = 0; step < 30; step++) {
+        if (pattern.test(tui!.text().split('\n').find(line => /^\s*(?:│\s*)*>\s/.test(line)) ?? '')) return;
+        tui!.press('j');
+      }
+      throw new Error(`retry menu row not found: ${pattern}; pane=${tui!.text()}`);
+    };
+    moveTo(new RegExp(targetName)); tui.press('l'); moveTo(/信箱/); tui.press('l');
+    const label = `投递并处理 #${message.id}`;
+    await tui.until(screen => screen.includes(label), 15_000, 'the explicit retry row');
+    moveTo(new RegExp(label)); tui.press('Enter');
+    await target.until(() => loopback.requests.length >= 3, 15_000);
+    await target.until(() => target.records.filter(record => record.type === 'agent_settled').length >= 3, 10_000);
+    assert.equal(loopback.requests[2]!.body.includes(token), true, 'the panel retry must still reach the native provider after automatic delivery is paused');
+    assert.equal((await readInbox(team.id, 'cap-target')).find(item => item.id === message.id)!.readAt !== undefined, true, 'only the request that actually contains the retry may confirm it');
+    healthy();
+    t.diagnostic(`retry-cap automatic=2 manual=1 unread-before-manual=2`);
+  } finally { healthy(); }
+});

@@ -70,13 +70,16 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
   /** The SID set a wrapper may shorten against. */
   const othersFor = (teamId: string) => (): readonly string[] => rosterSids.get(teamId) ?? [];
   /** A batch handed to Pi but not yet seen in a provider request: the only candidates for a read. */
-  let awaiting: { teamId: string; sessionId: string; ids: number[]; fingerprint: string } | undefined;
+  let awaiting: { teamId: string; sessionId: string; ids: number[]; fingerprint: string; automaticRetry: boolean; settled?: boolean } | undefined;
+  /** One automatic retry per unconfirmed chain; a successful request or scope change resets the budget. */
+  let recoveryUsed = false, deliveryPaused = false;
   /** The member scope this process really held: the only ground on which the old side may stop itself. */
   let heldScope: { teamId: string; sessionId: string } | undefined;
   let historyEpoch = 0;
-  const releasePending = async () => {
+  const releasePending = async (resetRecovery = true) => {
     const pending = awaiting;
     awaiting = undefined;
+    if (resetRecovery) { recoveryUsed = false; deliveryPaused = false; }
     if (pending) await releaseInbox(pending.teamId, pending.sessionId, receiverInstance);
   };
   const pointer = (ctx: ExtensionContext) => pointerOf(ctx);
@@ -104,11 +107,11 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
    * followUp when this session is idle or Queued, steer when it is busy and Priority. `triggerTurn` is never
    * false here: a false value makes Pi ignore `deliverAs` and the message would sit in the queue instead.
    */
-  const deliver = async (ctx: ExtensionContext, batch: readonly TeamMessage[], mode: 'off' | 'background' | 'all', idle: boolean): Promise<boolean> => {
+  const deliver = async (ctx: ExtensionContext, batch: readonly TeamMessage[], mode: 'off' | 'background' | 'all', idle: boolean, automaticRetry = false): Promise<boolean> => {
     const delivery = deliveryFor(mode, idle);
     const current = pointer(ctx);
     if (!delivery || !batch.length || !current) return false;
-    const pending = { teamId: current.teamId, sessionId: sessionIdOf(ctx), ids: batch.map(message => message.id), fingerprint: modelText(batch, othersFor(current.teamId)) };
+    const pending = { teamId: current.teamId, sessionId: sessionIdOf(ctx), ids: batch.map(message => message.id), fingerprint: modelText(batch, othersFor(current.teamId)), automaticRetry };
     // The request may start as soon as sendMessage queues it; bind its window before handing it over.
     awaiting = pending;
     try {
@@ -167,7 +170,21 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
     if (member.bootstrap === 'pending') return;
     const mode = member.autoMessages ?? 'background';
     const idle = ctx.isIdle?.() === true;
-    // One in-flight window: an unconfirmed batch is never replaced (that would strand its read state).
+    // A normal settlement plus an empty native queue proves that this window cannot still be delivered
+    // by Pi. Under the poll's re-entrancy gate, release only our unread markers before opening another window.
+    // Never use elapsed time, a busy boundary, an abort, or an absent host capability as that proof.
+    const pending = awaiting;
+    if (pending?.settled && idle && ctx.hasPendingMessages?.() === false) {
+      await releaseInbox(pending.teamId, pending.sessionId, receiverInstance);
+      if (awaiting === pending) {
+        awaiting = undefined;
+        if (pending.automaticRetry) {
+          if (!deliveryPaused) notify(ctx, msg('团队消息自动补投一次后仍未确认，自动投递已暂停；消息保持未读，可从面板手动重试。'), 'warning');
+          deliveryPaused = true;
+        } else recoveryUsed = true;
+      }
+    }
+    // One in-flight window: queued, active and aborted batches are never replaced.
     if (awaiting) return;
     // A user's explicit request is metadata, not a chat message: the target holder honours it whatever the
     // automatic mode is — Manual only forbids *automatic* consumption — and it is claimed atomically.
@@ -182,10 +199,10 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
       }
     }
     // Manual consumes nothing on its own: the user asks for a batch from the panel.
-    if (mode === 'off') return;
+    if (mode === 'off' || deliveryPaused) return;
     const { batch, remaining } = await takeInbox(current.teamId, sessionIdOf(ctx), receiverInstance, pid(), now());
     if (!batch.length) return;
-    if (!await deliver(ctx, batch, mode, idle)) return;
+    if (!await deliver(ctx, batch, mode, idle, recoveryUsed)) return;
     if (remaining > 0) notify(ctx, msg`还有 ${remaining} 条团队消息待下一轮投递`, 'info');
   };
   /**
@@ -313,7 +330,9 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
     // Do not create a second name store or let the Pi session title replace an explicitly renamed member.
     const previous = (ctx.sessionManager.getBranch() as { customType?: string; data?: TeamPointer }[])
       .findLast(entry => entry.customType === POINTER_TYPE && entry.data?.teamId === team.id)?.data;
-    const sessionName = previous?.memberName ?? ctx.sessionManager.getSessionName?.() ?? undefined;
+    const requestedMemberName = pi.getFlag('team-member');
+    const memberName = typeof requestedMemberName === 'string' ? requestedMemberName.trim() : undefined;
+    const sessionName = previous?.memberName ?? (memberName || ctx.sessionManager.getSessionName?.()) ?? undefined;
     // A refused join is a user-facing outcome: report it and stay out of the team.
     let member: Awaited<ReturnType<typeof joinTeam>>;
     try { member = await joinTeam(team.id, { sessionId, ...(sessionName ? { sessionName } : {}), pid: pid(), now: now(), alive: memberAlive }); }
@@ -733,6 +752,7 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
     },
   });
   pi.registerFlag('team', { description: msg('加入团队：按团队名模糊匹配；名称歧义时列出候选'), type: 'string' });
+  pi.registerFlag('team-member', { description: msg('初始团队成员名；与原生 --name 会话名独立'), type: 'string' });
   // The same Profile a launched member gets, for a member the user starts by hand.
   pi.registerFlag('workflow-profile', { description: msg('工作流 Profile：手工启动时应用其工具与模型设置'), type: 'string' });
   /**
@@ -806,7 +826,10 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
     await bootstrap.start(ctx);
   });
   // Real events carry activity and busy; a settlement is the only thing that marks the member idle.
-  pi.on('turn_start', async (_event: unknown, ctx: ExtensionContext) => { await noteEvent(ctx, { activity: 'turn_start' }); });
+  pi.on('turn_start', async (_event: unknown, ctx: ExtensionContext) => {
+    if (awaiting) awaiting.settled = false;
+    await noteEvent(ctx, { activity: 'turn_start' });
+  });
   pi.on('tool_call', async (_event: unknown, ctx: ExtensionContext) => { await noteEvent(ctx, { activity: 'tool_call' }); });
   /**
    * The old representative leaves at a safe boundary.
@@ -834,7 +857,9 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
     host.shutdown();
     return true;
   };
-  pi.on('agent_settled', async (_event: unknown, ctx: ExtensionContext) => {
+  pi.on('agent_settled', async (event: unknown, ctx: ExtensionContext) => {
+    if (awaiting) awaiting.settled = (event as { aborted?: boolean }).aborted !== true
+      && ctx.isIdle?.() === true && ctx.hasPendingMessages?.() === false;
     await controls.apply(ctx, true);
     await noteEvent(ctx, { activity: 'settled' });
     await stopOldSideIfReplaced(ctx, true);
@@ -911,7 +936,10 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
     const escaped = JSON.stringify(pending.fingerprint).slice(1, -1);
     if (!payload.includes(pending.fingerprint) && !payload.includes(escaped)) return;
     const confirmed = await confirmInbox(pending.teamId, pending.sessionId, receiverInstance, pending.ids, now());
-    if (confirmed) awaiting = undefined;
+    if (confirmed) {
+      awaiting = undefined;
+      recoveryUsed = false; deliveryPaused = false;
+    }
   });
   pi.on('session_shutdown', async (_event: unknown, _ctx: ExtensionContext) => {
     historyEpoch++; controls.invalidate(); bootstrap.cancel();
@@ -921,7 +949,9 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
   });
   pi.on('session_tree', async (_event, ctx) => {
     historyEpoch++; controls.invalidate(); bootstrap.cancel();
-    await releasePending();
+    // Navigating history is not provider confirmation: the same receiver keeps its exhausted budget.
+    const sameScope = !!heldScope && heldScope.teamId === pointer(ctx)?.teamId && heldScope.sessionId === sessionIdOf(ctx);
+    await releasePending(!sameScope);
     startTimers(ctx);
   });
   /**
@@ -1197,6 +1227,7 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
       ...(sessionId ? { sessionId } : {}),
       // A rebuild reserves the member's own SID for a *new*, empty session; it never resumes the old one.
       ...(createSessionId ? { createSessionId } : {}),
+      ...(config.memberName ? { memberName: config.memberName } : {}),
       ...(config.name ? { name: config.name } : {}),
       ...(config.model ? { model: config.model } : {}),
       ...(config.thinking ? { thinking: config.thinking } : {}),

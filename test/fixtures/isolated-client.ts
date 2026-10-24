@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FEATURE_NAMES } from "./public-records.ts";
 
+/** Same rule as the TUI host logs: "no fatal error" is evidenced by the whole stream, so an oversized log fails at read. */
+const STDERR_LIMIT = 1 << 20;
+
 export interface RpcRecord { type: string; id?: string; command?: string; success?: boolean; data?: unknown; error?: string; [key: string]: unknown }
 
 /**
@@ -27,7 +30,7 @@ export async function sourcePackage(root: string): Promise<string> {
   return directory;
 }
 
-function testCli(): string {
+export function testCli(): string {
   const override = process.env.PI_DAG_TEST_CLI?.trim();
   if (override) return override;
   const install = join(homedir(), '.pi', 'agent', 'install');
@@ -52,6 +55,8 @@ export class IsolatedClient {
   readonly records: RpcRecord[] = [];
   private sequence = 0;
   private stderr = "";
+  private stderrBytes = 0;
+  private stderrOverflow = false;
   private buffer = "";
   private listeners = new Set<() => void>();
   readonly child: ChildProcessWithoutNullStreams;
@@ -71,17 +76,26 @@ export class IsolatedClient {
       for (const listener of this.listeners) listener();
     });
     child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-8192); });
+    child.stderr.on("data", (chunk: string) => {
+      this.stderrBytes += chunk.length;
+      // Kept whole: an asynchronous stream handler must never throw, so an oversized log records that fact and the
+      // read fails loudly afterwards instead of quietly narrowing the evidence to a tail slice.
+      if (this.stderrBytes > STDERR_LIMIT) { this.stderrOverflow = true; return; }
+      this.stderr += chunk;
+    });
     child.on("error", () => { for (const listener of this.listeners) listener(); });
     child.on("close", () => { for (const listener of this.listeners) listener(); });
   }
-  static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = [], configuredPackage = false, entries?: string[], language = 'zh-CN', sessionDir?: string): Promise<IsolatedClient> {
+  static async start(root?: string, session = "m1-test", extraExtensions: string[] = [], extraArgs: string[] = [], configuredPackage = false, entries?: string[], language = 'zh-CN', sessionDir?: string, model?: { provider: string; id: string; offlineModel?: boolean }, extraEnv?: Record<string, string>): Promise<IsolatedClient> {
     const home = root ?? await mkdtemp(join(tmpdir(), "pi-dag-m1-"));
     const cli = testCli();
-    const model = fileURLToPath(new URL("./offline-model.ts", import.meta.url));
-    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", ...configuredPackage ? [] : ['--no-extensions', ...(entries ?? sourceEntries).flatMap((path) => ['-e', path])], "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", ...extraArgs.includes('--approve') ? [] : ['--no-approve'], ...sessionDir ? ["--session-dir", sessionDir] : [], "--session-id", session, "--provider", "dag-test", "--model", "scripted", "-e", model, ...extraExtensions.flatMap((path) => ["-e", path]), ...extraArgs], {
+    // A caller may point the host at a normal API adapter (a local endpoint) instead of the scripted one, so
+    // the request bodies the SDK really serializes can be observed rather than summarized by a test hook.
+    const offline = model?.offlineModel !== false;
+    const scripted = offline ? ["-e", fileURLToPath(new URL("./offline-model.ts", import.meta.url))] : [];
+    const child = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", ...configuredPackage ? [] : ['--no-extensions', ...(entries ?? sourceEntries).flatMap((path) => ['-e', path])], "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", ...extraArgs.includes('--approve') ? [] : ['--no-approve'], ...sessionDir ? ["--session-dir", sessionDir] : [], "--session-id", session, "--provider", model?.provider ?? "dag-test", "--model", model?.id ?? "scripted", ...scripted, ...extraExtensions.flatMap((path) => ["-e", path]), ...extraArgs], {
       cwd: home,
-      env: { PATH: process.env.PATH ?? "", HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_CODING_AGENT_SESSION_DIR: sessionDir ?? join(home, "sessions"), PI_OFFLINE: "1", TERM: "xterm-256color", LANGUAGE: language },
+      env: { PATH: process.env.PATH ?? "", HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_CODING_AGENT_SESSION_DIR: sessionDir ?? join(home, "sessions"), PI_OFFLINE: "1", TERM: "xterm-256color", LANGUAGE: language, ...(extraEnv ?? {}) },
       stdio: "pipe",
     });
     const client = new IsolatedClient(child, home);
@@ -139,6 +153,11 @@ export class IsolatedClient {
     return this.records.slice(start);
   }
   async entries(): Promise<unknown[]> { return ((await this.send("get_entries")).data as { entries: unknown[] }).entries; }
+  /** Everything the host wrote to stderr; above the limit the read fails instead of returning a truncated prefix. */
+  get stderrText(): string {
+    if (this.stderrOverflow) throw new Error(`the host stderr is ${this.stderrBytes} bytes, above the ${STDERR_LIMIT}-byte limit: read it whole or raise the limit, never truncate`);
+    return this.stderr;
+  }
   async close(remove = true): Promise<void> {
     this.child.stdin.end();
     if (this.child.exitCode === null) {

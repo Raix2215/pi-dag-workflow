@@ -7,6 +7,10 @@
  * variable values, command/tool names and Nerd Font glyphs are never included here.
  */
 export const englishMessages: Readonly<Record<string, string>> = {
+  '新成员在团队中的名称；留空沿用会话名，两项都空时自动分配 member-n。': 'This member’s initial name in the team. If empty, use the session name; if both are empty, assign member-n.',
+  'Pi 会话名称，与成员名独立；留空使用宿主默认，不复制成员名。': 'The Pi session name is independent from the member name. Leave empty for the host default; the member name is not copied.',
+  '初始团队成员名；与原生 --name 会话名独立': 'Initial team member name, independent from the native --name session name',
+  '团队消息自动补投一次后仍未确认，自动投递已暂停；消息保持未读，可从面板手动重试。': 'A team message is still unconfirmed after one automatic retry. Automatic delivery is paused; messages remain unread and can be retried from the panel.',
   '目标会话尚未报告控制能力；先在目标 reload 后重试。': 'The target has not reported control support; reload the target and try again.',
   '没有可应用的会话设置。': 'No session settings to apply.',
   '设置需为非空短文本，不能含控制字符。': 'Use short, nonempty settings without control characters.',
@@ -1246,7 +1250,6 @@ export const englishMessages: Readonly<Record<string, string>> = {
   '成员名不能为空。': 'Member name cannot be empty.',
   '已有同名成员，请使用其他名称。': 'A member already uses this name. Choose another.',
   '会话名不能为空。': 'Session name cannot be empty.',
-  '新会话名称，同时用作初始成员名；以后可分别重命名。留空由新进程默认命名。': 'New session name, also used as its initial member name. They can be renamed separately later. Leave blank for the process default.',
   'Plan 模式为只读；先 /plan off 再执行。': 'Plan is read-only. Run /plan off before executing.',
   '已完成任务不能重开；如需返工，请新建任务。': 'Completed tasks cannot be reopened. Create a new task for rework.',
   '前置任务尚未完成：{0}': 'Unfinished prerequisites: {0}',

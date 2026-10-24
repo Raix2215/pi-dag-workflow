@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-10-24
+
+### Added
+
+- Preset Team member names separately from native Pi session names in the new-session panel, using `--team-member` and `--name` respectively. Preserve existing naming defaults, saved member identities, and literal argument quoting.
+
+### Fixed
+
+- Recover an unconfirmed Team delivery only after a normal idle settlement with an explicitly empty host queue. Retry automatically at most once per running member scope; if still unconfirmed, pause automatic delivery, retain unread messages, and allow a manual panel retry.
+- Preserve the exhausted delivery-retry budget across same-scope history navigation without adding a branch read for sessions that do not hold a Team membership.
+- Derive every required package entry from `pi.extensions`, scan the release checker itself in both working-tree and historical content, and reject extension declarations with surrounding whitespace.
+- Add regression and semantic-mutation coverage for Team delivery recovery, independent launch names, and release metadata, package contents, privacy rules, and redacted findings.
+
 ## [0.7.0] - 2026-10-23
 
 ### Added

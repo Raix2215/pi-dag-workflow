@@ -9,8 +9,8 @@ import { DESKTOP_TERMINALS, validDesktopCommand, type DesktopTerminalName } from
 import { assignLead, dissolveTeam, listTeams, readMember, readMembers, readTeam, renameMember } from '../io/registry.ts';
 import { inboxStamp, unreadFor } from '../io/inbox.ts';
 
-/** A new session's manual configuration: unset means the host default, as in the Profile contract. */
-export interface NewSessionConfig { name?: string; profile?: string; model?: string; thinking?: string }
+/** Initial member name falls back to the session name, then member-n; other unset fields keep host/Profile defaults. */
+export interface NewSessionConfig { memberName?: string; name?: string; profile?: string; model?: string; thinking?: string }
 export interface TeamMenuHooks {
   msg?: Translator;
   panel: PanelNavigation;
@@ -84,7 +84,7 @@ const terminalLabel = (name: DesktopTerminalName, msg: Translator): string => na
 export async function teamMenu(ctx: ExtensionContext, hooks: TeamMenuHooks): Promise<void> {
   const msg = hooks.msg ?? chinese;
   let copiedCommand: string | undefined;
-  // What the user typed for the next *new* session. Unset means the host default, as the Profile contract says.
+  // Per-team drafts for a new session; member-name fallback stays with the receiver, other defaults with the host/Profile.
   const drafts = new Map<string, NewSessionConfig>();
   // How many messages into a member's mailbox the preview window starts; per member, in this panel.
   const inboxWindow = new Map<string, number>();
@@ -409,9 +409,9 @@ export async function teamMenu(ctx: ExtensionContext, hooks: TeamMenuHooks): Pro
       run: () => runLaunch(mode, target.name, undefined, { ...draft }),
     }));
     /**
-     * The manual configuration a new session starts with: name, Profile, model and thinking. Values reach
-     * the launcher as request fields, so the existing argv builder quotes them (a leading '-' is data, not
-     * a flag) and a requested Profile is preflighted before anything spawns.
+     * Independent member/session names, Profile, model and thinking reach the launcher as request fields,
+     * so the existing argv builder quotes them (a leading '-' is data, not a flag) and a requested Profile
+     * is preflighted before anything spawns.
      */
     const draftRow = (id: string, label: string, title: string, current: string | undefined, description: string, validate?: (value: string) => string | undefined) => ({
       id: `${scope}/${id}`, kind: 'input' as const, icon: glyph('edit'),
@@ -428,7 +428,8 @@ export async function teamMenu(ctx: ExtensionContext, hooks: TeamMenuHooks): Pro
       },
     });
     const newSessionConfigRows = [
-      draftRow('name', msg('名称'), msg('成员名'), draft.name, msg('新会话名称，同时用作初始成员名；以后可分别重命名。留空由新进程默认命名。')),
+      draftRow('memberName', msg('成员名'), msg('成员名'), draft.memberName, msg('新成员在团队中的名称；留空沿用会话名，两项都空时自动分配 member-n。')),
+      draftRow('name', msg('会话名'), msg('会话名'), draft.name, msg('Pi 会话名称，与成员名独立；留空使用宿主默认，不复制成员名。')),
       draftRow('profile', msg('Profile'), msg('Profile 名'), draft.profile, msg('用 /agents 里已有的 Profile：工具、模型与隔离设置按它的契约；留空不改。')),
       draftRow('model', msg('模型'), msg('provider/id'), draft.model, msg('本次新会话使用的 provider/id。留空使用所选 Profile 或新进程默认模型，不复制当前会话的临时模型选择。')),
       draftRow('thinking', msg('thinking'), msg('off/minimal/low/medium/high/xhigh/max'), draft.thinking, msg('本次新会话的思考级别；留空使用 Profile 或新进程默认值。'), text => (/^(off|minimal|low|medium|high|xhigh|max)$/.test(text) ? undefined : msg('thinking 必须是 off/minimal/low/medium/high/xhigh/max'))),
