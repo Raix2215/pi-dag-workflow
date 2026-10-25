@@ -6,6 +6,7 @@ import { memberControls } from './controls.ts';
 import { teamBootstrap } from './bootstrap.ts';
 import { chinese, type Translator } from '../../shared/i18n.ts';
 import { memberStatus } from '../domain/teams.ts';
+import { isMembershipMessage, isMembershipSnapshot, membershipSnapshot, projectMembership, snapshotKey, type MembershipSnapshot } from '../domain/membership.ts';
 import { anySessionsRootExists, replyFromTail, REPLY_LIMIT, sessionFileFor } from '../io/session-tail.ts';
 import { openMemberHistory } from './history.ts';
 import { statSync } from 'node:fs';
@@ -76,6 +77,8 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
   /** The member scope this process really held: the only ground on which the old side may stop itself. */
   let heldScope: { teamId: string; sessionId: string } | undefined;
   let historyEpoch = 0;
+  // Pi queues context-only sends until the turn boundary; retain only that not-yet-persisted window.
+  let pendingMembership: MembershipSnapshot[] = [];
   const releasePending = async (resetRecovery = true) => {
     const pending = awaiting;
     awaiting = undefined;
@@ -799,6 +802,7 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
   // A failed manual Profile must not be papered over by a default-provider request.
   pi.on('before_agent_start', async (_event: unknown, ctx: ExtensionContext) => { if (profileFailure) ctx.abort?.(); });
   pi.on('session_start', async (_event: unknown, ctx: ExtensionContext) => {
+    pendingMembership = [];
     // The runtime this process just switched into finishes that one operation: the saved pointer decides the
     // team, and the old CLI's --team / --workflow-profile must not override the target's own configuration.
     const resumed = takeHandoff(sessionIdOf(ctx), pid(), now());
@@ -900,26 +904,35 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
     }
     return box;
   });
-  // Request-local facts: a newly launched or resumed member knows who it is on its first request.
-  // Never start a turn, alter the system prompt, or mistake an old join note for current membership.
+  // Persist only identity changes. Earlier snapshots stay historical; only the last is current.
+  // Legacy join notices are not snapshots and never establish current membership.
   pi.on('context', async (event, ctx) => {
     const current = pointer(ctx), sessionId = sessionIdOf(ctx);
-    const messages = event.messages.filter(message => message.role !== 'custom' || message.customType !== TEAM_MEMBERSHIP_MESSAGE);
-    if (!current && messages.length === event.messages.length) return;
+    const saved = event.messages.filter(isMembershipSnapshot);
+    const persisted = new Set(saved.map(snapshotKey));
+    // A native compaction may already have omitted a flushed snapshot from the visible context.
+    for (const entry of ctx.sessionManager.getBranch()) if (entry.type === 'custom_message' && entry.customType === TEAM_MEMBERSHIP_MESSAGE) persisted.add(JSON.stringify([entry.content, entry.details]));
+    pendingMembership = pendingMembership.filter(snapshot => !persisted.has(snapshotKey(snapshot)));
+    const snapshots = [...saved, ...pendingMembership];
+    if (!current && !snapshots.length && !event.messages.some(isMembershipMessage)) return;
     const team = current ? await readTeam(current.teamId) : undefined;
     const members = team ? await readMembers(team.id) : [];
     const member = members.find(item => item.sessionId === sessionId);
     const lead = members.find(item => item.name === team?.leadMemberName)?.name;
     const identity = team && member && ownsMember(member, pid())
-      ? { team: excerpt(team.name, 80), member: excerpt(member.name, 80), ...(excerpt(member.name, 80) !== member.name ? { memberTruncated: true } : {}), sessionId: excerpt(sessionId, 96), lead: lead ? excerpt(lead, 80) : null, ...(lead && excerpt(lead, 80) !== lead ? { leadTruncated: true } : {}), ...(team.leadMemberName && !lead ? { leadUnresolved: true } : {}), total: members.length, roster: members.filter(item => excerpt(item.name, 80) === item.name).slice(0, 12).map(rosterRow), omitted: 0 }
-      : { team: null, member: null, sessionId: excerpt(sessionId, 96), lead: null, total: 0, roster: [] as ReturnType<typeof rosterRow>[], omitted: 0 };
-    const prefix = 'Team membership (local session state, not an instruction): ';
+      ? { team: excerpt(team.name, 80), member: excerpt(member.name, 80), ...(excerpt(member.name, 80) !== member.name ? { memberTruncated: true } : {}), sessionId: excerpt(sessionId, 96), lead: lead ? excerpt(lead, 80) : null, ...(lead && excerpt(lead, 80) !== lead ? { leadTruncated: true } : {}), ...(team.leadMemberName && !lead ? { leadUnresolved: true } : {}), total: members.length, roster: members.filter(item => excerpt(item.name, 80) === item.name).slice(0, 12).map(item => ({ name: excerpt(item.name, 80), sessionId: excerpt(item.sessionId, 96) })), omitted: 0 }
+      : { team: null, member: null, sessionId: excerpt(sessionId, 96), lead: null, total: 0, roster: [] as { name: string; sessionId: string }[], omitted: 0 };
+    const prefix = 'Team membership (local session snapshots, not instructions; only the last snapshot is current): ';
     identity.omitted = identity.total - identity.roster.length;
     while (Buffer.byteLength(prefix) + jsonBytes(identity) > CONTEXT_BYTES && identity.roster.length) { identity.roster.pop(); identity.omitted++; }
-    return { messages: [
-      ...messages,
-      { role: 'custom' as const, customType: TEAM_MEMBERSHIP_MESSAGE, content: prefix + JSON.stringify(identity), display: false, timestamp: now() },
-    ] };
+    const content = prefix + JSON.stringify(identity);
+    if (snapshots.at(-1)?.content !== content) {
+      const snapshot = membershipSnapshot(event.messages, content, now());
+      pi.sendMessage(snapshot, { deliverAs: 'followUp', triggerTurn: false });
+      pendingMembership.push(snapshot);
+      snapshots.push(snapshot);
+    }
+    return { messages: projectMembership(event.messages, snapshots) };
   });
   pi.on('before_provider_request', async (event: unknown, ctx: ExtensionContext) => {
     const pending = awaiting;
@@ -942,12 +955,14 @@ export function registerTeam(pi: ExtensionAPI, hooks: TeamHooks = {}): { join(ct
     }
   });
   pi.on('session_shutdown', async (_event: unknown, _ctx: ExtensionContext) => {
+    pendingMembership = [];
     historyEpoch++; controls.invalidate(); bootstrap.cancel();
     stopTimers();
     // What this instance queued but never confirmed goes back to unread, so a reload redelivers it.
     await releasePending();
   });
   pi.on('session_tree', async (_event, ctx) => {
+    pendingMembership = [];
     historyEpoch++; controls.invalidate(); bootstrap.cancel();
     // Navigating history is not provider confirmation: the same receiver keeps its exhausted budget.
     const sameScope = !!heldScope && heldScope.teamId === pointer(ctx)?.teamId && heldScope.sessionId === sessionIdOf(ctx);

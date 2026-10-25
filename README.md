@@ -118,6 +118,7 @@ For full protocol specifications, see [docs/COMMUNICATION.md](docs/COMMUNICATION
 Manage multi-turn objectives with `/goal` and the `goal` tool:
 - **Safe defaults**: Creating a Goal does not auto-start it. Resumed sessions keep Goals paused until explicitly activated with `/goal enable`.
 - **Paused progress notes**: When paused, models can still record verified milestones (`progress`) or updated plans (`nextStep`) without resuming execution.
+- **Stable contract context**: Keep the complete current objective visible without moving an unchanged fallback contract on every request. Continuation counts remain in Goal state and the UI, not in the model contract.
 - **Control switches**:
   - `nopause`: Forbids interactive user questionnaires and mid-flight stops, but does *not* grant unlimited error retries.
   - `nolimit`: Removes the default 32-turn continuation limit without altering error retry counts.
@@ -140,6 +141,7 @@ Open `/team` to create a team, then expand its row to join the current conversat
 Connect multiple independent Pi sessions in the same workspace:
 - **Minimal model interface**: Models are restricted to two tools: `team_send` (point-to-point messaging) and `team_inspect` (`scope: "team"` reads the joined team, not the UI's viewed team, paged <= 20 members / 4 KiB; the default query reads self. Member snapshots <= 2 KiB, reply preview 240 characters, activity default 3 max 10).
 - **User-role transport security**: Team messages travel over user-role channels. **Agent-authored messages do not constitute human authorization or grant expanded privileges.**
+- **Membership snapshots**: Model context records membership and identity changes as stable session snapshots, not live roster refreshes. Use `team_inspect` for the current roster and activity.
 - **PID liveness**: Member presence is verified via operating system process checks and real event records, avoiding spurious heartbeat timeouts. Disbanding archives team records without killing processes or deleting session files.
 - **Live runtime reconfiguration**: From the Team panel, users can update a target member's model or reasoning level. Changes take effect before the target's next turn once its current reply and tool batch finish; submission is an update request, confirmed only when acknowledged by the target runtime. Switching providers directs subsequent turns to that provider. Existing running sessions require `/reload` to pick up newly added capabilities.
 - **Initial launch names**: Set **Member name** and **Session name** separately in the new-session panel (`--team-member` and native `--name`). A member name alone leaves the session name at its host default; a session name alone also supplies the initial member name. Blank fields keep automatic `member-n` naming and the host's session-name default. Saved or renamed members retain their identity on resume and reload.

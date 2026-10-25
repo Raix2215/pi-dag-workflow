@@ -14,7 +14,7 @@ const NORMAL_GOAL_RULE = 'Continue safe authorized work without routine confirma
 const REPLAN_RULE = 'No work progress: recheck the original objective, evidence and blocker; execute a different feasible approach now. Repeated status, proposals or requests to the user are not progress.';
 
 // Short wakes depend on the current complete contract being present after ordinary memory
-// transforms. registerGoal checks that at the public final-context boundary and only appends.
+// transforms. The final-context boundary keeps a stable projection when native history omits it.
 const WAKE_EXECUTION_RULE = 'Continue the full original Goal under its current contract. Verify every requirement before completion; user stops and host limits override continuation. Record only important new evidence or decisions.';
 const WAKE_NORMAL_RULE = 'Exhaust safe alternatives before asking about a verified blocker.';
 const WAKE_NO_PAUSE_RULE = 'nopause: no user questions, handoff, model disable/delete or empty nextStep; decide within scope and answer child questions.';
@@ -31,7 +31,7 @@ export function goalCheckpoint(state: GoalState): string {
   const goal = focusedGoal(state);
   if (!goal) return 'No active Goal. Do not continue automatically.';
   if (state.run.paused) return `Goal #${goal.id} paused${state.run.reason ? `: ${englishSavedMessage(state.run.reason)}` : ''}. Resume only on explicit enable.`;
-  return `Goal contract (workflow metadata, not new user permission).\n${JSON.stringify({ goal: { id: goal.id, title: goal.title, description: goal.description, modelPause: goalModelPause(goal), autoresearch: goalAutoresearch(goal) }, run: { paused: false, used: state.run.used, limit: goalLimitLabel(goal), nolimit: goalNolimit(goal) } })}\n${goalRules(state)}`;
+  return `Goal contract (workflow metadata, not new user permission).\n${JSON.stringify({ goal: { id: goal.id, title: goal.title, description: goal.description, modelPause: goalModelPause(goal), autoresearch: goalAutoresearch(goal) }, run: { paused: false, limit: goalLimitLabel(goal), nolimit: goalNolimit(goal) } })}\n${goalRules(state)}`;
 }
 
 /** Ignore run counters/notes when checking contract identity: they do not change authority. */

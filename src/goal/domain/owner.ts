@@ -20,6 +20,9 @@ export function createGoalOwner(pi: ExtensionAPI, hooks: Hooks) {
   let state = emptyGoalState();
   let config: WorkflowConfig = defaultConfig();
   const checkpoint = passiveMessage(GOAL_CHECKPOINT_TYPE, () => goalCheckpoint(state), hooks.branch);
+  // Request-local only: native history stays authoritative. Once needed, keep the same
+  // contract at one fixed position even after a normal boundary makes it visible again.
+  let contractProjection: { role: 'custom'; customType: string; content: string; display: false; details: { requestLocal: true }; timestamp: number } | undefined;
   const removedTools = new Map<string, number>();
   const noPauseRunning = () => !state.run.paused && !hooks.state().plan && Boolean(focusedGoal(state) && goalModelPause(focusedGoal(state)!) === 'deny');
   const sameGoal = (left: Goal | undefined, right: Goal | undefined) => left === right || Boolean(left && right && left.id === right.id && left.title === right.title && left.description === right.description && left.status === right.status && left.maxTurns === right.maxTurns && left.createdAt === right.createdAt && left.completedAt === right.completedAt && left.modelPause === right.modelPause && left.nolimit === right.nolimit && left.autoresearch === right.autoresearch);
@@ -322,7 +325,7 @@ export function createGoalOwner(pi: ExtensionAPI, hooks: Hooks) {
   });
   pi.on('context', (event, ctx) => {
     const recovery = checkpoint.recover(event.messages, ctx, event);
-    const result = recovery ? { messages: [...event.messages, recovery] } : undefined;
+    const result = recovery ? { messages: [...event.messages, { ...recovery, details: { ...recovery.details, requestLocal: true } }] } : undefined;
     const ack = stepAck; stepAck = undefined;
     if (!ack?.nextStep || ack.goalId !== state.focusId || state.run.paused) return result;
     const visible = event.messages.some((message) => {
@@ -339,10 +342,22 @@ export function createGoalOwner(pi: ExtensionAPI, hooks: Hooks) {
     return result;
   });
   // This phase follows every ordinary context/memory transform in both supported hosts.
-  // Never edit the system, old messages, summaries or reports; only append current Goal data.
+  // Never edit system/summary/report data or replay history. Coordinate only this Goal's
+  // equivalent contracts, including the one-shot ordinary recovery on its very first frame.
   pi.on('context_with_system', (event) => {
-    if (error || hooks.protected() || hooks.state().plan || state.run.paused || !focusedGoal(state) || hasCurrentGoalContract(event.messages, state)) return;
-    return { messages: [...event.messages, { role: 'custom' as const, customType: GOAL_CHECKPOINT_TYPE, content: goalCheckpoint(state), display: false, details: { requestLocal: true }, timestamp: Date.now() }] };
+    if (error || hooks.protected() || hooks.state().plan || state.run.paused || !focusedGoal(state)) return;
+    const current = (message: typeof event.messages[number]) => hasCurrentGoalContract([message], state);
+    const sameGoalContract = (message: typeof event.messages[number]) => {
+      const { content, customType } = message as { content?: unknown; customType?: string };
+      if (customType !== GOAL_CHECKPOINT_TYPE || typeof content !== 'string' || !content.startsWith('Goal contract (')) return false;
+      try { return JSON.parse(content.split('\n')[1]!).goal?.id === state.focusId; } catch { return false; }
+    };
+    if (!contractProjection && event.messages.some(current) && !event.messages.some((message) => current(message) && (message as { details?: { requestLocal?: boolean } }).details?.requestLocal)) return;
+    const content = goalCheckpoint(state);
+    if (contractProjection?.content !== content) contractProjection = { role: 'custom', customType: GOAL_CHECKPOINT_TYPE, content, display: false, details: { requestLocal: true }, timestamp: Date.now() };
+    const messages = event.messages.filter((message) => !sameGoalContract(message));
+    const index = messages[0]?.role === 'system' ? 1 : 0;
+    return { messages: [...messages.slice(0, index), contractProjection, ...messages.slice(index)] };
   });
   pi.on('session_before_compact', (event, ctx) => {
     // willRetry is Pi's explicit recovery signal. It never arms a prior user-disable or budget pause.
@@ -357,7 +372,7 @@ export function createGoalOwner(pi: ExtensionAPI, hooks: Hooks) {
     commit(releaseGoalWake(state), ctx);
   });
   pi.on('session_compact', (_event, ctx) => {
-    compacting = false;
+    compacting = false; contractProjection = undefined;
     if (!lastFailure(ctx)) {
       // Successful compaction retires a handed-off failure too; a user pause clears errorGoalId.
       if (errorGoalId !== undefined && errorGoalId === state.focusId && state.run.paused) {
@@ -372,8 +387,8 @@ export function createGoalOwner(pi: ExtensionAPI, hooks: Hooks) {
       errorGoalId = undefined;
     }
     if (focusedGoal(state)) checkpoint.mark(true);
-    // Native recovery may skip beforeWake/boundaries. The first context appends only a new
-    // request-local checkpoint; the next normal boundary persists the then-current state.
+    // Native recovery may skip beforeWake/boundaries. Ordinary recovery is one-shot;
+    // final context places it on the same stable baseline as subsequent missing frames.
     if (compactionGoalId === state.focusId && !state.run.paused) {
       const step = activeStep;
       if (compactionInterrupted && step && step.goalId === state.focusId && state.run.nextStep === undefined) commit({ ...state, run: { ...state.run, nextStep: step.text } }, ctx);
@@ -383,7 +398,7 @@ export function createGoalOwner(pi: ExtensionAPI, hooks: Hooks) {
   });
   pi.on('session_compact_failed', (_event, ctx) => { compacting = false; compactionGoalId = undefined; compactionInterrupted = false; if (resumeWanted) pause(msg('上下文压缩未完成，自动续跑已暂停'), ctx); });
   async function restore(ctx: ExtensionContext) {
-    const ownEpoch = ++sessionEpoch; menuPrompt = undefined; failureCache = undefined; stampedTasks = undefined; readyTasks = undefined; readyIds = new Set();
+    const ownEpoch = ++sessionEpoch; contractProjection = undefined; menuPrompt = undefined; failureCache = undefined; stampedTasks = undefined; readyTasks = undefined; readyIds = new Set();
     userAuthority = false; automaticRound = false; waitedForChildren.clear(); revision = 0; error = undefined;
     errorGoalId = undefined; retryFailureId = undefined;
     if (resumeTimer) clearTimeout(resumeTimer);
@@ -414,7 +429,7 @@ export function createGoalOwner(pi: ExtensionAPI, hooks: Hooks) {
   pi.on('session_before_switch', beforeNavigation);
   pi.on('session_before_fork', beforeNavigation);
   pi.on('session_before_tree', beforeNavigation);
-  pi.on('session_shutdown', () => { sessionEpoch++; menuPrompt = undefined; failureCache = undefined; stampedTasks = undefined; readyTasks = undefined; readyIds = new Set(); state = emptyGoalState(); syncNoPauseTools(); checkpoint.reset(); userAuthority = false; errorGoalId = undefined; retryFailureId = undefined; if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; resumeWanted = false; compacting = false; stepAck = undefined; });
+  pi.on('session_shutdown', () => { sessionEpoch++; contractProjection = undefined; menuPrompt = undefined; failureCache = undefined; stampedTasks = undefined; readyTasks = undefined; readyIds = new Set(); state = emptyGoalState(); syncNoPauseTools(); checkpoint.reset(); userAuthority = false; errorGoalId = undefined; retryFailureId = undefined; if (resumeTimer) clearTimeout(resumeTimer); resumeTimer = undefined; resumeWanted = false; compacting = false; stepAck = undefined; });
   pi.on('before_agent_start', (event, ctx) => {
     syncNoPauseTools();
     if (noPauseRunning()) event.systemPromptOptions.selectedTools = event.systemPromptOptions.selectedTools.filter((name) => !config.goalNoPauseTools.includes(name));

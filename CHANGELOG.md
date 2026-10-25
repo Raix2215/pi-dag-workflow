@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-10-25
+
+### Fixed
+
+- Keep Team membership context append-stable using saved identity snapshots rather than request-time roster updates. Preserve snapshot placement through delayed persistence, compaction, history navigation and process restarts; obtain live roster and activity through `team_inspect`.
+- Keep a missing Goal contract available at a stable context position instead of moving it to the newest request tail. Coordinate one-time compaction recovery with the final contract safeguard and preserve the complete current objective across persistence boundaries.
+- Remove the frequently changing continuation count from Goal contract text while retaining authoritative budget accounting, queries and UI. Reload and history navigation still restore Goals paused.
+- Extend registered-assembly and isolated-Pi regression coverage for stable request prefixes, contract visibility and restoration boundaries.
+
 ## [0.7.1] - 2026-10-24
 
 ### Added

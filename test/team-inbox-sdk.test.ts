@@ -63,7 +63,7 @@ for (const scenario of ['idle', 'manual', 'manual-busy', 'queued', 'priority', '
                 const request = ++requests;
                 const texts = input.messages.map(message => typeof message.content === 'string' ? message.content : message.content.filter(part => part.type === 'text').map(part => part.text).join('\n'));
                 assert.ok(texts.some(text => text.includes('Team membership') && text.includes('"team":"Fixture"') && text.includes(`"member":${JSON.stringify(expectedMember)}`) && text.includes(sid)), 'the actual provider input identifies this session’s current team and member without an extra model request');
-                const membershipText = texts.find(text => text.startsWith('Team membership ('))!;
+                const membershipText = texts.filter(text => text.startsWith('Team membership (')).at(-1)!;
                 const membership = JSON.parse(membershipText.slice(membershipText.indexOf('{')));
                 assert.ok(Buffer.byteLength(membershipText) <= 2048, 'automatic membership context has a total budget');
                 assert.equal(membership.total, 2);

@@ -14,6 +14,7 @@ export default function offlineModel(pi: ExtensionAPI): void {
   pi.registerFlag('dag-test-compaction-pressure', { type: 'boolean', description: 'Offline test-only context pressure on the first Goal turn' });
   pi.registerFlag('dag-test-overflow', { type: 'boolean', description: 'Offline test-only one context overflow on a Goal request' });
   pi.registerFlag('dag-test-repeated-overflow', { type: 'boolean', description: 'Offline test-only context overflow on three separate Goal continuation rounds' });
+  pi.registerFlag('dag-test-goal-tool-rounds', { type: 'string', description: 'Offline test: bounded serial Goal tool round trips in each wake' });
   pi.registerFlag('dag-test-context-metrics', { type: 'boolean', description: 'Offline test-only size measurements of the provider-facing context' });
   pi.registerFlag('dag-test-context-export', { type: 'boolean', description: 'Offline test-only full normalized context and provider output in non-model custom entries' });
   pi.registerFlag('dag-test-important-progress', { type: 'boolean', description: 'Offline controlled workload: write every Goal round, update only verified milestone rounds' });
@@ -172,6 +173,11 @@ export default function offlineModel(pi: ExtensionAPI): void {
           if (pi.getFlag('dag-test-important-progress') === true && prompt.startsWith('Goal #') && last?.role === 'toolResult' && last.toolName === 'write' && !last.isError) {
             const milestone = Number(/^Goal #\d+ (\d+)\//.exec(prompt)?.[1] ?? 0);
             if (milestone === 1 || milestone % 8 === 0) calls.push({ name: 'goal', arguments: { action: 'update', progress: `Verified milestone ${milestone}: written artifact checked` } });
+          }
+          const goalToolRounds = Math.min(12, Math.max(0, Number(pi.getFlag('dag-test-goal-tool-rounds')) || 0));
+          if (prompt.startsWith('Goal #') && last?.role === 'toolResult' && !calls.length) {
+            const completed = relevant.slice(relevant.lastIndexOf(latestUser!) + 1).filter(item => item.role === 'toolResult').length;
+            if (completed < goalToolRounds) calls.push({ name: 'goal', arguments: { action: 'get', id: 1 } });
           }
           if (last?.role === 'toolResult' && (prompt === 'CONTROL REPORT HOLD' || prompt === 'CONTROL FRESH REPORT HOLD') && last.toolName === 'subagent_send') calls.push({ name: 'bash', arguments: { command: 'sleep 45', timeout: 60 } });
           if (last?.role === 'toolResult' && pi.getFlag('dag-test-plain-goal') === true) {

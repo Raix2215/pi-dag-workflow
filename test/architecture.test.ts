@@ -164,6 +164,7 @@ const layers: Record<string, Layer> = {
   'team/domain/inbox.ts': 'domain',
   'team/domain/launcher.ts': 'domain',
   'team/domain/lifecycle.ts': 'domain',
+  'team/domain/membership.ts': 'domain',
   'team/io/inbox.ts': 'domain',
   'team/io/lock.ts': 'domain',
   'team/io/sid-lock.ts': 'domain',
@@ -231,7 +232,8 @@ test('source imports respect the three layers and module boundaries outside the 
   assert.deepEqual(violations.sort(), [...allowedViolations].sort(), 'new violations are forbidden; remove resolved baseline entries');
 
   // Pure configuration, policy, selection and UI projections; panel frames are the U1 exception.
-  const allowedInternalTests = ['config.test.ts', 'goal-policy.test.ts', 'prompt-guidance.test.ts', 'retry-models.test.ts', 'team-delete.test.ts', 'team-history.test.ts', 'team-inbox-sdk.test.ts', 'team-inbox.test.ts', 'team-inspect.test.ts', 'team-panel.test.ts', 'team-rebuild.test.ts', 'team-session-dir.test.ts', 'team-shrink.test.ts', 'team-sid-lock.test.ts', 'team.test.ts', 'ui-child-floor.test.ts', 'ui-graph.test.ts', 'ui-panel.test.ts', 'ui-projection.test.ts', 'ui-render.test.ts', 'workflow-flow.test.ts'];
+  // Team membership regressions drive the registered context hook and real SDK with registry fixtures.
+  const allowedInternalTests = ['config.test.ts', 'goal-policy.test.ts', 'prompt-guidance.test.ts', 'retry-models.test.ts', 'team-delete.test.ts', 'team-history.test.ts', 'team-inbox-sdk.test.ts', 'team-inbox.test.ts', 'team-inspect.test.ts', 'team-membership-sdk.test.ts', 'team-membership.test.ts', 'team-panel.test.ts', 'team-rebuild.test.ts', 'team-session-dir.test.ts', 'team-shrink.test.ts', 'team-sid-lock.test.ts', 'team.test.ts', 'ui-child-floor.test.ts', 'ui-graph.test.ts', 'ui-panel.test.ts', 'ui-projection.test.ts', 'ui-render.test.ts', 'workflow-flow.test.ts'];
   const testRoot = fileURLToPath(new URL('./', import.meta.url));
   const internalTests = new Set<string>();
   const fixtureViolations: string[] = [];
