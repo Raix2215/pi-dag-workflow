@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-10-25
+
+### Fixed
+
+- Keep a paused Goal's compaction recovery reminder at a stable context position across subsequent requests and persistence boundaries, without automatically resuming the Goal.
+- Clear recovery projections on explicit enable and session navigation while preserving native history, other Goals, and pause safety boundaries.
+
 ## [0.7.2] - 2026-10-25
 
 ### Fixed

@@ -9,7 +9,7 @@ import { IsolatedClient, sourceEntries, testCli } from './fixtures/isolated-clie
 import { execFileSync } from 'node:child_process';
 
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AGENT_REPORT_MESSAGE, GOAL_RETRY_MESSAGE, GOAL_CONTINUE_MESSAGE } from './fixtures/public-records.ts';
@@ -366,6 +366,232 @@ for (const memoryFirst of [true, false]) test(`actual Pi: short wakes keep compl
   for (let index = 1; index < revised.length; index++) assert.equal(JSON.stringify(revised[index].slice(0, revised[index - 1].length)), JSON.stringify(revised[index - 1]), 'new definition has its own stable baseline');
   assert.notEqual(text(revised[0][1]), text(runs[0]!.messages[1]));
   assert.ok(!text(revised[0][1]).includes('FINAL-REQUIREMENT'));
+});
+
+test('paused compaction keeps one fixed safety reminder across seven independent native frames', async (t) => {
+  const h = await host(['goal']); t.after(() => h.close()); h.idle(false);
+  const native = (entry: any) => ({ role: 'custom', customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: entry.timestamp });
+  await h.call('goal', { action: 'create', title: 'paused prefix', description: 'PAUSED-PREFIX-SAFETY' });
+  await h.fire('input', { source: 'rpc', text: 'enable before pause' });
+  assert.ok(!(await h.call('goal', { action: 'enable', id: 1 })).isError);
+  const oldContract = (await h.prompt()).messages.map(native);
+  assert.equal(oldContract.length, 1);
+  assert.match(oldContract[0]!.content, /PAUSED-PREFIX-SAFETY/);
+  await h.command('goal', 'disable #1');
+  const used = (await h.call('goal', { action: 'get', id: 1 })).details.goalState.run.used;
+  await h.fire('session_before_compact', {}); await h.fire('session_compact');
+  const system = { role: 'system', content: 'unchanged native system', timestamp: 1 };
+  const summary = { role: 'compactionSummary', summary: 'memory-owned summary', timestamp: 2 };
+  const report = { role: 'custom', customType: AGENT_REPORT_MESSAGE, content: 'memory-owned report', timestamp: 3 };
+  const other = { role: 'custom', customType: GOAL_CHECKPOINT_TYPE, content: 'Goal #99 paused: other Goal. Resume only on explicit enable.', timestamp: 4 };
+  const history: any[] = [system, summary, report, other, ...oldContract, { role: 'user', content: 'post-compaction native request', timestamp: 5 }];
+  const frames: any[][] = [];
+  let recoveries = 0;
+  for (let frame = 0; frame < 7; frame++) {
+    if (frame) history.push({ role: 'toolResult', toolCallId: `paused-tool-${frame}`, content: `paused tool ${frame}`, timestamp: 10 + frame });
+    if (frame === 2) {
+      // A normal boundary persists the pending paused reminder; this is real native persistence, not a hook output replay.
+      const saved = (await h.prompt()).messages.map(native);
+      assert.equal(saved.length, 1, 'a real boundary persists the pending paused reminder');
+      assert.equal(saved[0]!.content, 'Goal #1 paused: Disabled. Resume only on explicit enable.');
+      history.push(...saved);
+    }
+    const incoming = history;
+    const snapshot = structuredClone(history);
+    const ordinary = await h.fire('context', { messages: incoming });
+    recoveries += ordinary.messages.filter((message: any) => !incoming.includes(message) && message.customType === GOAL_CHECKPOINT_TYPE && String(message.content).startsWith('Goal #1 paused')).length;
+    const { messages } = await h.fire('context_with_system', { messages: ordinary.messages });
+    assert.deepEqual(incoming, snapshot, 'hooks never mutate native history');
+    const reminders = messages.filter((message: any) => message.customType === GOAL_CHECKPOINT_TYPE && String(message.content).startsWith('Goal #1 paused'));
+    assert.equal(reminders.length, 1, `frame ${frame}: one current paused reminder`);
+    const reminder = reminders[0];
+    assert.equal(messages.indexOf(reminder), 1, `frame ${frame}: reminder stays after the system message`);
+    assert.equal(reminder.content, 'Goal #1 paused: Disabled. Resume only on explicit enable.');
+    assert.equal(reminder.details.requestLocal, true);
+    assert.equal(messages.filter((message: any) => message.customType === GOAL_CHECKPOINT_TYPE && String(message.content).startsWith('Goal contract (')).length, 0, 'the paused view retires the focused Goal old full contract');
+    assert.equal(messages[0], system);
+    assert.ok(messages.includes(summary)); assert.ok(messages.includes(report)); assert.ok(messages.includes(other));
+    if (frame) {
+      assert.equal(messages[1].timestamp, frames[0]![1].timestamp, 'timestamp survives persistence and later frames');
+      assert.equal(messages[1].content, frames[0]![1].content, 'same paused wording on every frame');
+      assert.equal(JSON.stringify(messages.slice(0, frames[frame - 1]!.length)), JSON.stringify(frames[frame - 1]), `frame ${frame}: full JSON is pure append`);
+    }
+    frames.push(structuredClone(messages));
+    await new Promise((resolve) => setTimeout(resolve, 3));
+  }
+  assert.equal(recoveries, 1, 'ordinary compaction recovery is strictly once');
+  const state = (await h.call('goal', { action: 'get', id: 1 })).details.goalState;
+  assert.equal(state.run.paused, true, 'compaction never resumes the paused Goal');
+  assert.equal(state.run.used, used, 'no new wake is counted');
+  await h.fire('agent_settled', { aborted: false });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(h.sent.length, 0, 'no old timer or new continuation wake survives the pause');
+});
+
+test('ordinary paused Goal does not arm a safety projection without a successful compaction', async (t) => {
+  const h = await host(['goal']); t.after(() => h.close()); h.idle(false);
+  const finalContext = h.handlers.get('context_with_system')![0]!;
+  await h.call('goal', { action: 'create', title: 'ordinary pause', description: 'ORDINARY-PAUSE' });
+  await h.fire('input', { source: 'rpc', text: 'enable before pause' });
+  assert.ok(!(await h.call('goal', { action: 'enable', id: 1 })).isError);
+  await h.prompt();
+  await h.command('goal', 'disable #1');
+  const history: any[] = [{ role: 'system', content: 'unchanged native system', timestamp: 1 }, { role: 'user', content: 'ordinary paused request', timestamp: 2 }];
+  for (let frame = 0; frame < 3; frame++) {
+    if (frame) history.push({ role: 'toolResult', toolCallId: `ordinary-${frame}`, content: `ordinary tool ${frame}`, timestamp: 2 + frame });
+    const ordinary = await h.fire('context', { messages: [...history] });
+    assert.equal(ordinary.messages.length, history.length, 'an ordinary pause has no compaction recovery');
+    assert.equal(await finalContext({ messages: ordinary.messages }, h.ctx), undefined, 'no paused projection is injected');
+  }
+  const state = (await h.call('goal', { action: 'get', id: 1 })).details.goalState;
+  assert.equal(state.run.paused, true);
+  assert.equal(state.run.used, 0);
+});
+
+test('paused safety projection retires on enable, focus change, compaction, tree and shutdown', async (t) => {
+  const h = await host(['goal']); t.after(() => h.close()); h.idle(false);
+  const finalContext = h.handlers.get('context_with_system')![0]!;
+  const system = { role: 'system', content: 'unchanged native system', timestamp: 1 };
+  const summary = { role: 'compactionSummary', summary: 'memory-owned summary', timestamp: 2 };
+  const arm = async () => {
+    await h.fire('session_before_compact', {}); await h.fire('session_compact');
+    const ordinary = await h.fire('context', { messages: [system, summary] });
+    return (await h.fire('context_with_system', { messages: ordinary.messages })).messages;
+  };
+  const paused = (message: any) => message.customType === GOAL_CHECKPOINT_TYPE && String(message.content).startsWith('Goal #1 paused');
+  await h.call('goal', { action: 'create', title: 'cleanup objective', description: 'CLEANUP-REQUIREMENT' });
+  await h.fire('input', { source: 'rpc', text: 'enable before pause' });
+  assert.ok(!(await h.call('goal', { action: 'enable', id: 1 })).isError);
+  await h.prompt();
+  await h.command('goal', 'disable #1');
+  let messages = await arm();
+  assert.equal(messages.filter(paused).length, 1);
+  // Explicit enable retires the paused view and restores the current full contract.
+  await h.fire('input', { source: 'rpc', text: 'explicit enable' });
+  assert.ok(!(await h.call('goal', { action: 'enable', id: 1 })).isError);
+  messages = (await h.fire('context_with_system', { messages: [system, summary] })).messages;
+  assert.equal(messages.filter(paused).length, 0, 'enable cannot leave the old paused reminder');
+  const contracts = messages.filter((message: any) => message.customType === GOAL_CHECKPOINT_TYPE && String(message.content).startsWith('Goal contract ('));
+  assert.equal(contracts.length, 1); assert.equal(messages.indexOf(contracts[0]), 1);
+  assert.match(contracts[0].content, /"paused":false/);
+  // Enable cleared the old projection: a fresh ordinary pause still injects nothing.
+  await h.command('goal', 'disable #1');
+  const ordinaryPause = await h.fire('context', { messages: [system, summary] });
+  assert.equal(await finalContext({ messages: ordinaryPause.messages }, h.ctx), undefined, 'the retired projection cannot reappear on an ordinary pause');
+  // A second successful compaction clears the old projection before the next ordinary recovery.
+  messages = await arm();
+  const oldTimestamp = messages.find(paused).timestamp;
+  await new Promise((resolve) => setTimeout(resolve, 3));
+  await h.fire('session_before_compact', {}); await h.fire('session_compact');
+  assert.equal(await finalContext({ messages: [system, summary] }, h.ctx), undefined, 'successful compaction retires the old paused projection');
+  const recovered = await h.fire('context', { messages: [system, summary] });
+  messages = (await h.fire('context_with_system', { messages: recovered.messages })).messages;
+  assert.equal(messages.filter(paused).length, 1);
+  assert.notEqual(messages.find(paused).timestamp, oldTimestamp, 'a new compaction recovery is a new baseline');
+  // Tree restoration clears the request-local projection and keeps the Goal paused.
+  await h.fire('session_tree');
+  assert.equal(await finalContext({ messages: [system, summary] }, h.ctx), undefined, 'restoration cannot replay the old paused projection');
+  assert.equal((await h.call('goal', { action: 'get', id: 1 })).details.goalState.run.paused, true);
+  // A focus change retires the old Goal's paused reminder and selects the new Goal's contract.
+  await h.fire('input', { source: 'rpc', text: 'restore enable' });
+  assert.ok(!(await h.call('goal', { action: 'enable', id: 1 })).isError);
+  await h.command('goal', 'disable #1');
+  messages = await arm();
+  assert.equal(messages.filter(paused).length, 1);
+  await h.call('goal', { action: 'create', title: 'other objective' });
+  await h.fire('input', { source: 'rpc', text: 'enable other objective' });
+  assert.ok(!(await h.call('goal', { action: 'enable', id: 2 })).isError);
+  messages = (await h.fire('context_with_system', { messages: [system, summary] })).messages;
+  assert.equal(messages.filter(paused).length, 0, 'a focus change retires the previous paused projection');
+  const switched = messages.filter((message: any) => message.customType === GOAL_CHECKPOINT_TYPE && String(message.content).startsWith('Goal contract ('));
+  assert.equal(switched.length, 1); assert.equal(JSON.parse(switched[0].content.split('\n')[1]).goal.id, 2);
+  await h.fire('session_shutdown');
+  assert.equal(await finalContext({ messages: [system, summary] }, h.ctx), undefined, 'shutdown drops the request-local projection');
+});
+
+test('explicit enable retires the stale native pause while keeping the new native contract', async (t) => {
+  const h = await host(['goal']); t.after(() => h.close()); h.idle(false);
+  const native = (entry: any) => ({ role: 'custom', customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: entry.timestamp });
+  const paused = (message: any) => message.customType === GOAL_CHECKPOINT_TYPE && String(message.content).startsWith('Goal #1 paused');
+  const contracts = (messages: any[]) => messages.filter((message: any) => message.customType === GOAL_CHECKPOINT_TYPE && String(message.content).startsWith('Goal contract ('));
+  await h.call('goal', { action: 'create', title: 'native enable', description: 'NATIVE-ENABLE-REQUIREMENT' });
+  await h.fire('input', { source: 'rpc', text: 'enable before pause' });
+  assert.ok(!(await h.call('goal', { action: 'enable', id: 1 })).isError);
+  const enabled = (await h.prompt()).messages.map(native);
+  assert.equal(enabled.length, 1); assert.match(enabled[0]!.content, /"paused":false/);
+  await h.command('goal', 'disable #1');
+  await h.fire('session_before_compact', {}); await h.fire('session_compact');
+  const system = { role: 'system', content: 'unchanged native system', timestamp: 1 };
+  const summary = { role: 'compactionSummary', summary: 'memory-owned summary', timestamp: 2 };
+  const other = { role: 'custom', customType: GOAL_CHECKPOINT_TYPE, content: 'Goal #99 paused: other Goal. Resume only on explicit enable.', timestamp: 3 };
+  const ordinary = await h.fire('context', { messages: [system, summary, other] });
+  await h.fire('context_with_system', { messages: ordinary.messages });
+  const pausedNative = (await h.prompt()).messages.map(native);
+  assert.equal(pausedNative.length, 1); assert.match(pausedNative[0]!.content, /^Goal #1 paused/);
+  await h.fire('input', { source: 'rpc', text: 'explicit enable' });
+  assert.ok(!(await h.call('goal', { action: 'enable', id: 1 })).isError);
+  const activeNative = (await h.prompt()).messages.map(native);
+  assert.equal(activeNative.length, 1); assert.match(activeNative[0]!.content, /"paused":false/);
+  // The branch really contains both the old paused record and the new full contract.
+  const history = [system, summary, other, ...pausedNative, ...activeNative];
+  const original = structuredClone(history);
+  const final = await h.fire('context_with_system', { messages: history });
+  assert.equal(final.messages.filter(paused).length, 0, 'explicit enable removes the stale native pause from the model view');
+  assert.ok(final.messages.includes(activeNative[0]), 'the current native full contract is preserved as the same object');
+  assert.equal(contracts(final.messages).length, 1);
+  assert.equal(final.messages.indexOf(activeNative[0]), 3, 'the native contract keeps its position and timestamp');
+  assert.ok(final.messages.includes(other), 'another Goal reminder stays visible');
+  assert.deepEqual(history, original, 'the native history is never rewritten');
+  assert.ok(h.entries.some((entry: any) => entry.content === pausedNative[0]!.content), 'the branch retains the old paused record');
+  assert.ok(h.entries.some((entry: any) => entry.content === activeNative[0]!.content), 'the branch retains the new full contract');
+  const next = await h.fire('context_with_system', { messages: [...history, { role: 'toolResult', toolCallId: 'after-enable', content: 'tail', timestamp: 4 }] });
+  assert.deepEqual(next.messages.slice(0, final.messages.length), final.messages, 'post-enable native frames stay append-stable');
+});
+
+test('actual Pi: native paused compaction keeps its native reminder append-stable across tool-round frames', { timeout: 45000 }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dag-paused-native-compaction-'));
+  await mkdir(join(root, 'agent'), { recursive: true });
+  await writeFile(join(root, 'agent', 'settings.json'), JSON.stringify({ compaction: { enabled: false, reserveTokens: 1, keepRecentTokens: 1 }, retry: { enabled: false } }));
+  const client = await IsolatedClient.start(root, 'paused-native-compaction', [], ['--dag-test-context-export']); t.after(() => client.close());
+  t.diagnostic(`CLI ${execFileSync(process.execPath, [testCli(), '--version'], { encoding: 'utf8' }).trim()}; extensions: todos, plan, agents, goal, retry, offline-model; scripted provider, no paid model`);
+  await client.prompt('TEST CALL goal {"action":"create","title":"paused compaction","description":"PAUSED-NATIVE-REQUIREMENT","maxTurns":1}');
+  await client.prompt('/goal enable #1');
+  await client.prompt('/goal disable #1');
+  const before = await client.entries() as any[];
+  const pausedBefore = before.findLast((entry) => entry.customType === GOAL_TYPE).data;
+  assert.equal(pausedBefore.run.paused, true);
+  const used = pausedBefore.run.used;
+  const compacted = await client.send('compact');
+  assert.equal(compacted.success, true);
+  const afterCompact = await client.entries() as any[];
+  const boundary = afterCompact.findLastIndex((entry) => entry.type === 'compaction');
+  assert.ok(boundary >= 0);
+  assert.notEqual(afterCompact[boundary]!.fromHook, true, 'native Pi summarizer owns this compaction');
+  assert.equal(afterCompact.findLast((entry) => entry.customType === GOAL_TYPE).data.run.paused, true);
+  for (let round = 0; round < 4; round++) await client.prompt('TEST CALL goal {"action":"get","id":1}');
+  const entries = await client.entries() as any[];
+  const at = entries.findLastIndex((entry) => entry.type === 'compaction');
+  const frames: any[][] = entries.slice(at + 1).filter((entry) => entry.customType === 'dag-test.context-export').map((entry) => entry.data.context.messages);
+  assert.ok(frames.length >= 7, `expected at least seven post-compaction provider frames, got ${frames.length}`);
+  const text = (message: any) => typeof message.content === 'string' ? message.content : (message.content ?? []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n');
+  const isPaused = (message: any) => text(message).startsWith('Goal #1 paused');
+  for (const messages of frames) {
+    const reminders = messages.filter(isPaused);
+    assert.equal(reminders.length, 1, 'each provider frame has one paused reminder');
+    assert.match(text(reminders[0]), /^Goal #1 paused: Disabled\. Resume only on explicit enable\.$/);
+    assert.equal(messages.filter((message: any) => text(message).startsWith('Goal contract (')).length, 0);
+  }
+  for (let frame = 1; frame < frames.length; frame++) {
+    const previousReminder = frames[frame - 1]!.filter(isPaused)[0]!;
+    const reminder = frames[frame]!.filter(isPaused)[0]!;
+    assert.equal(reminder.timestamp, previousReminder.timestamp, 'native persistence keeps the reminder timestamp');
+    assert.equal(text(reminder), text(previousReminder), 'native persistence keeps the reminder wording');
+    assert.equal(JSON.stringify(frames[frame]!.slice(0, frames[frame - 1]!.length)), JSON.stringify(frames[frame - 1]), `frame ${frame}: provider JSON is pure append`);
+  }
+  const state = entries.findLast((entry) => entry.customType === GOAL_TYPE).data;
+  assert.equal(state.run.paused, true); assert.equal(state.run.used, used);
+  assert.equal(entries.slice(at + 1).filter((entry) => entry.customType === GOAL_CONTINUE_MESSAGE).length, 0, 'a paused Goal never requests a continuation');
+  t.diagnostic(JSON.stringify({ compaction: 'rpc', nativeSummary: afterCompact[boundary]!.fromHook !== true, frames: frames.length, paused: state.run.paused, used: state.run.used, nativeReminderPositions: frames.map((messages) => messages.findIndex(isPaused)) }));
 });
 }
 

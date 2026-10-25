@@ -119,6 +119,7 @@ Manage multi-turn objectives with `/goal` and the `goal` tool:
 - **Safe defaults**: Creating a Goal does not auto-start it. Resumed sessions keep Goals paused until explicitly activated with `/goal enable`.
 - **Paused progress notes**: When paused, models can still record verified milestones (`progress`) or updated plans (`nextStep`) without resuming execution.
 - **Stable contract context**: Keep the complete current objective visible without moving an unchanged fallback contract on every request. Continuation counts remain in Goal state and the UI, not in the model contract.
+- **Stable pause recovery**: After compaction recovers a paused Goal's safety reminder, keep that reminder at a stable context position without resuming the Goal. Ordinary paused sessions do not add this recovery projection.
 - **Control switches**:
   - `nopause`: Forbids interactive user questionnaires and mid-flight stops, but does *not* grant unlimited error retries.
   - `nolimit`: Removes the default 32-turn continuation limit without altering error retry counts.
