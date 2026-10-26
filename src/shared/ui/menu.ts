@@ -365,7 +365,9 @@ export async function choose(ctx: ExtensionContext, title: string, items: MenuSo
         const id = /^(#\d+|a\d+)\s/.exec(item.label)?.[1];
         const prefix = id ? `${id} [${item.value}] ` : '', suffix = !id && item.value ? `  ${item.value}` : '';
         const room = Math.max(1, width - visibleWidth(prefix || suffix));
-        const label = prefix ? prefix + truncateToWidth(item.label.slice(id!.length).trim(), room, '…') : truncateToWidth(item.label, room, '…') + suffix;
+        const text = prefix ? item.label.slice(id!.length).trim() : item.label;
+        const shown = item.path ? middleTruncate(text, room) : truncateToWidth(text, room, '…');
+        const label = prefix ? prefix + shown : shown + suffix;
         entries.push({ label: item.disabledReason ? msg`${label}（不可用：${clean(item.disabledReason)}）` : label, tone: item.disabledReason ? 'muted' : item.tone ?? statusTone(item.value, msg), ...(item.valueTone ? { valueTone: item.valueTone } : {}), done: !item.disabledReason && !item.children?.length && item.kind !== 'readonly' && item.kind !== 'heading' && item.kind !== 'tail', pick: () => pickItem(item) });
       }
       if (page > 0) entries.push({ label: msg('上一页'), done: false, pick: () => { page--; cursor.page = page; return undefined; } });

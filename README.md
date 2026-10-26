@@ -175,6 +175,8 @@ Running `/todos`, `/plan`, `/goal`, `/agents`, `/team`, `/retry`, or `/dag-displ
 
 Panels automatically scale to terminal height without artificial row limits. User input and confirmation workflows are never interrupted by background periodic refreshes. Above-editor widgets hide while panels are open and restore upon dismissal.
 
+Path rows use middle truncation to retain filename tails when space permits; stored paths and selection targets remain unchanged.
+
 ### Display Preferences (`/dag-display`)
 
 Open `/dag-display` or select the **Display** tab to configure interface preferences:

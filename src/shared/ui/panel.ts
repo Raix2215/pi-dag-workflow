@@ -550,11 +550,13 @@ export function createPanel(config: PanelConfig) {
           const budget = Math.max(0, baseBudget - visibleWidth(prefixMarker) - visibleWidth(suffixMarker));
           if (row.parentId && (row.kind === 'readonly' || values.length > 0) && !isArmed) {
             const childWidth = Math.max(0, budget - visibleWidth(treeLead) - 2);
-            const cols = dottedColumns(label, value, childWidth);
+            const childLabel = row.path ? middleTruncate(label, Math.max(0, childWidth - 3 - visibleWidth(value) - 1)) : label;
+            const cols = dottedColumns(childLabel, value, childWidth);
             upperLines.push(contentRow(treeLead + cursor + prefixMarker + styled(cols.left, labelTone) + ' ' + styled(cols.leader, 'dim') + ' ' + cols.right + suffixMarker, overflow));
           } else if (row.parentId) {
             const childText = isArmed ? `${label}  ${rawValue}` : label;
-            upperLines.push(contentRow(treeLead + cursor + prefixMarker + styled(truncateToWidth(childText, budget, '…'), isArmed ? 'error' : labelTone) + suffixMarker, overflow));
+            const shown = row.path && !isArmed ? middleTruncate(childText, budget) : truncateToWidth(childText, budget, '…');
+            upperLines.push(contentRow(treeLead + cursor + prefixMarker + styled(shown, isArmed ? 'error' : labelTone) + suffixMarker, overflow));
           } else {
             const cols = dottedColumns(label, value, budget);
             upperLines.push(contentRow(cursor + prefixMarker + styled(cols.left, labelTone) + ' ' + styled(cols.leader, 'dim') + ' ' + cols.right + suffixMarker, overflow));

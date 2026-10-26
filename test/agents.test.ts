@@ -197,7 +197,7 @@ test('B4: real Pi menus save loaded and manual extensions inside a Profile, remo
   await menuB4(h.client, [
     ...profileSteps,
     (request: any) => pick(request, '从已加载扩展选择'),
-    (request: any) => { const matches = request.options.filter((option: string) => option.includes('mock-tools.ts')); assert.equal(matches.length, 1); assert.match(matches[0], /11 个工具/); return matches[0]; },
+    (request: any) => { const matches = request.options.filter((option: string) => option.includes('mock-tools.ts')); assert.equal(matches.length, 1); assert.match(matches[0], /11 个工具/); assert.ok(matches[0].endsWith('mock-tools.ts  11 个工具'), 'the selectable path keeps its filename tail before the count'); return matches[0]; },
     async (request: any) => { await saved([h.extension]); return pick(request, 'Profile 列表'); },
     (request: any) => pick(request, 'ext'),
     (request: any) => pick(request, '下一页'),

@@ -901,7 +901,10 @@ test('B4: profile extension rows and the loaded-extension picker localize, dedup
       { name: 'subagent_spawn', sourceInfo: { path: imported[0] } },
     ] : [] });
     t.after(() => host.close());
-    const extension = join(host.root, 'loaded.ts'), hidden = join(host.root, 'hidden.ts');
+    const extension = join(host.root, 'loaded.ts');
+    const hiddenDirectory = join(host.root, 'long-extension-source-directory-for-tail-regression', 'nested', 'deeper');
+    const hidden = join(hiddenDirectory, 'hidden.ts');
+    await mkdir(hiddenDirectory, { recursive: true });
     await writeFile(extension, 'export default function() {}'); await writeFile(hidden, 'export default function() {}');
     imported.push(extension, hidden);
     const profilePath = join(host.directory, 'pi-dag-workflow-profile.json');
@@ -920,12 +923,19 @@ test('B4: profile extension rows and the loaded-extension picker localize, dedup
     await panels.focus('missing.ts');
     assert.match(frame(), /missing\.ts/);
     assert.equal(panels.frame().filter(line => /│ .*missing\.ts/.test(line)).length, 1, 'one row per declared path');
-    await panels.focus('hidden.ts');
+    await panels.press('\x1b[B');
+    const hiddenRow = panels.frame().find(line => /^[ │]*> /.test(line));
+    assert.ok(hiddenRow, 'the next declared path row is selectable');
+    assert.match(hiddenRow, /….*hidden\.ts[↑↓↕]?$/u, 'the long path keeps its filename tail at the visible end');
     assert.match(frame(), /hidden\.ts/, 'every declared path is listed in place');
+    assert.deepEqual(await savedPaths(), ['missing.ts', hidden], 'the full saved path is unchanged while its row is shortened');
     // The picker offers only not-yet-configured loaded sources, with their delegable tool counts.
     await panels.focus(text.add); await panels.press('\r');
     await panels.wait(() => panels.frame().some(line => line.includes('loaded.ts')));
     assert.equal(panels.frame().filter(line => /\p{Co}.*loaded\.ts/u.test(line)).length, 1, 'one picker row per source');
+    const loadedRow = panels.frame().find(line => /\p{Co}.*loaded\.ts/u.test(line))!;
+    assert.match(loadedRow, /….*loaded\.ts/u, 'the picker path keeps its filename tail');
+    assert.match(loadedRow, /….*loaded\.ts.*\[/u, 'the tool count still follows the kept filename');
     assert.ok(frame().includes(text.tools(2)), 'the picker shows the delegable tool count');
     assert.doesNotMatch(frame(), /builtin:|<generated>/);
     // The declared path stays visible under the Profile; the picker must not offer it a second time.

@@ -1,6 +1,6 @@
 {
   "name": "pi-dag-workflow",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "A lightweight, session-local Todo DAG workflow for Pi",
   "repository": {
     "type": "git",

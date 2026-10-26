@@ -164,6 +164,28 @@ test(names[8], () => {
   }
   assert.equal(middleTruncate(path, 0), ''); assert.equal(middleTruncate(path, 1), '…');
 });
+test('ticket82 expanded path rows keep the filename tail while non-path labels keep their existing head truncation', () => {
+  const path = '/workspace/' + 'long-directory/'.repeat(10) + 'fixtures/mock-tools.ts';
+  const text = 'Non-path label ' + 'keeps its readable beginning/'.repeat(6) + 'tail-marker';
+  const panel = createPanel(config({ sections: [{ id: 's0', label: 'Agents', single: false, upper: () => ({ rows: [{ id: 'profile', label: 'work', kind: 'entity', children: [
+    { id: 'path-value', kind: 'action', label: path, path: true, value: '11 个工具' },
+    { id: 'path-action', kind: 'action', label: path, path: true },
+    { id: 'plain-value', kind: 'action', label: text, value: '11 个工具' },
+    { id: 'plain-action', kind: 'action', label: text },
+  ] }] }), rows: [] }] }));
+  panel.handleInput(key.enter);
+  const rendered = frame(panel, 96);
+  const pathRows = rendered.filter(line => line.includes('mock-tools.ts'));
+  assert.equal(pathRows.length, 2, 'both an action and a valued path row keep the filename');
+  for (const line of pathRows) assert.match(line, /….*mock-tools\.ts/u);
+  assert.ok(pathRows.some(line => line.includes('11 个工具')), 'the valued path row keeps its value');
+  const plainRows = rendered.filter(line => line.includes('Non-path label'));
+  assert.equal(plainRows.length, 2, 'both non-path child rows keep their leading text');
+  for (const line of plainRows) {
+    assert.match(line, /…/);
+    assert.doesNotMatch(line, /tail-marker/, 'non-path labels still truncate at the tail');
+  }
+});
 test(names[9], () => {
   const entries = [{ id: 'c', label: 'Directory', kind: 'directory' }, { id: 'h', label: 'Heading', kind: 'heading' }, { id: 'd', kind: 'action', label: 'Disabled', disabledReason: 'No access' }, { id: 'a', kind: 'action', label: 'Allowed' }, { id: 't', label: 'Tail', kind: 'tail' }] as PanelRow[];
   assert.equal(dock(entries, 0, 1), 0); assert.equal(dock(entries, 4, -1), 3); assert.equal(entries.filter(canDock).length, 2);

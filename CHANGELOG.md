@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-10-26
+
+### Fixed
+
+- Middle-truncate long path rows in expanded panels and RPC/native menus to retain filename tails when space permits, without changing stored paths or selection targets.
+
+### Added
+
+- Add offline regression coverage that packs and unpacks the actual npm archive and loads all six manifest-declared entries with the pinned Pi SDK, including missing-entry and real loader-error checks.
+
 ## [0.7.3] - 2026-10-25
 
 ### Fixed
