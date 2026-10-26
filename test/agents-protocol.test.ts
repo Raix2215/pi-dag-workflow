@@ -13,7 +13,7 @@ import { IsolatedClient } from "./fixtures/isolated-client.ts";
 import { retainedJobs as foldAgentEntries } from './fixtures/public-records.ts';
 import { protocolHost } from './fixtures/agents-protocol-host.ts';
 import { readFile } from "node:fs/promises";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 
 import { Value } from "typebox/value";
 
@@ -901,9 +901,13 @@ test('B4: profile extension rows and the loaded-extension picker localize, dedup
       { name: 'subagent_spawn', sourceInfo: { path: imported[0] } },
     ] : [] });
     t.after(() => host.close());
-    const extension = join(host.root, 'loaded.ts');
+    // Both extension paths are explicitly long: a CI temp root is short enough that a host-root path
+    // fits the picker row whole, which would stop exercising the middle truncation this row relies on.
+    const loadedDirectory = join(host.root, 'long-loaded-extension-source-directory-for-tail-regression', 'nested');
+    const extension = join(loadedDirectory, 'loaded.ts');
     const hiddenDirectory = join(host.root, 'long-extension-source-directory-for-tail-regression', 'nested', 'deeper');
     const hidden = join(hiddenDirectory, 'hidden.ts');
+    await mkdir(loadedDirectory, { recursive: true });
     await mkdir(hiddenDirectory, { recursive: true });
     await writeFile(extension, 'export default function() {}'); await writeFile(hidden, 'export default function() {}');
     imported.push(extension, hidden);
@@ -942,6 +946,15 @@ test('B4: profile extension rows and the loaded-extension picker localize, dedup
     assert.equal(panels.frame().filter(line => /\p{Co}.*hidden\.ts/u.test(line)).length, 1, 'one row for an already configured path');
     assert.equal(panels.frame().filter(line => /hidden\.ts/.test(line) && /个工具|tool\(s\)/.test(line)).length, 0, 'a configured path never appears as a picker row with a tool count');
     assert.ok(styled.some(item => item.text === text.tools(2) && item.fg === 'muted'));
+    // The ellipsis is the row budget, not a rewrite of the path: the same real row drawn at a frame that
+    // holds the whole path shows it in full, and the value it saves is that whole path. The width is the
+    // real path plus the row's own cells (tree leads, icon, tool count, markers: measured path+38 here),
+    // so it follows the host temp root instead of a guessed literal.
+    const wideWidth = visibleWidth(extension) + visibleWidth(text.tools(2)) + 40;
+    const wideRow = panels.frame(wideWidth).find(line => /\p{Co}.*loaded\.ts/u.test(line))!;
+    assert.ok(wideRow.includes(extension), 'a sufficient row budget draws the whole picker path');
+    assert.doesNotMatch(wideRow, /…/u, 'a sufficient row budget adds no ellipsis');
+    panels.frame(); // Back to the default frame width for the key-driven steps below.
     await panels.select('loaded.ts');
     for (let attempt = 0; attempt < 50; attempt++) { if ((await savedPaths()).length === 3) break; await new Promise(resolve => setTimeout(resolve, 20)); }
     assert.deepEqual(await savedPaths(), ['missing.ts', hidden, extension]);

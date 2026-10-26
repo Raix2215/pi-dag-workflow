@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-10-26
+
+### Fixed
+
+- Keep filename tails in long path rows when space permits while preserving complete stored paths and selection targets.
+- Make path-rendering regression fixtures independent of temporary-directory length, and synchronize Team dissolution tests with the completion notice.
+
+### Added
+
+- Verify all six manifest-declared entries and their registrations from a real npm archive using the pinned Pi SDK, including missing-entry and loader-error cases.
+
 ## [0.7.4] - 2026-10-26
 
 ### Fixed

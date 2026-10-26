@@ -211,10 +211,15 @@ test('dissolve takes two Enters, archives the team, keeps its data and clears st
   assert.match(panels.frame().join('\n'), /再次 Enter 解散/);
   assert.ok((await listTeams(workspace)).some(team => team.id === alpha.id), 'one Enter dissolves nothing');
   await panels.press('\r');
+  // Dissolving archives the manifest, then leaves and notifies, so the file can be gone a moment before
+  // the notice exists. Both observations get a bounded wait; the assertions below still run. The leave
+  // inside the dissolve notifies too, so the dissolution notice is the one that names the team.
+  const dissolvedNotice = () => h.notices.some(n => /已解散/.test(n.message) && n.message.includes('Alpha'));
   for (let attempt = 0; attempt < 50; attempt++) { if (!(await readTeam(alpha.id))) break; await new Promise(resolve => setTimeout(resolve, 20)); }
+  for (let attempt = 0; attempt < 100; attempt++) { if (dissolvedNotice()) break; await new Promise(resolve => setTimeout(resolve, 20)); }
   assert.equal(await readTeam(alpha.id), undefined, 'the second Enter dissolves the team');
   assert.deepEqual(await listTeams(workspace), []);
-  assert.ok(h.notices.some(n => /已解散/.test(n.message)), 'the notice says the team is dissolved');
+  assert.ok(dissolvedNotice(), 'the notice names the team it dissolved');
   // De-registration happens in place: the carrier sits in the same directory, the members stay, nothing moves.
   const carrier = await readFile(join(teamsRoot(), alpha.id, 'team.archived.json'), 'utf8').then(text => JSON.parse(text));
   assert.equal(carrier.name, 'Alpha', 'the manifest is kept as the inactive carrier');
